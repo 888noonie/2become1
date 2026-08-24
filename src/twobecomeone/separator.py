@@ -9,9 +9,7 @@ Two strategies:
 
 from __future__ import annotations
 
-import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 from .common import UserError, log
@@ -90,6 +88,7 @@ def separate(path: str, out_dir: str | Path, method: str = "auto") -> dict[str, 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    requested_method = method
     if method == "auto":
         try:
             import demucs.api  # noqa: F401
@@ -104,8 +103,10 @@ def separate(path: str, out_dir: str | Path, method: str = "auto") -> dict[str, 
         try:
             sep = _demucs_separator_instance()
         except Exception as exc:
-            log(f"Demucs failed to load ({exc}); falling back to ffmpeg center/side split")
-            return _ffmpeg_fallback(path, out_dir)
+            if requested_method == "auto":
+                log(f"Demucs failed to load ({exc}); falling back to ffmpeg center/side split")
+                return _ffmpeg_fallback(path, out_dir)
+            raise UserError(f"Demucs failed to load: {exc}") from exc
 
         try:
             origin, separated = sep.separate_audio_file(path)
@@ -117,7 +118,7 @@ def separate(path: str, out_dir: str | Path, method: str = "auto") -> dict[str, 
                 sep = _demucs_separator_instance("cpu")
                 origin, separated = sep.separate_audio_file(path)
             else:
-                raise
+                raise UserError(f"Demucs separation failed: {exc}") from exc
 
         result: dict[str, Path] = {}
         for stem in _STEM_NAMES:

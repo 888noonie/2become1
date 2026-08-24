@@ -17,7 +17,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .common import UserError, log
+from .common import UserError
 
 # ---------------------------------------------------------------------------
 # Camelot wheel key mapping
@@ -179,7 +179,7 @@ def build_mash(spec: MashSpec, tempo_ratio: float, semitone_shift: int,
 
     # The lead must be trimmed to render_duration * tempo_ratio before stretching,
     # so that after time-stretching it fills exactly render_duration.
-    lead_trim_duration = render_duration * tempo_ratio if spec.duration is None else spec.duration
+    lead_trim_duration = render_duration * tempo_ratio
 
     with tempfile.TemporaryDirectory() as tmp:
         lead = render_aligned(spec.lead_path, Path(tmp) / "lead_aligned.wav",
@@ -196,8 +196,7 @@ def build_mash(spec: MashSpec, tempo_ratio: float, semitone_shift: int,
         if proc.returncode != 0:
             raise UserError(f"anchor trim failed: {proc.stderr.decode()[:400]}")
 
-        # Mix with headroom, then normalize/limit.
-        # Strategy: apply gain, amix, then loudnorm + alimiter for true peak.
+        # Mix with headroom, then use loudnorm's true-peak limiting stage.
         cmd = [
             "ffmpeg", "-y", "-v", "error",
             "-i", str(anchor_trimmed),
@@ -227,6 +226,8 @@ def measure_clipping(path: str) -> dict:
         "-af", "ebur128=peak=true", "-f", "null", "-",
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise UserError(f"true-peak measurement failed: {proc.stderr[-400:]}")
     lines = proc.stderr.splitlines()
     stats: dict[str, float | int] = {}
     for i, line in enumerate(lines):

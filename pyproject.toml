@@ -1,7 +1,9 @@
 [project]
 name = "2become1"
-version = "0.1.0"
+version = "0.2.0"
 description = "General-purpose mash-up stack: analyze, separate, align, and recombine any two tracks."
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.0",
@@ -10,7 +12,15 @@ dependencies = [
 
 [project.optional-dependencies]
 demucs = ["demucs>=4.0", "torch>=2.0"]
-dev = ["pytest>=8.0"]
+web = [
+    "fastapi>=0.116",
+    "python-multipart>=0.0.20",
+    "uvicorn>=0.35",
+]
+dev = [
+    "httpx2>=0.1",
+    "pytest>=8.0",
+]
 
 [project.scripts]
 twobecomeone = "twobecomeone.cli:main"
@@ -21,3 +31,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/twobecomeone"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -6,3 +6,6 @@ __pycache__/
 lead_aligned.wav
 .pytest_cache/
 .directory
+dist/
+*.egg-info/
+.coverage

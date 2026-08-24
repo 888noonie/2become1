@@ -1,77 +1,105 @@
-# 2become1
+# 2become1 Studio
 
-A general-purpose mashup stack. Given any two tracks, it can:
+A local-first music mashup studio for combining two tracks without uploading
+them to somebody else's cloud. It analyzes tempo and key, suggests a beat-grid
+starting point, optionally isolates a lead vocal with Demucs, aligns the lead,
+and produces a loudness-managed mix.
 
-1. **source** them — local files, YouTube (yt-dlp), or torrents (public indexers)
-2. **analyze** them — BPM + musical key (self-contained, only numpy/scipy + ffmpeg)
-3. **separate** them — optional Demucs (vocals/drums/bass/other), or an ffmpeg center-channel fallback
-4. **align** them — time-stretch the lead to the anchor's tempo, pitch-shift it into the anchor's key
-5. **recombine** them — mix the aligned lead over the anchor track
+The name is a deliberately cheesy nod to the Spice Girls. The engine is general
+purpose; bring audio you own or have permission to remix.
 
-The project name is a nod to the Spice Girls, but this is a general tool, not a
-one-off for any specific song.
+## Launch the Studio
 
-## Setup
-
-Requires **ffmpeg** on PATH. Python 3.11+.
+Requirements: Python 3.11+, `uv`, and `ffmpeg`/`ffprobe` on `PATH`.
 
 ```bash
 cd /home/richardn/2become1
 uv venv .venv
-uv pip install --python .venv/bin/python -e '.[dev]'
-.venv/bin/twobecomeone --version
+uv pip install --python .venv/bin/python -e '.[web,demucs]'
+.venv/bin/twobecomeone web
 ```
 
-For high-quality stem separation with GPU:
+Open <http://127.0.0.1:8765>. The server binds to the local machine only by
+default, and project media is kept under `~/.local/share/2become1/`.
 
-```bash
-uv pip install --python .venv/bin/python -e '.[demucs]'
-```
+The Studio provides:
 
-## Usage
+- two drag-and-drop audio decks with BPM, key, duration, and playback;
+- lightweight first-beat/downbeat suggestions with manual correction;
+- start-offset, render-duration, and gain controls;
+- optional CUDA-accelerated Demucs lead-vocal isolation;
+- queued 12-second previews and full renders with live stage progress;
+- local playback, downloads, and recent-render history;
+- one same-origin FastAPI application—no public CORS or remote upload path.
+
+## CLI
+
+The underlying engine remains fully scriptable:
 
 ```bash
 # Analyze tempo and key
 .venv/bin/twobecomeone analyze track_a.mp3 track_b.mp3
 
-# Analyze with JSON output
+# Machine-readable analysis
 .venv/bin/twobecomeone analyze track_a.mp3 --json
 
-# Search a public torrent index for source material
-.venv/bin/twobecomeone torrent "artist - track" --magnet
+# Real four-stem separation when Demucs is installed
+.venv/bin/twobecomeone separate track.mp3 -o stems/ --method demucs
 
-# Separate a track into stems (auto: Demucs if installed, else ffmpeg)
-.venv/bin/twobecomeone separate track.mp3 -o stems/
+# Honest center/side fallback (not fake vocals/instrumental labels)
+.venv/bin/twobecomeone separate track.mp3 -o stereo-parts/ --method ffmpeg
 
-# Mash: align 'lead' to 'anchor' (anchor sets tempo + key)
-.venv/bin/twobecomeone mash anchor.mp3 lead.mp3 -o out.mp3
+# Region-aware mash; anchor supplies target tempo and key
+.venv/bin/twobecomeone mash anchor.mp3 lead.mp3 \
+  --anchor-start 32.4 --lead-start 18.1 --duration 30 \
+  --stems --stem-method demucs -o out.mp3
 
-# Mash using only the separated vocals from the lead
-.venv/bin/twobecomeone mash anchor.mp3 lead.mp3 -o out.mp3 --stems
-
-# Preview what the mash would do without rendering
+# Inspect the plan without creating stems or output files
 .venv/bin/twobecomeone mash anchor.mp3 lead.mp3 --dry-run --json
 ```
+
+The source module also contains experimental YouTube and public-index search
+helpers. They are intentionally absent from the Studio's default interface.
+
+## Architecture
+
+```text
+browser (same origin)
+        │
+        ▼
+FastAPI routes ──► StudioService ──► SQLite project/job state
+                         │
+                         ├── analyzer + beat-grid suggestion
+                         ├── single-worker Demucs queue (CUDA → CPU fallback)
+                         └── ffmpeg align/mix/loudness pipeline
+```
+
+The CLI and web app call the service/audio modules directly; neither wraps or
+scrapes the other's output. A single render worker prevents concurrent jobs
+from competing for laptop GPU memory. Uploaded names are never used as storage
+paths, supported audio suffixes are allow-listed, and uploads have a 750 MB
+local ceiling.
 
 ## Development
 
 ```bash
-.venv/bin/pytest tests/ -q
+uv pip install --python .venv/bin/python -e '.[web,dev,demucs]'
+.venv/bin/pytest -q
 ```
 
-## V0.1 Roadmap
+The test suite covers DSP invariants, invalid media, JSON contracts, truthful
+center/side output, Demucs caching and CUDA selection, OOM fallback behavior,
+region timing, true-peak checks, safe ingestion, persistent jobs, and the full
+HTTP upload-to-render vertical slice.
 
-- [x] analyze (BPM + key)
-- [x] source: local + yt-dlp + torrent scraper
-- [x] stem separation: ffmpeg fallback + optional Demucs
-- [x] align (tempo/key) + recombine
-- [x] pytest test suite
-- [x] --json output on all subcommands
-- [x] --dry-run for mash
-- [ ] lyrics/transcription
-- [ ] section-level alignment
-- [ ] Camelot-compat hints in `analyze`
+## Current boundaries
+
+- Beat/downbeat positions are suggestions, not phrase or chorus detection.
+- The ffmpeg fallback is a center/side transform, not vocal isolation.
+- Vercel can host a static demonstration, but real ffmpeg/Torch processing
+  belongs on this local backend or a dedicated GPU service.
+- YouTube/torrent acquisition is not part of the launch UI.
 
 ## License
 
-MIT
+MIT—see [LICENSE](LICENSE).

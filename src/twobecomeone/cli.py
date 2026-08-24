@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 from . import __version__
@@ -84,6 +83,23 @@ def cmd_torrent(args) -> int:
         print(f"[{i}] {h.title}  ({h.source})")
         if args.magnet:
             print(f"    {h.magnet}")
+    return 0
+
+
+def cmd_web(args) -> int:
+    """Launch the local-first Studio web application."""
+    try:
+        import uvicorn
+        from .webapp import create_app
+    except ImportError as exc:
+        raise UserError(
+            "Studio dependencies are missing. Install them with: "
+            "uv pip install --python .venv/bin/python -e '.[web]'"
+        ) from exc
+
+    app = create_app(args.data_dir)
+    print(f"2become1 Studio → http://{args.host}:{args.port}")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
 
@@ -215,6 +231,14 @@ def main(argv=None) -> int:
     t.add_argument("--json", action="store_true")
     t.set_defaults(func=cmd_torrent)
 
+    w = sub.add_parser("web", help="launch the local 2become1 Studio")
+    w.add_argument("--host", default="127.0.0.1",
+                   help="bind address (default: local machine only)")
+    w.add_argument("--port", type=int, default=8765)
+    w.add_argument("--data-dir", default=None,
+                   help="media/project storage (default: ~/.local/share/2become1)")
+    w.set_defaults(func=cmd_web)
+
     m = sub.add_parser("mash", help="align a lead track to an anchor and mix")
     m.add_argument("anchor", help="track providing tempo + key")
     m.add_argument("lead", help="track aligned to the anchor (vocals/lead)")
@@ -250,12 +274,6 @@ def main(argv=None) -> int:
             print(json.dumps(_error_json(f"file not found: {exc}"), indent=2))
         else:
             log(f"error: file not found: {exc}")
-        return 1
-    except subprocess.CalledProcessError as exc:
-        if hasattr(args, 'json') and args.json:
-            print(json.dumps(_error_json(f"external command failed: {exc}"), indent=2))
-        else:
-            log(f"error: external command failed: {exc}")
         return 1
     except Exception as exc:
         if hasattr(args, 'json') and args.json:

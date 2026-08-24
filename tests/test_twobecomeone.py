@@ -155,7 +155,7 @@ class TestAssembler:
         dur = assembler._ffprobe_duration(str(out))
         assert 2.9 <= dur <= 3.1, f"expected ~3s, got {dur}s"
 
-    def test_build_mash_region_tempo_ratio_gt_1(self, tmp_path):
+    def test_build_mash_region_tempo_ratio_gt_1(self, tmp_path, monkeypatch):
         # When tempo_ratio > 1 (lead slower than anchor), the lead must be trimmed
         # to render_duration * tempo_ratio before stretching.
         # Anchor 140 BPM, lead 100 BPM -> ratio 1.4, request 3s output.
@@ -167,11 +167,20 @@ class TestAssembler:
             duration=3.0,
         )
         out = tmp_path / "mash_region_fast.wav"
+        trim_durations = []
+        real_render_aligned = assembler.render_aligned
+
+        def capture_render_aligned(*args, **kwargs):
+            trim_durations.append(kwargs.get("duration"))
+            return real_render_aligned(*args, **kwargs)
+
+        monkeypatch.setattr(assembler, "render_aligned", capture_render_aligned)
         assembler.build_mash(spec, 140.0 / 100.0,
                              assembler.semitones_to_match("A minor", "C major"),
                              str(out))
         dur = assembler._ffprobe_duration(str(out))
         assert 2.9 <= dur <= 3.1, f"expected ~3s, got {dur}s"
+        assert trim_durations == [pytest.approx(3.0 * 1.4)]
 
 
 class TestSeparator:
@@ -202,6 +211,38 @@ class TestSeparator:
         separator._demucs_device = None
         separator._demucs_separator_instance()
         assert separator.demucs_device() == "cuda"
+
+    def test_demucs_load_oom_falls_back_to_cpu(self, monkeypatch):
+        demucs_api = pytest.importorskip("demucs.api")
+
+        class CpuSeparator:
+            pass
+
+        cpu = CpuSeparator()
+        attempts = 0
+
+        def construct(**_kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("CUDA out of memory")
+            return cpu
+
+        monkeypatch.setattr(demucs_api, "Separator", construct)
+        separator._demucs_separator = None
+        separator._demucs_device = None
+        result = separator._demucs_separator_instance("cuda")
+        assert result is cpu
+        assert separator.demucs_device() == "cpu"
+
+    def test_explicit_demucs_does_not_silently_change_method(self, tmp_path, monkeypatch):
+        pytest.importorskip("demucs.api")
+        monkeypatch.setattr(
+            separator, "_demucs_separator_instance",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("model unavailable")),
+        )
+        with pytest.raises(UserError, match="Demucs failed to load"):
+            separator.separate(str(FIXTURES / "c_major_100.wav"), tmp_path, method="demucs")
 
 
 class TestCli:
