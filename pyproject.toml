@@ -8,6 +8,10 @@ dependencies = [
     "scipy>=1.14",
 ]
 
+[project.optional-dependencies]
+demucs = ["demucs>=4.0", "torch>=2.0"]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
 twobecomeone = "twobecomeone.cli:main"
 

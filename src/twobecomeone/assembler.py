@@ -15,18 +15,70 @@ good quality, rather than naive numpy resampling.
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-_NOTE = {"C": 0, "C#": 1, "D": 2, "D#": 3, "E": 4, "F": 5,
-         "F#": 6, "G": 7, "G#": 8, "A": 9, "A#": 10, "B": 11}
+# ---------------------------------------------------------------------------
+# Camelot wheel key mapping
+# ---------------------------------------------------------------------------
+
+# Standard Camelot wheel mapping. Major keys are labeled B, minor A.
+# For our purposes we collapse relative major/minor pairs onto the same
+# number (e.g. C major and A minor both → 8).
+_CAMELOT = {
+    # Major
+    "C major": 8, "G major": 9, "D major": 10, "A major": 11, "E major": 12,
+    "B major": 1, "F# major": 2, "Db major": 3, "Ab major": 4, "Eb major": 5,
+    "Bb major": 6, "F major": 7,
+    # Minor (relative to the major above)
+    "A minor": 8, "E minor": 9, "B minor": 10, "F# minor": 11, "C# minor": 12,
+    "G# minor": 1, "D# minor": 2, "Bb minor": 3, "F minor": 4, "C minor": 5,
+    "G minor": 6, "D minor": 7,
+}
+
+
+def _camelot_number(key: str) -> int:
+    """Return Camelot hour for a key, handling common enharmonic spellings."""
+    if key in _CAMELOT:
+        return _CAMELOT[key]
+    tonic, mode = key.split()
+    # Common enharmonic equivalents
+    enharmonics = {
+        "Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "A#": "Bb",
+        "B#": "C", "E#": "F", "Fb": "E", "Cb": "B",
+        "G#": "Ab", "C#": "Db", "D#": "Eb", "F#": "Gb",
+    }
+    if tonic in enharmonics:
+        alt = f"{enharmonics[tonic]} {mode}"
+        if alt in _CAMELOT:
+            return _CAMELOT[alt]
+    raise KeyError(f"unknown key: {key}")
 
 
 def semitones_to_match(key_anchor: str, key_lead: str) -> int:
-    """Semitones to shift `key_lead` so it lands on `key_anchor`."""
-    root_a = _NOTE[key_anchor.split()[0]]
-    root_b = _NOTE[key_lead.split()[0]]
-    return (root_a - root_b) % 12
+    """Return the smallest semitone shift to make `key_lead` harmonically
+    compatible with `key_anchor`.
+
+    Relative major/minor share a Camelot number → 0 semitones (they already
+    use the same pitch classes). Otherwise transpose the lead's pitch class
+    onto the anchor's, preferring the smallest shift (≤6 semitones).
+    """
+    _NOTE = {"C": 0, "C#": 1, "D": 2, "D#": 3, "E": 4, "F": 5,
+             "F#": 6, "G": 7, "G#": 8, "A": 9, "A#": 10, "B": 11}
+
+    # Same Camelot number (relative major/minor) → same notes, no shift.
+    if _camelot_number(key_anchor) == _camelot_number(key_lead):
+        return 0
+
+    a_tonic = key_anchor.split()[0]
+    l_tonic = key_lead.split()[0]
+    a_pc = _NOTE[a_tonic]
+    l_pc = _NOTE[l_tonic]
+    diff = (a_pc - l_pc) % 12
+    if diff > 6:
+        diff -= 12
+    return diff
 
 
 @dataclass
@@ -80,31 +132,33 @@ def render_aligned(path: str, out: Path, tempo_ratio: float,
 
 
 def build_mash(spec: MashSpec, tempo_ratio: float, semitone_shift: int,
-               out: str, lead_trim_to_anchor: bool = True) -> Path:
+               out: str) -> Path:
     """Align the lead to the anchor's tempo/key and mix them.
 
     tempo_ratio = anchor_bpm / lead_bpm  (lead is sped up/slowed to match).
     semitone_shift = semitones_to_match(anchor_key, lead_key).
     """
-    lead = render_aligned(spec.lead_path, Path(out).with_name("lead_aligned.wav"),
-                          tempo_ratio, semitone_shift)
-    anchor = spec.anchor_path
+    out_path = Path(out)
+    with tempfile.TemporaryDirectory() as tmp:
+        lead = render_aligned(spec.lead_path, Path(tmp) / "lead_aligned.wav",
+                              tempo_ratio, semitone_shift)
+        anchor = spec.anchor_path
 
-    # Both inputs may differ in length; use amix which aligns from t=0 and
-    # ends when the longest ends, with gain factors.
-    cmd = [
-        "ffmpeg", "-y", "-v", "error",
-        "-i", str(anchor),
-        "-i", str(lead),
-        "-filter_complex",
-        f"[0:a]volume={spec.anchor_gain}[a];"
-        f"[1:a]volume={spec.lead_gain}[l];"
-        "[a][l]amix=inputs=2:duration=longest:normalize=0[mix]",
-        "-map", "[mix]",
-        "-ar", "44100", "-ac", "2",
-        str(out),
-    ]
-    proc = subprocess.run(cmd, capture_output=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"mash failed: {proc.stderr.decode()[:500]}")
-    return Path(out)
+        # Both inputs may differ in length; use amix which aligns from t=0 and
+        # ends when the longest ends, with gain factors.
+        cmd = [
+            "ffmpeg", "-y", "-v", "error",
+            "-i", str(anchor),
+            "-i", str(lead),
+            "-filter_complex",
+            f"[0:a]volume={spec.anchor_gain}[a];"
+            f"[1:a]volume={spec.lead_gain}[l];"
+            "[a][l]amix=inputs=2:duration=longest:normalize=0[mix]",
+            "-map", "[mix]",
+            "-ar", "44100", "-ac", "2",
+            str(out),
+        ]
+        proc = subprocess.run(cmd, capture_output=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"mash failed: {proc.stderr.decode()[:500]}")
+    return out_path

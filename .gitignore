@@ -4,3 +4,5 @@ __pycache__/
 *.wav
 *.mp3
 lead_aligned.wav
+.pytest_cache/
+.directory
