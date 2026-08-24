@@ -1,0 +1,19 @@
+[project]
+name = "2become1"
+version = "0.1.0"
+description = "General-purpose mash-up stack: analyze, separate, align, and recombine any two tracks."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.14",
+]
+
+[project.scripts]
+twobecomeone = "twobecomeone.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/twobecomeone"]
