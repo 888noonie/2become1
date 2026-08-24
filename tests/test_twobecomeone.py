@@ -136,7 +136,7 @@ class TestAssembler:
                              assembler.semitones_to_match("C major", "A minor"),
                              str(out))
         stats = assembler.measure_clipping(str(out))
-        assert stats["max_volume_db"] < 0.0, f"output clipped: {stats}"
+        assert stats["true_peak_db"] < 0.0, f"output clipped (true peak): {stats}"
 
     def test_build_mash_with_region(self, tmp_path):
         spec = assembler.MashSpec(
@@ -151,6 +151,27 @@ class TestAssembler:
                              assembler.semitones_to_match("C major", "A minor"),
                              str(out))
         assert out.exists()
+        # Verify duration is ~3s
+        dur = assembler._ffprobe_duration(str(out))
+        assert 2.9 <= dur <= 3.1, f"expected ~3s, got {dur}s"
+
+    def test_build_mash_region_tempo_ratio_gt_1(self, tmp_path):
+        # When tempo_ratio > 1 (lead slower than anchor), the lead must be trimmed
+        # to render_duration * tempo_ratio before stretching.
+        # Anchor 140 BPM, lead 100 BPM -> ratio 1.4, request 3s output.
+        spec = assembler.MashSpec(
+            anchor_path=FIXTURES / "a_minor_140.wav",
+            lead_path=FIXTURES / "c_major_100.wav",
+            anchor_start=2.0,
+            lead_start=1.0,
+            duration=3.0,
+        )
+        out = tmp_path / "mash_region_fast.wav"
+        assembler.build_mash(spec, 140.0 / 100.0,
+                             assembler.semitones_to_match("A minor", "C major"),
+                             str(out))
+        dur = assembler._ffprobe_duration(str(out))
+        assert 2.9 <= dur <= 3.1, f"expected ~3s, got {dur}s"
 
 
 class TestSeparator:
@@ -189,8 +210,9 @@ class TestCli:
         captured = capsys.readouterr()
         assert captured.out
         data = json.loads(captured.out)
-        assert isinstance(data, list)
-        assert data[0]["bpm"] > 0
+        assert "results" in data
+        assert isinstance(data["results"], list)
+        assert data["results"][0]["bpm"] > 0
 
     def test_mash_dry_run_creates_no_files(self, tmp_path, capsys):
         out = tmp_path / "dry_mash.wav"
@@ -219,7 +241,7 @@ class TestCli:
     def test_missing_file_concise_error(self, capsys):
         assert cli.main(["analyze", "/does/not/exist.wav"]) == 1
         captured = capsys.readouterr()
-        assert "error:" in captured.err
+        assert "error" in captured.err.lower()
         assert "Traceback" not in captured.err
 
     def test_version_exits_cleanly(self):
@@ -237,3 +259,27 @@ class TestCli:
         data = json.loads(captured.out)
         assert "output_path" in data
         assert "semitone_shift" in data
+
+    def test_json_error_document(self, capsys):
+        assert cli.main(["analyze", "/does/not/exist.wav", "--json"]) == 1
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+    def test_mash_region_cli(self, tmp_path, capsys):
+        out = tmp_path / "cli_region.wav"
+        assert cli.main([
+            "mash", str(FIXTURES / "c_major_100.wav"),
+            str(FIXTURES / "a_minor_140.wav"),
+            "-o", str(out),
+            "--anchor-start", "1.0",
+            "--lead-start", "0.5",
+            "--duration", "2.0",
+            "--json",
+        ]) == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "output_path" in data
+        dur = assembler._ffprobe_duration(str(out))
+        assert 1.9 <= dur <= 2.1, f"expected ~2s, got {dur}s"

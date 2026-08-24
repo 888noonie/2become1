@@ -177,10 +177,14 @@ def build_mash(spec: MashSpec, tempo_ratio: float, semitone_shift: int,
     if render_duration <= 0:
         raise UserError("requested mash duration is zero or negative")
 
+    # The lead must be trimmed to render_duration * tempo_ratio before stretching,
+    # so that after time-stretching it fills exactly render_duration.
+    lead_trim_duration = render_duration * tempo_ratio if spec.duration is None else spec.duration
+
     with tempfile.TemporaryDirectory() as tmp:
         lead = render_aligned(spec.lead_path, Path(tmp) / "lead_aligned.wav",
                               tempo_ratio, semitone_shift,
-                              start=spec.lead_start, duration=spec.duration)
+                              start=spec.lead_start, duration=lead_trim_duration)
         anchor_trimmed = Path(tmp) / "anchor_trimmed.wav"
         cmd_a = [
             "ffmpeg", "-y", "-v", "error",
@@ -214,20 +218,24 @@ def build_mash(spec: MashSpec, tempo_ratio: float, semitone_shift: int,
 
 
 def measure_clipping(path: str) -> dict:
-    """Return true-peak and clipped-sample stats using ffmpeg volumedetect.
+    """Return loudness and true-peak stats using ffmpeg ebur128.
 
     Used by tests to verify the mix does not clip.
     """
     cmd = [
         "ffmpeg", "-v", "info", "-i", str(path),
-        "-af", "volumedetect", "-f", "null", "-",
+        "-af", "ebur128=peak=true", "-f", "null", "-",
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     lines = proc.stderr.splitlines()
     stats: dict[str, float | int] = {}
-    for line in lines:
-        if "max_volume:" in line:
-            stats["max_volume_db"] = float(line.split(":")[-1].strip().replace("dB", ""))
-        if "mean_volume:" in line:
-            stats["mean_volume_db"] = float(line.split(":")[-1].strip().replace("dB", ""))
+    for i, line in enumerate(lines):
+        if "True peak:" in line and i + 1 < len(lines):
+            # Next line has "Peak:       -6.1 dBFS"
+            next_line = lines[i + 1]
+            if "Peak:" in next_line:
+                val = next_line.split(":")[-1].strip().replace("dBFS", "")
+                stats["true_peak_db"] = float(val)
+        if "Loudness I:" in line:
+            stats["integrated_loudness_db"] = float(line.split(":")[-1].strip().replace("dB", ""))
     return stats

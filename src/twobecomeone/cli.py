@@ -12,28 +12,53 @@ from . import analyzer, assembler, separator, sources
 from .common import UserError, log
 
 
+def _error_json(msg: str) -> dict:
+    return {"error": msg}
+
+
 def cmd_analyze(args) -> int:
     results = []
+    errors = []
     for p in args.paths:
-        r = analyzer.analyze(p)
-        result = {
-            "path": str(p),
-            "bpm": r.bpm,
-            "key": r.key,
-            "duration": round(r.duration, 3),
-        }
-        results.append(result)
-        if not args.json:
-            print(f"--- {p}")
-            print(f"  BPM  : {r.bpm}")
-            print(f"  Key  : {r.key['tonic']} {r.key['mode']} (conf {r.key['confidence']})")
-            print(f"  Dur  : {r.duration:.1f}s")
+        try:
+            r = analyzer.analyze(p)
+            result = {
+                "path": str(p),
+                "bpm": r.bpm,
+                "key": r.key,
+                "duration": round(r.duration, 3),
+            }
+            results.append(result)
+            if not args.json:
+                print(f"--- {p}")
+                print(f"  BPM  : {r.bpm}")
+                print(f"  Key  : {r.key['tonic']} {r.key['mode']} (conf {r.key['confidence']})")
+                print(f"  Dur  : {r.duration:.1f}s")
+        except UserError as exc:
+            errors.append({"path": str(p), "error": str(exc)})
+            if not args.json:
+                log(f"error analyzing {p}: {exc}")
     if args.json:
-        print(json.dumps(results, indent=2))
-    return 0
+        if errors and not results:
+            print(json.dumps({"errors": errors}, indent=2))
+        else:
+            print(json.dumps({"results": results, "errors": errors or None}, indent=2))
+    return 0 if not errors else 1
 
 
 def cmd_separate(args) -> int:
+    # If method is explicit 'demucs', fail if Demucs is unavailable.
+    if args.method == "demucs":
+        try:
+            import demucs.api  # noqa: F401
+        except Exception:
+            msg = "Demucs is not installed. Run: uv pip install -e '.[demucs]'"
+            if args.json:
+                print(json.dumps(_error_json(msg), indent=2))
+            else:
+                log(f"error: {msg}")
+            return 1
+
     result = separator.separate(args.path, args.out_dir, method=args.method)
     if args.json:
         print(json.dumps({k: str(v) for k, v in result.items()}, indent=2))
@@ -47,7 +72,7 @@ def cmd_torrent(args) -> int:
     hits = sources.search_torrents(args.query, index=args.index, cap=args.cap)
     if not hits:
         if args.json:
-            print(json.dumps([]))
+            print(json.dumps({"error": f"no torrent results for '{args.query}' (index {args.index})"}))
         else:
             print(f"no torrent results for '{args.query}' (index {args.index})")
         return 1
@@ -79,12 +104,22 @@ def _describe_plan(anchor: analyzer.TrackAnalysis, lead: analyzer.TrackAnalysis,
         "stems": args.stems,
         "stem_method": args.stem_method,
         "dry_run": args.dry_run,
+        "anchor_start": args.anchor_start,
+        "lead_start": args.lead_start,
+        "duration": args.duration,
     }
 
 
 def cmd_mash(args) -> int:
-    anchor_a = analyzer.analyze(args.anchor)
-    lead = analyzer.analyze(args.lead)
+    try:
+        anchor_a = analyzer.analyze(args.anchor)
+        lead = analyzer.analyze(args.lead)
+    except UserError as exc:
+        if args.json:
+            print(json.dumps(_error_json(str(exc)), indent=2))
+        else:
+            log(f"error: {exc}")
+        return 1
 
     if not args.json:
         print(f"anchor '{args.anchor}': {anchor_a.bpm} BPM, "
@@ -106,20 +141,45 @@ def cmd_mash(args) -> int:
 
     lead_path = Path(args.lead)
     if args.stems:
+        # If stem_method is explicit 'demucs', fail if Demucs is unavailable.
+        if args.stem_method == "demucs":
+            try:
+                import demucs.api  # noqa: F401
+            except Exception:
+                msg = "Demucs is not installed. Run: uv pip install -e '.[demucs]'"
+                if args.json:
+                    print(json.dumps(_error_json(msg), indent=2))
+                else:
+                    log(f"error: {msg}")
+                return 1
+
         if not args.json:
             print(f"separating lead stems into {args.stem_dir} ...")
         stems = separator.separate(args.lead, args.stem_dir, method=args.stem_method)
         if "vocals" in stems:
             lead_path = stems["vocals"]
         else:
-            if not args.json:
+            if args.json:
+                plan["warning"] = "no vocals stem found; using full lead"
+            else:
                 print("no vocals stem found; using full lead")
 
     spec = assembler.MashSpec(
         anchor_path=Path(args.anchor), lead_path=lead_path,
         lead_gain=args.lead_gain, anchor_gain=args.anchor_gain,
+        anchor_start=args.anchor_start,
+        lead_start=args.lead_start,
+        duration=args.duration,
     )
-    out = assembler.build_mash(spec, plan["tempo_ratio"], plan["semitone_shift"], args.output)
+    try:
+        out = assembler.build_mash(spec, plan["tempo_ratio"], plan["semitone_shift"], args.output)
+    except UserError as exc:
+        if args.json:
+            print(json.dumps(_error_json(str(exc)), indent=2))
+        else:
+            log(f"error: {exc}")
+        return 1
+
     plan["output_path"] = str(out)
 
     if args.json:
@@ -167,24 +227,41 @@ def main(argv=None) -> int:
     m.add_argument("--stem-method", choices=["auto", "demucs", "ffmpeg"], default="auto")
     m.add_argument("--dry-run", action="store_true")
     m.add_argument("--json", action="store_true")
+    # Region options
+    m.add_argument("--anchor-start", type=float, default=0.0,
+                   help="Start offset in seconds for the anchor track")
+    m.add_argument("--lead-start", type=float, default=0.0,
+                   help="Start offset in seconds for the lead track")
+    m.add_argument("--duration", type=float, default=None,
+                   help="Render duration in seconds (default: until shorter region ends)")
     m.set_defaults(func=cmd_mash)
 
     args = ap.parse_args(argv)
     try:
         return args.func(args)
     except UserError as exc:
-        log(f"error: {exc}")
+        if hasattr(args, 'json') and args.json:
+            print(json.dumps(_error_json(str(exc)), indent=2))
+        else:
+            log(f"error: {exc}")
         return 1
     except FileNotFoundError as exc:
-        log(f"error: file not found: {exc}")
+        if hasattr(args, 'json') and args.json:
+            print(json.dumps(_error_json(f"file not found: {exc}"), indent=2))
+        else:
+            log(f"error: file not found: {exc}")
         return 1
     except subprocess.CalledProcessError as exc:
-        log(f"error: external command failed: {exc}")
+        if hasattr(args, 'json') and args.json:
+            print(json.dumps(_error_json(f"external command failed: {exc}"), indent=2))
+        else:
+            log(f"error: external command failed: {exc}")
         return 1
     except Exception as exc:
-        log(f"unexpected error: {exc}")
-        if args.json:
-            print(json.dumps({"error": str(exc)}))
+        if hasattr(args, 'json') and args.json:
+            print(json.dumps(_error_json(str(exc)), indent=2))
+        else:
+            log(f"unexpected error: {exc}")
         return 1
 
 
