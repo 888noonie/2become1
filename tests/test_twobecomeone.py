@@ -1,3 +1,4 @@
+import json
 import math
 import struct
 import wave
@@ -5,15 +6,20 @@ from pathlib import Path
 
 import pytest
 
-from twobecomeone import analyzer, assembler
+from twobecomeone import analyzer, assembler, cli, separator
+from twobecomeone.common import UserError
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
 
 
 def _synth_wav(path: Path, *, sr: int, bpm: float, root: float, mode: str,
-               duration: float = 8.0) -> None:
-    """Write a synthetic WAV for testing."""
+               duration: float = 8.0, side_tone: bool = False) -> None:
+    """Write a synthetic WAV for testing.
+
+    If `side_tone` is True, add a 440 Hz tone panned hard left/right so that
+    L-R cancellation isolates it (useful for testing the ffmpeg fallback).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     third = root * (2 ** (3 / 12)) if mode == "minor" else root * (2 ** (4 / 12))
     fifth = root * (2 ** (7 / 12))
@@ -23,14 +29,24 @@ def _synth_wav(path: Path, *, sr: int, bpm: float, root: float, mode: str,
     data = bytearray()
     for i in range(n):
         t = i / sr
+        # mono center content
         s = sum(0.5 * math.sin(2 * math.pi * f * t) for f in tones) / len(tones)
         bp = (t % beat) / beat
         if bp < 0.05:
             s += 0.3 * math.sin(2 * math.pi * root * 0.5 * t)
-        s = max(-1, min(1, s)) * 0.8
-        data += struct.pack("<h", int(s * 32767))
+
+        # stereo: left and right
+        if side_tone:
+            left = s + 0.5 * math.sin(2 * math.pi * 440 * t)
+            right = s
+        else:
+            left = right = s
+
+        left = max(-1, min(1, left)) * 0.8
+        right = max(-1, min(1, right)) * 0.8
+        data += struct.pack("<2h", int(left * 32767), int(right * 32767))
     w = wave.open(str(path), "wb")
-    w.setnchannels(1)
+    w.setnchannels(2)
     w.setsampwidth(2)
     w.setframerate(sr)
     w.writeframes(bytes(data))
@@ -41,6 +57,9 @@ def _synth_wav(path: Path, *, sr: int, bpm: float, root: float, mode: str,
 def fixtures():
     _synth_wav(FIXTURES / "c_major_100.wav", sr=22050, bpm=100.0, root=261.63, mode="major")
     _synth_wav(FIXTURES / "a_minor_140.wav", sr=22050, bpm=140.0, root=220.00, mode="minor")
+    _synth_wav(FIXTURES / "side_tone.wav", sr=22050, bpm=120.0, root=261.63, mode="major",
+               side_tone=True)
+    # silence and too-short fixtures are created inline below
     yield
 
 
@@ -67,19 +86,31 @@ class TestAnalyzer:
         assert key["tonic"] == "A"
         assert key["mode"] == "minor"
 
-    def test_analyze_returns_duration(self):
-        r = analyzer.analyze(FIXTURES / "c_major_100.wav")
-        assert r.duration == pytest.approx(8.0, abs=0.1)
-        assert isinstance(r.bpm, float)
-        assert "tonic" in r.key
+    def test_analyze_too_short(self, tmp_path):
+        p = tmp_path / "short.wav"
+        _synth_wav(p, sr=22050, bpm=100.0, root=261.63, mode="major", duration=0.05)
+        with pytest.raises(UserError, match="too short"):
+            analyzer.analyze(p)
+
+    def test_analyze_silence(self, tmp_path):
+        p = tmp_path / "silent.wav"
+        w = wave.open(str(p), "wb")
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(22050)
+        w.writeframes(bytes(22050 * 2))
+        w.close()
+        with pytest.raises(UserError, match="silent"):
+            analyzer.analyze(p)
 
 
 class TestAssembler:
     def test_semitones_relative_major_minor(self):
         assert assembler.semitones_to_match("C major", "A minor") == 0
 
-    def test_semitones_tritone(self):
-        assert assembler.semitones_to_match("C major", "F# major") in (6, -6)
+    def test_semitones_enharmonic_keys(self):
+        assert assembler.semitones_to_match("Db major", "C# major") == 0
+        assert assembler.semitones_to_match("F# major", "Gb major") == 0
 
     def test_atempo_chain_bounds(self):
         for ratio in [0.1, 0.33, 0.9, 1.0, 1.5, 3.0, 5.0]:
@@ -89,35 +120,120 @@ class TestAssembler:
                 product *= float(f.split("=")[1])
             assert product == pytest.approx(ratio, rel=1e-6)
 
-    def test_build_mash_creates_output(self, tmp_path):
+    def test_atempo_chain_rejects_invalid(self):
+        for bad in (0, -1, float("nan"), float("inf")):
+            with pytest.raises(UserError):
+                assembler._atempo_chain(bad)
+
+    def test_build_mash_no_clipping(self, tmp_path):
         spec = assembler.MashSpec(
             anchor_path=FIXTURES / "c_major_100.wav",
             lead_path=FIXTURES / "a_minor_140.wav",
+            lead_gain=1.2, anchor_gain=1.2,  # deliberately hot
         )
         out = tmp_path / "mash.wav"
-        result = assembler.build_mash(spec, 100.0 / 140.0,
-                                      assembler.semitones_to_match("C major", "A minor"),
-                                      str(out))
-        assert result.exists()
-        assert result.stat().st_size > 0
+        assembler.build_mash(spec, 100.0 / 140.0,
+                             assembler.semitones_to_match("C major", "A minor"),
+                             str(out))
+        stats = assembler.measure_clipping(str(out))
+        assert stats["max_volume_db"] < 0.0, f"output clipped: {stats}"
+
+    def test_build_mash_with_region(self, tmp_path):
+        spec = assembler.MashSpec(
+            anchor_path=FIXTURES / "c_major_100.wav",
+            lead_path=FIXTURES / "a_minor_140.wav",
+            anchor_start=2.0,
+            lead_start=1.0,
+            duration=3.0,
+        )
+        out = tmp_path / "mash_region.wav"
+        assembler.build_mash(spec, 100.0 / 140.0,
+                             assembler.semitones_to_match("C major", "A minor"),
+                             str(out))
+        assert out.exists()
 
 
-class TestCliSmoke:
-    def test_main_analyze(self):
-        from twobecomeone.cli import main
-        assert main(["analyze", str(FIXTURES / "c_major_100.wav")]) == 0
+class TestSeparator:
+    def test_ffmpeg_fallback_honest_labels(self, tmp_path):
+        result = separator.separate(str(FIXTURES / "side_tone.wav"), tmp_path, method="ffmpeg")
+        assert "center" in result
+        assert "sides" in result
+        assert "vocals" not in result
 
-    def test_main_mash_dryrun(self):
-        from twobecomeone.cli import main
-        assert main([
-            "mash",
-            str(FIXTURES / "c_major_100.wav"),
+    def test_demucs_loads_and_separates(self, tmp_path):
+        pytest.importorskip("demucs")
+        result = separator.separate(str(FIXTURES / "c_major_100.wav"), tmp_path, method="demucs")
+        for stem in ["vocals", "drums", "bass", "other"]:
+            assert stem in result
+            assert result[stem].exists()
+        # second call should reuse the cached model
+        result2 = separator.separate(str(FIXTURES / "a_minor_140.wav"), tmp_path, method="demucs")
+        assert "vocals" in result2
+
+    def test_demucs_reports_cuda_when_available(self):
+        pytest.importorskip("demucs")
+        pytest.importorskip("torch")
+        import torch
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available on this host")
+        # force a fresh load on cuda
+        separator._demucs_separator = None
+        separator._demucs_device = None
+        separator._demucs_separator_instance()
+        assert separator.demucs_device() == "cuda"
+
+
+class TestCli:
+    def test_json_stdout_is_valid(self, capsys):
+        assert cli.main(["analyze", str(FIXTURES / "c_major_100.wav"), "--json"]) == 0
+        captured = capsys.readouterr()
+        assert captured.out
+        data = json.loads(captured.out)
+        assert isinstance(data, list)
+        assert data[0]["bpm"] > 0
+
+    def test_mash_dry_run_creates_no_files(self, tmp_path, capsys):
+        out = tmp_path / "dry_mash.wav"
+        assert cli.main([
+            "mash", str(FIXTURES / "c_major_100.wav"),
             str(FIXTURES / "a_minor_140.wav"),
-            "--dry-run",
+            "-o", str(out), "--dry-run", "--json",
         ]) == 0
+        assert not out.exists()
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["dry_run"] is True
 
-    def test_main_version(self):
-        from twobecomeone.cli import main
+    def test_mash_dry_run_with_stems_creates_no_files(self, tmp_path, capsys):
+        out = tmp_path / "dry_stems.wav"
+        stem_dir = tmp_path / "dry_stems_dir"
+        assert cli.main([
+            "mash", str(FIXTURES / "c_major_100.wav"),
+            str(FIXTURES / "a_minor_140.wav"),
+            "-o", str(out), "--dry-run", "--stems",
+            "--stem-dir", str(stem_dir),
+        ]) == 0
+        assert not out.exists()
+        assert not stem_dir.exists()
+
+    def test_missing_file_concise_error(self, capsys):
+        assert cli.main(["analyze", "/does/not/exist.wav"]) == 1
+        captured = capsys.readouterr()
+        assert "error:" in captured.err
+        assert "Traceback" not in captured.err
+
+    def test_version_exits_cleanly(self):
         with pytest.raises(SystemExit) as exc:
-            main(["--version"])
+            cli.main(["--version"])
         assert exc.value.code == 0
+
+    def test_json_mash_stdout_single_object(self, capsys):
+        assert cli.main([
+            "mash", str(FIXTURES / "c_major_100.wav"),
+            str(FIXTURES / "a_minor_140.wav"),
+            "--json",
+        ]) == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "output_path" in data
+        assert "semitone_shift" in data

@@ -10,6 +10,7 @@ production-grade DJ software, but it is deterministic and transparent.
 
 from __future__ import annotations
 
+import math
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -17,14 +18,18 @@ from pathlib import Path
 
 import numpy as np
 
+from .common import UserError
+
 
 def _require_ffmpeg() -> None:
     if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg is required but not found on PATH. "
-                           "Install it with: sudo pacman -S ffmpeg")
+        raise UserError("ffmpeg is required but not found on PATH. "
+                        "Install it with: sudo pacman -S ffmpeg")
 
 
 HOP = 512  # analysis hop size (samples at 22050)
+MIN_DURATION_SEC = 1.0
+MIN_SIGNAL_DB = -60.0  # below this is considered silence
 
 
 # ---------------------------------------------------------------------------
@@ -40,8 +45,19 @@ def decode_mono(path: str | Path, sr: int = 22050) -> np.ndarray:
     ]
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg decode failed for {path}: {proc.stderr.decode()[:400]}")
-    return np.frombuffer(proc.stdout, dtype=np.float32).astype(np.float64)
+        raise UserError(f"ffmpeg decode failed for {path}: {proc.stderr.decode()[:400]}")
+    data = np.frombuffer(proc.stdout, dtype=np.float32).astype(np.float64)
+    if len(data) == 0:
+        raise UserError(f"no audio decoded from {path}")
+    return data
+
+
+def _rms_db(x: np.ndarray) -> float:
+    """Return RMS loudness in dBFS."""
+    rms = np.sqrt(np.mean(x ** 2))
+    if rms <= 0:
+        return float("-inf")
+    return 20.0 * math.log10(rms)
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +69,8 @@ def _frames(x: np.ndarray, sr: int, win_s: float = 0.046, hop_s: float = 0.0115)
     win = int(sr * win_s)
     hop = int(sr * hop_s)
     n = 1 + (len(x) - win) // hop
+    if n <= 0:
+        raise UserError(f"audio too short for analysis (need >{win} samples)")
     spec = np.zeros((n, win // 2 + 1))
     hann = np.hanning(win)
     for i in range(n):
@@ -92,18 +110,15 @@ def detect_bpm(x: np.ndarray, sr: int, lo: float = 60.0, hi: float = 200.0) -> f
     max_lag = int(env_sr * 60.0 / lo)
     max_lag = min(max_lag, len(ac) - 1)
     if max_lag <= min_lag:
-        return float("nan")
+        raise UserError("audio too short or too uniform to detect BPM")
 
     # Score plausible tempo interpretations by their autocorrelation strength.
-    # We include the raw peak and its halves/doubles within range; the strongest
-    # lag wins. This avoids the brittle 0.9 threshold used earlier.
     def _strength(bpm_candidate: float) -> float:
         if not (lo <= bpm_candidate <= hi):
             return -1.0
         lag = env_sr * 60.0 / bpm_candidate
         if lag >= len(ac):
             return -1.0
-        # small fractional-lag interpolation for sub-bin accuracy
         lag_i = int(lag)
         frac = lag - lag_i
         if lag_i + 1 < len(ac):
@@ -114,10 +129,8 @@ def detect_bpm(x: np.ndarray, sr: int, lo: float = 60.0, hi: float = 200.0) -> f
     base_bpm = 60.0 * env_sr / base_lag
 
     candidates = [base_bpm]
-    # Common musical doublings/halvings
     for factor in (0.25, 0.5, 2.0, 4.0):
         candidates.append(base_bpm * factor)
-    # Also consider integer near-tempo neighbors to escape quantization
     candidates.append(round(base_bpm))
 
     best_bpm, best_strength = base_bpm, _strength(base_bpm)
@@ -133,7 +146,6 @@ def detect_bpm(x: np.ndarray, sr: int, lo: float = 60.0, hi: float = 200.0) -> f
 # Key detection via chromagram + Krumhansl-Kessler profile correlation
 # ---------------------------------------------------------------------------
 
-# Krumhansl & Kessler tonal profiles (major / minor) — standard values.
 KK_MAJOR = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
                      2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
 KK_MINOR = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
@@ -145,9 +157,8 @@ _NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 def _chromagram(spec, sr: int, fmin: float = 32.7) -> np.ndarray:
     """Map an FFT spectrogram to a 12-bin pitch-class chroma (time x 12)."""
     n_bins = spec.shape[1]
-    win = 2 * (n_bins - 1)  # the actual FFT window length producing n_bins rfft bins
-    freqs = np.fft.rfftfreq(win, 1.0 / sr)  # freq axis matching n_bins
-    # Accumulate energy into 12 chroma bins via nearest-pitch-class assignment
+    win = 2 * (n_bins - 1)
+    freqs = np.fft.rfftfreq(win, 1.0 / sr)
     chroma = np.zeros((spec.shape[0], 12))
     valid = (freqs >= fmin) & (freqs < sr / 2 - 1)
     idx = np.nonzero(valid)[0]
@@ -161,13 +172,10 @@ def _chromagram(spec, sr: int, fmin: float = 32.7) -> np.ndarray:
 
 
 def _correlate_kk(chroma_mean: np.ndarray) -> list[tuple[int, bool, float]]:
-    """Score each of 24 keys by correlating mean chroma with the profile."""
     scores = []
     for pc_root in range(12):
         for is_major in (True, False):
             prof = KK_MAJOR if is_major else KK_MINOR
-            # rotate profile so that its tonic (index 0 == C) aligns with
-            # chroma bin `pc_root` (np.roll(prof, pc) puts prof[0] at index pc)
             rotated = np.roll(prof, pc_root)
             corr = np.corrcoef(chroma_mean, rotated)[0, 1]
             scores.append((pc_root, is_major, corr))
@@ -178,7 +186,10 @@ def detect_key(x: np.ndarray, sr: int) -> dict:
     spec, _ = _frames(x, sr)
     chroma = _chromagram(spec, sr)
     chroma_mean = chroma.mean(axis=0)
-    chroma_mean = chroma_mean / (chroma_mean.sum() + 1e-8)
+    denom = chroma_mean.sum() + 1e-8
+    if denom <= 1e-8:
+        raise UserError("audio is too quiet or lacks harmonic content to detect key")
+    chroma_mean = chroma_mean / denom
     ranked = _correlate_kk(chroma_mean)
     pc, is_major, corr = ranked[0]
     tonic = _NOTE_NAMES[pc]
@@ -195,6 +206,10 @@ class TrackAnalysis:
 
 def analyze(path: str | Path, sr: int = 22050) -> TrackAnalysis:
     x = decode_mono(path, sr)
+    if len(x) / sr < MIN_DURATION_SEC:
+        raise UserError(f"audio too short for analysis ({len(x)/sr:.2f}s < {MIN_DURATION_SEC}s minimum)")
+    if _rms_db(x) < MIN_SIGNAL_DB:
+        raise UserError("audio is silent or too quiet to analyze")
     bpm = detect_bpm(x, sr)
     key = detect_key(x, sr)
     return TrackAnalysis(bpm=bpm, key=key, duration=len(x) / sr)
