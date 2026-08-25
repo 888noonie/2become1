@@ -312,6 +312,7 @@ def yt_dlp_argv(url: str, work_dir: str, output_template: str) -> list[str]:
         "--progress-template", _PROGRESS_TEMPLATE,
         "--progress-delta", "0.5",
         "--write-info-json",
+        "--write-thumbnail",
         "-x",
         "--audio-format", "mp3",
         "--audio-quality", "0",

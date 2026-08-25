@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import shutil
 import sqlite3
 import time
@@ -265,6 +266,7 @@ class StudioService:
         source_kind: str = "upload",
         source_ref: str | None = None,
         metadata: dict | None = None,
+        artwork_source: str | Path | None = None,
     ) -> dict:
         if source_kind not in {"upload", "local", "youtube"}:
             raise UserError(f"unknown media source: {source_kind}")
@@ -316,13 +318,17 @@ class StudioService:
         # Sanitize metadata (whitelist + normalization) if provided.
         metadata_json = media.metadata_json(metadata) if metadata else None
 
-        # Artwork: extract embedded cover art (if any) and re-encode to WebP.
+        # Artwork: prefer an explicit source image (e.g. a YouTube thumbnail),
+        # else extract embedded cover art, then re-encode to a clean WebP.
         # Failure is diagnostic only — it must not destroy a valid audio import.
         artwork_rel: str | None = None
         try:
             artwork_rel = f"artwork/{track_id}.webp"
             artwork_path = self.data_dir / artwork_rel
-            if media.extract_embedded_artwork(destination, artwork_path):
+            if artwork_source is not None:
+                # Re-encode the untrusted source image to a normalized WebP.
+                media.reencode_artwork(artwork_source, artwork_path)
+            elif media.extract_embedded_artwork(destination, artwork_path):
                 # Re-encode the extracted frame to strip metadata/payloads.
                 media.reencode_artwork(artwork_path, artwork_path)
             else:
@@ -390,6 +396,7 @@ class StudioService:
         source_kind: str = "local",
         source_ref: str | None = None,
         metadata: dict | None = None,
+        artwork_source: str | Path | None = None,
     ) -> dict:
         """Copy a local audio file into the managed Studio library."""
         media_path = sources.from_local(path)
@@ -401,6 +408,7 @@ class StudioService:
                 source_kind=source_kind,
                 source_ref=reference,
                 metadata=metadata,
+                artwork_source=artwork_source,
             )
 
     def ingest_youtube(self, url: str) -> dict:
@@ -907,6 +915,9 @@ class StudioService:
             # Read the controlled .info.json sidecar and sanitize its metadata.
             metadata = self._read_info_json(work_dir, video_id)
 
+            # Resolve the exact video-ID thumbnail (image-extension allowlist).
+            thumbnail = self._resolve_thumbnail(work_dir, video_id)
+
             self._store.update(
                 job_id, stage="analyzing", progress=80,
                 message="Analyzing tempo, key and beat grid",
@@ -914,7 +925,7 @@ class StudioService:
             token.raise_if_cancelled()
             track = self.ingest_path(
                 downloaded, source_kind="youtube", source_ref=url,
-                metadata=metadata,
+                metadata=metadata, artwork_source=thumbnail,
             )
             # Clean staging only after successful managed ingestion.
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -971,6 +982,26 @@ class StudioService:
         except (ValueError, OSError):
             return None
         return media.sanitize_metadata(raw)
+
+    # Image extensions yt-dlp may write a thumbnail as (allowlist only).
+    _THUMBNAIL_SUFFIXES = (".webp", ".jpg", ".jpeg", ".png")
+
+    def _resolve_thumbnail(self, work_dir: Path, video_id: str) -> Path | None:
+        """Resolve the exact video-ID thumbnail file, if present.
+
+        Only the exact ``<video_id>.<image-ext>`` file is accepted, with an
+        image-extension allowlist. Symlinks and non-regular files are rejected.
+        The caller re-encodes it to a normalized WebP and cleans the untrusted
+        source after conversion.
+        """
+        for suffix in self._THUMBNAIL_SUFFIXES:
+            candidate = work_dir / f"{video_id}{suffix}"
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            if candidate.stat().st_size > media.MAX_ARTWORK_INPUT_BYTES:
+                continue
+            return candidate
+        return None
 
     def _resolve_staging_key(self, staging_key: str) -> Path:
         """Resolve an opaque staging key to a path beneath ``incoming/``.
@@ -1153,24 +1184,57 @@ class StudioService:
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
 
-        # Validate every advertised stem exists and decodes.
+        # Validate every advertised stem: reject symlinks, unexpected names,
+        # empty files, and paths outside the staging root; then run a genuine
+        # ffmpeg decode check so truncated/corrupt output is refused.
         for name, stem_path in stems.items():
-            if not Path(stem_path).is_file():
+            stem_path = Path(stem_path)
+            if name not in separator._STEM_NAMES and name not in {"center", "sides"}:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise UserError(f"unexpected stem name: {name}")
+            if stem_path.is_symlink() or not stem_path.is_file():
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 raise UserError(f"separation produced no file for stem: {name}")
+            if stem_path.stat().st_size == 0:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise UserError(f"separation produced an empty stem: {name}")
+            try:
+                stem_path.resolve(strict=True)
+            except (OSError, RuntimeError):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise UserError(f"stem path is unavailable: {name}")
+            if temp_dir.resolve() not in stem_path.resolve().parents:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise UserError(f"stem path escapes the staging root: {name}")
+            if not media.validate_audio_decodes(stem_path):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise UserError(f"stem failed decode validation: {name}")
 
-        # Atomically finalize under stems/<stem_set_id>/.
+        # Poll cancellation after separation and before finalization.
+        token.raise_if_cancelled()
+
+        # Build the complete layout in a staging directory on the stems
+        # filesystem, then atomically rename it into place. The destination is
+        # never pre-created, so a crash cannot leave a visible partial dir.
         stem_set_id = uuid.uuid4().hex
-        final_dir = self.stem_dir / stem_set_id
-        final_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = self.stem_dir / f".tmp_{stem_set_id}"
+        staging_dir.mkdir(parents=True, exist_ok=False)
         relative_paths: dict[str, str] = {}
         try:
             for name, stem_path in stems.items():
-                final_path = final_dir / f"{name}.wav"
+                final_path = staging_dir / f"{name}.wav"
                 Path(stem_path).replace(final_path)
                 relative_paths[name] = f"stems/{stem_set_id}/{name}.wav"
         except Exception:
-            shutil.rmtree(final_dir, ignore_errors=True)
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+
+        final_dir = self.stem_dir / stem_set_id
+        try:
+            os.replace(staging_dir, final_dir)
+        except Exception:
+            shutil.rmtree(staging_dir, ignore_errors=True)
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
         shutil.rmtree(temp_dir, ignore_errors=True)

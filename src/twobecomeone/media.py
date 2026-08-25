@@ -232,18 +232,22 @@ def extract_embedded_artwork(audio_path: str | Path, destination: str | Path) ->
 
     Returns True if artwork was extracted, False if the audio has none. Uses
     ffmpeg with ``-an`` and ``-frames:v 1`` so it pulls only the first image
-    frame and exits immediately without processing the audio stream.
+    frame and exits immediately without processing the audio stream. The output
+    format is declared explicitly (``-f webp -c:v libwebp``) so ffmpeg never has
+    to infer a muxer from the temporary file's extension.
     """
     audio_path = Path(audio_path)
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    tmp = destination.with_suffix(destination.suffix + ".tmp")
+    tmp = destination.with_name(destination.name + ".extract.tmp")
     cmd = [
         "ffmpeg", "-y", "-v", "error",
         "-i", str(audio_path),
         "-an",
         "-frames:v", "1",
         "-map_metadata", "-1",
+        "-c:v", "libwebp",
+        "-f", "webp",
         str(tmp),
     ]
     proc = subprocess.run(cmd, capture_output=True)
@@ -252,3 +256,17 @@ def extract_embedded_artwork(audio_path: str | Path, destination: str | Path) ->
         return False
     tmp.replace(destination)
     return True
+
+
+def validate_audio_decodes(path: str | Path) -> bool:
+    """Return True if ffmpeg can fully decode ``path`` to null.
+
+    A fast, genuine decode check that rejects truncated or corrupt audio. Uses
+    ``-f null -`` so nothing is written; exit code 0 means the file is valid.
+    """
+    path = Path(path)
+    if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+        return False
+    cmd = ["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"]
+    proc = subprocess.run(cmd, capture_output=True)
+    return proc.returncode == 0

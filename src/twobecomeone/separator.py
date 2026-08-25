@@ -81,7 +81,9 @@ def _release_cuda() -> None:
         pass
 
 
-def _demucs_separator_instance(device: str | None = None) -> object:
+def _demucs_separator_instance(
+    device: str | None = None, on_oom: object | None = None
+) -> object:
     global _demucs_separator, _demucs_device
     import demucs.api
     requested = device or _pick_demucs_device()
@@ -94,6 +96,8 @@ def _demucs_separator_instance(device: str | None = None) -> object:
     except RuntimeError as exc:
         if requested == "cuda" and _is_cuda_oom(exc):
             log("CUDA OOM loading Demucs; falling back to CPU")
+            if on_oom is not None:
+                on_oom()
             _release_cuda()
             _demucs_separator = demucs.api.Separator(device="cpu")
             _demucs_device = "cpu"
@@ -161,7 +165,7 @@ def separate(
 
     if method == "demucs":
         try:
-            sep = _demucs_separator_instance()
+            sep = _demucs_separator_instance(on_oom=on_oom)
         except Exception as exc:
             if requested_method == "auto":
                 log(f"Demucs failed to load ({exc}); falling back to ffmpeg center/side split")
@@ -176,7 +180,7 @@ def separate(
                 if on_oom is not None:
                     on_oom()
                 _release_cuda()
-                sep = _demucs_separator_instance("cpu")
+                sep = _demucs_separator_instance("cpu", on_oom=on_oom)
                 origin, separated = sep.separate_audio_file(path)
             else:
                 raise UserError(f"Demucs separation failed: {exc}") from exc
