@@ -82,9 +82,11 @@ class StudioService:
         self.incoming_dir = self.data_dir / "incoming"
         self.render_dir = self.data_dir / "renders"
         self.stem_dir = self.data_dir / "stems"
+        self.waveform_dir = self.data_dir / "waveforms"
         self.db_path = self.data_dir / "studio.sqlite3"
         for directory in (
-            self.data_dir, self.track_dir, self.incoming_dir, self.render_dir, self.stem_dir,
+            self.data_dir, self.track_dir, self.incoming_dir, self.render_dir,
+            self.stem_dir, self.waveform_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         self._init_db()
@@ -177,6 +179,7 @@ class StudioService:
         *,
         source_kind: str = "upload",
         source_ref: str | None = None,
+        metadata: dict | None = None,
     ) -> dict:
         if source_kind not in {"upload", "local", "youtube"}:
             raise UserError(f"unknown media source: {source_kind}")
@@ -184,6 +187,9 @@ class StudioService:
         if suffix not in ALLOWED_AUDIO_SUFFIXES:
             supported = ", ".join(sorted(ALLOWED_AUDIO_SUFFIXES))
             raise UserError(f"unsupported audio type '{suffix or 'none'}'; choose one of: {supported}")
+
+        # Sanitize the display name (never trust the uploader's filename).
+        display_name = media.sanitize_text(Path(original_name).name, 300) or "untitled"
 
         track_id = uuid.uuid4().hex
         destination = self.track_dir / f"{track_id}{suffix}"
@@ -209,43 +215,58 @@ class StudioService:
         # Content hash for deduplication.
         content_hash = media.sha256_file(destination)
 
-        # Deduplicate: if an identical track already exists, return it and
-        # discard the new copy.
-        existing = self._find_by_hash(content_hash)
-        if existing is not None:
-            destination.unlink(missing_ok=True)
-            return existing
-
-        # Generate waveform peaks.
+        # Generate waveform peaks and write them atomically to the managed
+        # waveform directory; store only the relative managed path.
+        waveform_rel: str | None = None
         try:
             waveform = media.generate_waveform(destination)
+            waveform_rel = f"waveforms/{track_id}.json"
+            waveform_path = self.data_dir / waveform_rel
+            tmp = waveform_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(waveform), encoding="utf-8")
+            tmp.replace(waveform_path)
         except UserError:
             waveform = None
 
+        # Sanitize metadata (whitelist + normalization) if provided.
+        metadata_json = media.metadata_json(metadata) if metadata else None
+
         now = time.time()
-        with self._connect() as conn:
-            conn.execute(
-                """INSERT INTO tracks
-                   (id, original_name, path, size_bytes, bpm, tonic, mode, confidence, duration,
-                    beat_interval, first_beat, suggested_downbeat, beat_confidence,
-                    source_kind, source_ref, content_sha256, metadata_json,
-                    waveform_path, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    track_id, Path(original_name).name, str(destination), size,
-                    float(result.bpm), result.key["tonic"], result.key["mode"],
-                    float(result.key["confidence"]), float(result.duration),
-                    grid.beat_interval if grid else None,
-                    grid.first_beat if grid else None,
-                    grid.suggested_downbeat if grid else None,
-                    grid.confidence if grid else None,
-                    source_kind, source_ref,
-                    content_hash,
-                    None,
-                    json.dumps(waveform) if waveform else None,
-                    now,
-                ),
-            )
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """INSERT INTO tracks
+                       (id, original_name, path, size_bytes, bpm, tonic, mode, confidence, duration,
+                        beat_interval, first_beat, suggested_downbeat, beat_confidence,
+                        source_kind, source_ref, content_sha256, metadata_json,
+                        waveform_path, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        track_id, display_name, str(destination), size,
+                        float(result.bpm), result.key["tonic"], result.key["mode"],
+                        float(result.key["confidence"]), float(result.duration),
+                        grid.beat_interval if grid else None,
+                        grid.first_beat if grid else None,
+                        grid.suggested_downbeat if grid else None,
+                        grid.confidence if grid else None,
+                        source_kind, source_ref,
+                        content_hash,
+                        metadata_json,
+                        waveform_rel,
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            # A concurrent worker inserted identical content first. Clean up our
+            # duplicate and return the winning track.
+            destination.unlink(missing_ok=True)
+            if waveform_rel:
+                (self.data_dir / waveform_rel).unlink(missing_ok=True)
+            winner = self._find_by_hash(content_hash)
+            if winner is None:
+                raise UserError("duplicate import detected but the original track is missing")
+            return winner
+
         return self.get_track(track_id)
 
     def _find_by_hash(self, content_hash: str) -> dict | None:
@@ -266,6 +287,7 @@ class StudioService:
         *,
         source_kind: str = "local",
         source_ref: str | None = None,
+        metadata: dict | None = None,
     ) -> dict:
         """Copy a local audio file into the managed Studio library."""
         media_path = sources.from_local(path)
@@ -276,6 +298,7 @@ class StudioService:
                 media_path.name,
                 source_kind=source_kind,
                 source_ref=reference,
+                metadata=metadata,
             )
 
     def ingest_youtube(self, url: str) -> dict:
@@ -520,10 +543,14 @@ class StudioService:
                     f"download failed: {result.stderr_tail[-400:]}"
                 )
 
-            # Locate the produced audio file (ID-based, beneath work_dir).
-            downloaded = self._find_downloaded_audio(work_dir)
+            # Resolve the downloaded artifact from an explicit, validated path.
+            video_id = sources.canonicalize_youtube_url(url).rsplit("=", 1)[-1]
+            downloaded = self._resolve_downloaded_audio(work_dir, video_id)
             if downloaded is None:
                 raise UserError("download completed but no audio file was produced")
+
+            # Read the controlled .info.json sidecar and sanitize its metadata.
+            metadata = self._read_info_json(work_dir, video_id)
 
             self._store.update(
                 job_id, stage="analyzing", progress=80,
@@ -532,6 +559,7 @@ class StudioService:
             token.raise_if_cancelled()
             track = self.ingest_path(
                 downloaded, source_kind="youtube", source_ref=url,
+                metadata=metadata,
             )
             # Clean staging only after successful managed ingestion.
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -541,18 +569,22 @@ class StudioService:
             }
 
         if source_kind == "upload":
-            # Uploads are staged by the HTTP layer; here we analyze an already
-            # staged file path.
-            staged = request.get("staged_path")
-            if not staged:
-                raise UserError("upload import requires a staged path")
-            staged_path = media.validate_managed_path(staged, self.incoming_dir)
+            # Uploads are staged by the HTTP layer under an opaque key; resolve
+            # and containment-check it server-side.
+            staging_key = request.get("staging_key")
+            if not staging_key:
+                raise UserError("upload import requires a staging key")
+            staged_path = self._resolve_staging_key(staging_key)
+            original_name = request.get("original_name") or staged_path.name
             self._store.update(
                 job_id, stage="analyzing", progress=50,
                 message="Analyzing tempo, key and beat grid",
             )
             token.raise_if_cancelled()
-            track = self.ingest_path(staged_path, source_kind="upload")
+            with staged_path.open("rb") as source:
+                track = self.ingest(
+                    source, original_name, source_kind="upload",
+                )
             staged_path.unlink(missing_ok=True)
             return {
                 "result": {"track_id": track["id"], "name": track["name"]},
@@ -561,22 +593,45 @@ class StudioService:
 
         raise UserError(f"unknown import source: {source_kind}")
 
-    def _find_downloaded_audio(self, work_dir: Path) -> Path | None:
-        """Return the produced audio file beneath ``work_dir``, or None."""
+    def _resolve_downloaded_audio(self, work_dir: Path, video_id: str) -> Path | None:
+        """Resolve the downloaded artifact by its explicit ID-based name.
+
+        yt-dlp writes ``<video_id>.<ext>`` (with ``--continue`` it may leave a
+        ``.part``). We look for the exact ID-based file, not "first matching
+        extension in the directory".
+        """
         for suffix in ALLOWED_AUDIO_SUFFIXES:
-            candidates = list(work_dir.glob(f"*{suffix}"))
-            for candidate in candidates:
-                if candidate.is_file():
-                    return candidate
+            candidate = work_dir / f"{video_id}{suffix}"
+            if candidate.is_file():
+                return candidate
         return None
+
+    def _read_info_json(self, work_dir: Path, video_id: str) -> dict | None:
+        """Read and sanitize the controlled ``.info.json`` sidecar, if present."""
+        info_path = work_dir / f"{video_id}.info.json"
+        if not info_path.is_file():
+            return None
+        try:
+            raw = json.loads(info_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return None
+        return media.sanitize_metadata(raw)
+
+    def _resolve_staging_key(self, staging_key: str) -> Path:
+        """Resolve an opaque staging key to a path beneath ``incoming/``.
+
+        The key is a bare filename (never a path); any traversal or escape is
+        rejected.
+        """
+        if Path(staging_key).name != staging_key or "/" in staging_key or "\\" in staging_key:
+            raise UserError("invalid staging key")
+        return media.validate_managed_path(self.incoming_dir / staging_key, self.incoming_dir)
 
     def submit_youtube_import(self, url: str) -> dict:
         """Queue an asynchronous YouTube import and return the job snapshot."""
         if self._closed:
             raise UserError("studio service is closed")
-        if not sources.is_youtube_url(url):
-            raise UserError("enter a valid youtube.com or youtu.be URL")
-        canonical = url.strip()
+        canonical = sources.canonicalize_youtube_url(url)
         request = {
             "source_kind": "youtube",
             "canonical_url": canonical,
@@ -587,25 +642,30 @@ class StudioService:
         )
         return self.get_job(job["id"])
 
-    def submit_upload_import(self, staged_path: str | Path) -> dict:
-        """Queue an asynchronous upload import for an already-staged file."""
+    def submit_upload_import(self, staging_key: str, original_name: str | None = None) -> dict:
+        """Queue an asynchronous upload import for an already-staged file.
+
+        ``staging_key`` is an opaque bare filename (never a path); the original
+        upload name is preserved (sanitized) for the track's display name.
+        """
         if self._closed:
             raise UserError("studio service is closed")
-        staged = media.validate_managed_path(staged_path, self.incoming_dir)
+        self._resolve_staging_key(staging_key)  # validate up front
         request = {
             "source_kind": "upload",
-            "staged_path": str(staged),
+            "staging_key": staging_key,
+            "original_name": original_name,
         }
         job = self._engine.submit(
             JobKind.IMPORT, request, self._import_run_fn(request), executor="acquisition",
         )
         return self.get_job(job["id"])
 
-    def stage_upload(self, source: BinaryIO, original_name: str) -> Path:
-        """Stage an uploaded file beneath ``incoming/`` for later import.
+    def stage_upload(self, source: BinaryIO, original_name: str) -> str:
+        """Stage an uploaded file beneath ``incoming/`` and return its opaque key.
 
         Enforces the 750 MB ceiling and a safe, ID-based filename (never the
-        uploader's name). Returns the staged path.
+        uploader's name). Returns the bare staging key (filename only).
         """
         suffix = Path(original_name).suffix.lower()
         if suffix not in ALLOWED_AUDIO_SUFFIXES:
@@ -626,7 +686,7 @@ class StudioService:
         except Exception:
             staged.unlink(missing_ok=True)
             raise
-        return staged
+        return staged.name
 
     def wait_for_job(self, job_id: str, timeout: float = 60.0) -> dict:
         deadline = time.monotonic() + timeout

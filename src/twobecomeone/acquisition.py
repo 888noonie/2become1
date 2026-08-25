@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -41,6 +42,9 @@ SUPERVISE_INTERVAL = 0.2
 # Grace period after SIGTERM before SIGKILL (seconds).
 KILL_GRACE_SEC = 2.0
 
+# ANSI escape sequences (color codes etc.) to strip before parsing.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
 
 @dataclass
 class SubprocessResult:
@@ -57,29 +61,43 @@ class SubprocessResult:
 def parse_progress_line(line: str) -> dict | None:
     """Parse a single progress line into a dict, or None if not a marker line.
 
-    Only lines containing the private marker are parsed. Every field is
-    optional; unknown/NA totals, speed, and ETA are accepted as None. Percent
-    is clamped to 0-100; negative or non-finite values are dropped to None.
-    Malformed output never raises.
+    Only lines containing the private marker are parsed. ANSI escape sequences
+    are stripped first. Every field is optional; unknown/NA totals, speed, and
+    ETA are accepted as None. Percent is clamped to 0-100; negative or
+    non-finite values are dropped to None. Malformed output never raises.
     """
     if MARKER not in line:
         return None
+
+    # Strip ANSI color/control sequences before extracting fields.
+    line = _ANSI_RE.sub("", line)
 
     # Strip the marker and split on whitespace into key=value tokens.
     body = line.split(MARKER, 1)[1]
     tokens = body.split()
 
     fields: dict[str, str] = {}
-    for token in tokens:
+    # Tolerate both "key=value" and "key= value" (padded) forms.
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
         if "=" not in token:
+            i += 1
             continue
         key, _, value = token.partition("=")
+        if value == "" and i + 1 < len(tokens) and "=" not in tokens[i + 1]:
+            # "key= value" — the value is the next whitespace-separated token.
+            value = tokens[i + 1]
+            i += 1
         fields[key] = value
+        i += 1
 
     def _int(key: str) -> int | None:
         raw = fields.get(key)
         if raw is None or raw in {"NA", "N/A", "unknown", ""}:
             return None
+        # Strip a trailing '%' and surrounding whitespace/padding.
+        raw = raw.strip().rstrip("%").strip()
         try:
             value = int(float(raw))
         except (ValueError, OverflowError):
@@ -92,6 +110,7 @@ def parse_progress_line(line: str) -> dict | None:
         raw = fields.get(key)
         if raw is None or raw in {"NA", "N/A", "unknown", ""}:
             return None
+        raw = raw.strip().rstrip("%").strip()
         try:
             value = float(raw)
         except (ValueError, OverflowError):
@@ -104,6 +123,7 @@ def parse_progress_line(line: str) -> dict | None:
     percent = None
     raw_percent = fields.get("percent")
     if raw_percent not in (None, "NA", "N/A", "unknown", ""):
+        raw_percent = raw_percent.strip().rstrip("%").strip()
         try:
             percent = float(raw_percent)
         except (ValueError, OverflowError):
@@ -126,14 +146,30 @@ def parse_progress_line(line: str) -> dict | None:
 # Subprocess runner
 # ---------------------------------------------------------------------------
 
-def _drain(stream, sink: Callable[[bytes], None]) -> None:
-    """Read a stream to EOF, feeding each chunk to ``sink``."""
+def _drain_stderr(stream, sink: Callable[[bytes], None]) -> None:
+    """Read a stream to EOF in chunks, feeding each chunk to ``sink``."""
     try:
         while True:
             chunk = stream.read(65536)
             if not chunk:
                 break
             sink(chunk)
+    except Exception:  # noqa: BLE001 - reader thread must never raise
+        pass
+
+
+def _drain_stdout_lines(
+    stream,
+    on_line: Callable[[str], None],
+) -> None:
+    """Read a text stream line-by-line, feeding each line to ``on_line``.
+
+    Uses ``readline()`` so lines are delivered as soon as a newline is emitted,
+    giving live progress rather than buffering until process exit.
+    """
+    try:
+        for raw in iter(stream.readline, b""):
+            on_line(raw.decode("utf-8", "replace"))
     except Exception:  # noqa: BLE001 - reader thread must never raise
         pass
 
@@ -148,11 +184,11 @@ def run_process(
 ) -> SubprocessResult:
     """Run ``argv`` as a subprocess, draining stdout/stderr concurrently.
 
-    Returns a :class:`SubprocessResult`. Cancellation (via ``token``) terminates
-    the process group, waits a short grace period, then kills. Reader threads
-    are joined and the process reaped in ``finally``.
+    stdout is read line-by-line and progress callbacks fire LIVE (while the
+    child is still running). stderr is drained concurrently into a bounded
+    tail. Cancellation terminates the process group, waits a grace period,
+    then kills. Reader threads are joined and the process reaped in ``finally``.
     """
-    # Start a new process group/session so we can signal the whole tree.
     proc = subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
@@ -164,7 +200,7 @@ def run_process(
     stderr_tail = bytearray()
     stderr_lock = threading.Lock()
     progress: list[dict] = []
-    stdout_lines: list[str] = []
+    progress_lock = threading.Lock()
 
     def _stderr_sink(chunk: bytes) -> None:
         with stderr_lock:
@@ -172,16 +208,20 @@ def run_process(
             if len(stderr_tail) > STDERR_TAIL_BYTES:
                 del stderr_tail[: len(stderr_tail) - STDERR_TAIL_BYTES]
 
-    def _stdout_sink(chunk: bytes) -> None:
-        # Accumulate and split into lines; feed complete lines to the parser.
-        text = chunk.decode("utf-8", "replace")
-        stdout_lines.append(text)
+    def _stdout_line(line: str) -> None:
+        parsed = parse_progress_line(line)
+        if parsed is None:
+            return
+        with progress_lock:
+            progress.append(parsed)
+        if on_progress is not None:
+            on_progress(parsed)
 
     stdout_thread = threading.Thread(
-        target=_drain, args=(proc.stdout, _stdout_sink), daemon=True
+        target=_drain_stdout_lines, args=(proc.stdout, _stdout_line), daemon=True
     )
     stderr_thread = threading.Thread(
-        target=_drain, args=(proc.stderr, _stderr_sink), daemon=True
+        target=_drain_stderr, args=(proc.stderr, _stderr_sink), daemon=True
     )
     stdout_thread.start()
     stderr_thread.start()
@@ -190,7 +230,6 @@ def run_process(
     deadline = time.monotonic() + timeout if timeout is not None else None
 
     try:
-        # Supervise: wake frequently to inspect cancellation and reap.
         while True:
             if token.cancelled:
                 cancelled = True
@@ -204,10 +243,8 @@ def run_process(
                 break
             time.sleep(SUPERVISE_INTERVAL)
     finally:
-        # Ensure the process is gone and pipes are closed.
         if proc.poll() is None:
             _terminate_group(proc)
-        # Close our ends of the pipes so reader threads hit EOF.
         try:
             proc.stdout.close()
         except Exception:  # noqa: BLE001
@@ -220,19 +257,14 @@ def run_process(
         stderr_thread.join(timeout=5.0)
         proc.wait()
 
-    # Parse accumulated stdout lines for progress markers.
-    if on_progress is not None:
-        for line in "".join(stdout_lines).splitlines():
-            parsed = parse_progress_line(line)
-            if parsed is not None:
-                progress.append(parsed)
-                on_progress(parsed)
+    with progress_lock:
+        progress_snapshot = list(progress)
 
     return SubprocessResult(
         returncode=proc.returncode,
         cancelled=cancelled,
         stderr_tail=stderr_tail.decode("utf-8", "replace"),
-        progress=progress,
+        progress=progress_snapshot,
     )
 
 

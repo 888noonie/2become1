@@ -57,7 +57,7 @@ class TestMedia:
             "duration": 123.4,
             "webpage_url": "https://youtube.com/watch?v=x",
             "extractor": "youtube",
-            "video_id": "abc123",
+            "video_id": "dQw4w9WgXcQ",
             "nested": {"a": 1},
         }
         clean = media.sanitize_metadata(raw)
@@ -66,7 +66,7 @@ class TestMedia:
         assert "cookies" not in clean
         assert "nested" not in clean
         assert clean["duration"] == 123.4
-        assert clean["video_id"] == "abc123"
+        assert clean["video_id"] == "dQw4w9WgXcQ"
 
     def test_sanitize_metadata_bad_duration(self):
         assert media.sanitize_metadata({"duration": "not-a-number"})["duration"] is None
@@ -118,11 +118,11 @@ class TestImportJobs:
             def fake_download(url, work_dir, **kwargs):
                 from twobecomeone.acquisition import SubprocessResult
                 # Write a fake audio file into work_dir.
-                p = synth_track(Path(work_dir) / "abc123.mp3", bpm=100, root=261.63)
+                p = synth_track(Path(work_dir) / "dQw4w9WgXcQ.mp3", bpm=100, root=261.63)
                 return SubprocessResult(returncode=0)
 
             monkeypatch.setattr("twobecomeone.acquisition.download_youtube", fake_download)
-            job = service.submit_youtube_import("https://youtu.be/abc123")
+            job = service.submit_youtube_import("https://youtu.be/dQw4w9WgXcQ")
             assert job["status"] in {"queued", "running"}
             assert job["kind"] == "import"
             completed = service.wait_for_job(job["id"], timeout=30)
@@ -166,7 +166,7 @@ class TestHTTPImports:
 
         def fake_download(url, work_dir, **kwargs):
             from twobecomeone.acquisition import SubprocessResult
-            synth_track(Path(work_dir) / "abc123.mp3", bpm=100, root=261.63)
+            synth_track(Path(work_dir) / "dQw4w9WgXcQ.mp3", bpm=100, root=261.63)
             return SubprocessResult(returncode=0)
 
         monkeypatch.setattr("twobecomeone.acquisition.download_youtube", fake_download)
@@ -175,7 +175,7 @@ class TestHTTPImports:
         try:
             async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
                 resp = await client.post(
-                    "/api/imports/youtube", json={"url": "https://youtu.be/abc123"}
+                    "/api/imports/youtube", json={"url": "https://youtu.be/dQw4w9WgXcQ"}
                 )
                 assert resp.status_code == 202, resp.text
                 job = resp.json()

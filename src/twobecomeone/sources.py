@@ -8,6 +8,7 @@ Three ways to get a track:
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import urllib.parse
@@ -55,6 +56,43 @@ def is_youtube_url(value: str) -> bool:
         parsed.scheme in {"http", "https"}
         and (hostname == "youtu.be" or hostname == "youtube.com" or hostname.endswith(".youtube.com"))
     )
+
+
+_YT_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def canonicalize_youtube_url(value: str) -> str:
+    """Return a stable canonical URL for a supported YouTube URL, or raise.
+
+    Extracts the 11-character video ID from the three common formats:
+      - https://www.youtube.com/watch?v=ID
+      - https://youtu.be/ID
+      - https://www.youtube.com/shorts/ID
+
+    Returns ``https://www.youtube.com/watch?v=ID``. Anything else is rejected.
+    """
+    value = value.strip()
+    if not is_youtube_url(value):
+        raise UserError("enter a valid youtube.com or youtu.be URL")
+    parsed = urllib.parse.urlparse(value)
+    hostname = (parsed.hostname or "").lower()
+    video_id: str | None = None
+
+    if hostname == "youtu.be":
+        video_id = parsed.path.lstrip("/").split("/")[0]
+    else:
+        query = urllib.parse.parse_qs(parsed.query)
+        if "v" in query and query["v"]:
+            video_id = query["v"][0]
+        else:
+            # /shorts/ID or /watch/ID style paths.
+            parts = [p for p in parsed.path.split("/") if p]
+            if parts and parts[0] in {"shorts", "watch", "embed", "live"} and len(parts) >= 2:
+                video_id = parts[1]
+
+    if not video_id or not _YT_VIDEO_ID_RE.match(video_id):
+        raise UserError("could not extract a video ID from that YouTube URL")
+    return f"https://www.youtube.com/watch?v={video_id}"
 
 
 def from_youtube(url: str, out_dir: Path, fmt: str = "bestaudio/best") -> Path:

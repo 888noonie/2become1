@@ -94,10 +94,11 @@ def create_app(data_dir: str | Path | None = None):
     def import_upload(file: UploadFile = File(...)):
         if not file.filename:
             raise UserError("file name is required")
-        # Stage the upload beneath incoming/ before queueing the import job.
-        staged = service.stage_upload(file.file, file.filename)
+        # Stage the upload beneath incoming/ and queue the import job with an
+        # opaque staging key (never an absolute path) + the original name.
+        staging_key = service.stage_upload(file.file, file.filename)
         try:
-            return service.submit_upload_import(staged)
+            return service.submit_upload_import(staging_key, original_name=file.filename)
         finally:
             file.file.close()
 

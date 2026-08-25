@@ -117,6 +117,14 @@ MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
             "CREATE INDEX idx_tracks_content_sha256 ON tracks(content_sha256)",
         ],
     ),
+    (
+        6,
+        "content hash unique index",
+        [
+            "DROP INDEX idx_tracks_content_sha256",
+            "CREATE UNIQUE INDEX idx_tracks_content_sha256 ON tracks(content_sha256)",
+        ],
+    ),
 ]
 
 
