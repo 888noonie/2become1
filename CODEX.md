@@ -9,26 +9,33 @@ Repository: `/home/richardn/2become1`
 Authoritative plan: `V0.3_IMPLEMENTATION_PLAN.md`
 
 This file is the durable context for a fresh Codex/Hermes conversation. Read it
-before changing the repository. The next implementation unit is a final Phase 5
-corrective pass only. Phase 6 owns preview/render/results but remains blocked;
-Phase 7 owns release work.
+before changing the repository. Phase 5 is accepted and closed. The next
+implementation unit is Phase 6: preview, render, history, and recovery. Phase 7
+owns release work.
 
 ## Verified checkpoint
 
 - Branch: `v0.3-workspace`, tracking `origin/v0.3-workspace`.
-- Audited implementation HEAD: `d243353` (`Resolve Phase 5 re-audit blockers`).
+- Accepted implementation HEAD: `d3cc6a6` (`Harden final Phase 5 edge cases`),
+  following `d243353` and checkpoint `b7c0db0`.
 - The working tree was clean and matched `origin/v0.3-workspace` before the
-  audit-checkpoint documentation commit.
-- Final corrective verification: 174 Python tests passed; all 65 frontend test
-  declarations across 12 Node test files passed; `git diff --check` clean; the
-  uncompressed frontend is 185,516 bytes.
+  final acceptance-checkpoint documentation commit.
+- Final acceptance verification: 176 Python tests passed in 36.85s; all 66
+  frontend test declarations across 12 Node test files passed; both
+  `git diff --check` and `git fsck` passed; the uncompressed frontend is
+  186,130 bytes.
+- Independent Chromium QA used a temporary synthetic data root, not Richard's
+  persistent library. Fully populated views passed at 1440×1100, 1280×800,
+  820×1180, and an exact emulated 390×844 viewport. At 390px,
+  `scrollWidth === clientWidth` and horizontal overflow was false. The live plan
+  displayed capped output × tempo ratio (for example, `0:05 × 2.034 = 0:10`).
 - Application version intentionally remains `0.2.0`; bump only in Phase 7.
 - Current local URL: <http://127.0.0.1:8871/#/studio>.
 - Persistent data root: `/home/richardn/.local/share/2become1`.
 - The server is loopback-only. Preferred audio device is CUDA; Demucs 4.1.0,
   PyTorch 2.13.0, ffmpeg, and yt-dlp are available on this machine.
 
-## Phase 5 status — final corrective pass complete
+## Phase 5 status — accepted; Phase 6 authorized
 
 The 2026-08-25 final corrective pass resolved all six re-audit blockers:
 
@@ -60,7 +67,17 @@ The 2026-08-25 final corrective pass resolved all six re-audit blockers:
 Regression coverage was added for every blocker (backend `test_phase3.py` and
 frontend `studio_phase5_audit.test.js`). Both full suites pass, the populated
 browser flow renders correctly at all four target sizes with no 390px overflow,
-and CI is green. Phase 6 authorization is now requested.
+and CI run `32901853798` is green at `b7c0db0`.
+
+The final Codex acceptance audit found and fixed three narrow uncovered edges in
+`d3cc6a6`: full-project PATCH responses now preserve newer dirty fields even
+when the older request wrote a different field; stem paths must be relative,
+under `stems/`, and filename-matched to their exact variant while path and
+metadata select the same newest stem set; and cached stem-tray controls repaint
+correctly when playback stops or changes owner without network refetches. The
+structured CUDA warning test now exercises the real SSE callback and exact text.
+
+No Phase 5 exit-gate blocker remains. Phase 6 is authorized to begin fresh.
 
 If the old server process is no longer alive, start it from the repository with:
 
@@ -82,7 +99,7 @@ Do not replace, purge, or recreate Richard's persistent data directory.
 | 3.9 — corrections | `919df7c` | Secure artwork, YouTube thumbnails, atomic stems, OOM warning propagation |
 | 4 — UI foundation | `564c7da`, `64b33f7` | Backend facts plus framework-free SPA shell, Library, Activity, Engine, source flow |
 | 4 hardening | `51d6aa2`, `c0b8b56`, `b87cec3`, `20ab875` | CI, YouTube `Path` fix/hardening, and first-paint fixes |
-| 5 — Studio & Plan | `823113e`, `4779fd4`, `cd21d23`, `417abdc`, `c3316f8`, `666407d` | Implemented with corrective pass; adversarial re-audit still blocked on the findings above |
+| 5 — Studio & Plan | `823113e`, `4779fd4`, `cd21d23`, `417abdc`, `c3316f8`, `d243353`, `b7c0db0`, `d3cc6a6` | Accepted after corrective passes and final independent adversarial audit |
 
 ## Current product state
 
@@ -94,11 +111,10 @@ in metadata. Do not silently rewrite an explicitly user-renamed track; title
 presentation can be improved separately while retaining Rename as the source of
 truth.
 
-The Studio route is a substantial Phase 5 implementation with persisted project
+The Studio route is the accepted Phase 5 implementation with persisted project
 lifecycle, dual decks, server-authored waveforms, beat-snap cue controls,
-analysis correction, stem separation/playback, and grouped arrangement controls.
-Do not describe its render plan or autosave as exact until the blockers above
-are corrected and re-audited.
+analysis correction, truthful stem separation/playback, grouped arrangement
+controls, serialized autosave, and a renderer-shared exact arrangement plan.
 
 Two historical failed import jobs containing `name 'Path' is not defined` may
 remain visible in Activity. They are honest immutable history, not evidence that
