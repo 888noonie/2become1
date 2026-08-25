@@ -26,8 +26,10 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
+from .common import MAX_MEDIA_BYTES
 from .jobs import CancellationToken
 
 # Private marker prefix for machine-readable progress lines.
@@ -41,6 +43,9 @@ SUPERVISE_INTERVAL = 0.2
 
 # Grace period after SIGTERM before SIGKILL (seconds).
 KILL_GRACE_SEC = 2.0
+
+# Keep network acquisition within the same ceiling enforced by managed ingest.
+MAX_DOWNLOAD_BYTES = MAX_MEDIA_BYTES
 
 # ANSI escape sequences (color codes etc.) to strip before parsing.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -215,7 +220,12 @@ def run_process(
         with progress_lock:
             progress.append(parsed)
         if on_progress is not None:
-            on_progress(parsed)
+            # Progress is observational: a transient callback failure must not
+            # stop stdout draining and deadlock a noisy downloader.
+            try:
+                on_progress(parsed)
+            except Exception:  # noqa: BLE001
+                pass
 
     stdout_thread = threading.Thread(
         target=_drain_stdout_lines, args=(proc.stdout, _stdout_line), daemon=True
@@ -245,16 +255,20 @@ def run_process(
     finally:
         if proc.poll() is None:
             _terminate_group(proc)
-        try:
-            proc.stdout.close()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            proc.stderr.close()
-        except Exception:  # noqa: BLE001
-            pass
+        # Let readers drain buffered output to EOF before closing their pipes.
+        # If a descendant improperly keeps a descriptor open, bounded joins
+        # prevent shutdown from hanging and closing unblocks the readers.
         stdout_thread.join(timeout=5.0)
         stderr_thread.join(timeout=5.0)
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if stdout_thread.is_alive():
+            stdout_thread.join(timeout=1.0)
+        if stderr_thread.is_alive():
+            stderr_thread.join(timeout=1.0)
         proc.wait()
 
     with progress_lock:
@@ -302,6 +316,10 @@ _PROGRESS_TEMPLATE = (
 
 def yt_dlp_argv(url: str, work_dir: str, output_template: str) -> list[str]:
     """Build the controlled yt-dlp argument list (no shell, no title paths)."""
+    root = Path(work_dir).resolve()
+    template = Path(output_template)
+    if template.name != "%(id)s.%(ext)s" or template.parent.resolve() != root:
+        raise ValueError("yt-dlp output template must be the controlled ID template")
     return [
         "yt-dlp",
         "--ignore-config",
@@ -311,6 +329,12 @@ def yt_dlp_argv(url: str, work_dir: str, output_template: str) -> list[str]:
         "--progress",
         "--progress-template", _PROGRESS_TEMPLATE,
         "--progress-delta", "0.5",
+        "--socket-timeout", "30",
+        "--retries", "10",
+        "--fragment-retries", "10",
+        "--file-access-retries", "3",
+        "--extractor-retries", "3",
+        "--max-filesize", str(MAX_DOWNLOAD_BYTES),
         "--write-info-json",
         "--write-thumbnail",
         "-x",
@@ -337,7 +361,12 @@ def download_youtube(
     later resume with the same ``work_dir``.
     """
     work_dir = Path(work_dir)
+    if work_dir.is_symlink():
+        raise ValueError("YouTube work directory must not be a symlink")
     work_dir.mkdir(parents=True, exist_ok=True)
+    if not work_dir.is_dir():
+        raise ValueError("YouTube work directory is unavailable")
+    work_dir = work_dir.resolve()
     output_template = str(work_dir / "%(id)s.%(ext)s")
     argv = yt_dlp_argv(url, str(work_dir), output_template)
     return run_process(

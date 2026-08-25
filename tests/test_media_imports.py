@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from twobecomeone import media, sources
-from twobecomeone.common import UserError
+from twobecomeone.common import PayloadTooLargeError, UserError
 from twobecomeone.studio import StudioService
 
 
@@ -136,6 +136,26 @@ class TestImportJobs:
         try:
             with pytest.raises(UserError, match="valid"):
                 service.submit_youtube_import("not-a-url")
+        finally:
+            service.close()
+
+    def test_downloaded_audio_rejects_symlink_and_oversize(self, tmp_path):
+        service = StudioService(tmp_path / "data")
+        try:
+            work = service.incoming_dir / "work"
+            work.mkdir()
+            outside = tmp_path / "outside.mp3"
+            outside.write_bytes(b"audio")
+            (work / "dQw4w9WgXcQ.mp3").symlink_to(outside)
+            assert service._resolve_downloaded_audio(work, "dQw4w9WgXcQ") is None
+
+            (work / "dQw4w9WgXcQ.mp3").unlink()
+            oversized = work / "dQw4w9WgXcQ.mp3"
+            with oversized.open("wb") as output:
+                output.truncate(750 * 1024 * 1024 + 1)
+            with pytest.raises(PayloadTooLargeError, match="750 MB"):
+                service._resolve_downloaded_audio(work, "dQw4w9WgXcQ")
+            assert not oversized.exists()
         finally:
             service.close()
 

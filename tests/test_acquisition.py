@@ -88,6 +88,74 @@ class TestDeadlock:
         # Invalid UTF-8 bytes are replaced, never raise.
         assert acquisition.parse_progress_line(b"2BECOME1 percent=50 \xff\xfe".decode("utf-8", "replace")) is not None
 
+    def test_progress_callback_failure_does_not_stop_pipe_drain(self, tmp_path):
+        """A UI/DB progress callback failure cannot deadlock the downloader."""
+        out = tmp_path / "callback-failure.bin"
+
+        def fail_progress(_detail):
+            raise RuntimeError("observer failed")
+
+        result = acquisition.run_process(
+            [sys.executable, str(FAKE_DOWNLOADER),
+             "--stderr-mb", "8", "--chunks", "10", "--out", str(out)],
+            token=CancellationToken(),
+            on_progress=fail_progress,
+            timeout=60.0,
+        )
+        assert result.returncode == 0
+        assert out.stat().st_size == 1000
+
+
+class TestYouTubeDownload:
+    def test_real_entrypoint_builds_controlled_resumable_command(self, tmp_path, monkeypatch):
+        """Exercise download_youtube itself so missing runtime imports are caught."""
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return acquisition.SubprocessResult(returncode=0)
+
+        monkeypatch.setattr(acquisition, "run_process", fake_run)
+        work_dir = tmp_path / "incoming" / "stable-key"
+        token = CancellationToken()
+
+        result = acquisition.download_youtube(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            work_dir,
+            token=token,
+        )
+
+        assert result.returncode == 0
+        assert work_dir.is_dir()
+        assert captured["kwargs"]["cwd"] == str(work_dir.resolve())
+        argv = captured["argv"]
+        output = argv[argv.index("-o") + 1]
+        assert output == str(work_dir.resolve() / "%(id)s.%(ext)s")
+        assert "--continue" in argv
+        assert "--no-playlist" in argv
+        assert argv[argv.index("--max-filesize") + 1] == str(acquisition.MAX_DOWNLOAD_BYTES)
+
+    def test_output_template_cannot_escape_work_directory(self, tmp_path):
+        with pytest.raises(ValueError, match="controlled ID template"):
+            acquisition.yt_dlp_argv(
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                str(tmp_path / "work"),
+                str(tmp_path / "outside.mp3"),
+            )
+
+    def test_work_directory_symlink_is_rejected(self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "work"
+        link.symlink_to(target, target_is_directory=True)
+        with pytest.raises(ValueError, match="must not be a symlink"):
+            acquisition.download_youtube(
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                link,
+                token=CancellationToken(),
+            )
+
 
 class TestCancellation:
     def test_cancellation_terminates_child(self, tmp_path):

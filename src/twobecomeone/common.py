@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import sys
 
+# One ceiling for local uploads and network-acquired media. Keeping it here
+# prevents the downloader and managed-ingest layers from drifting apart.
+MAX_MEDIA_BYTES = 750 * 1024 * 1024
+
 
 class UserError(Exception):
     """An error that should be reported to the user without a traceback.

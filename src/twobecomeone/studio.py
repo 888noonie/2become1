@@ -24,7 +24,14 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from . import __version__, analyzer, assembler, beatgrid, media, migrations, projects, separator, sources
-from .common import CapabilityError, ConflictError, NotFoundError, UserError
+from .common import (
+    MAX_MEDIA_BYTES,
+    CapabilityError,
+    ConflictError,
+    NotFoundError,
+    PayloadTooLargeError,
+    UserError,
+)
 from .contracts import TERMINAL_JOB_STATES, JobKind
 from .jobs import CancellationToken, JobEngine, JobStore
 
@@ -32,7 +39,7 @@ from .jobs import CancellationToken, JobEngine, JobStore
 ALLOWED_AUDIO_SUFFIXES = {
     ".aac", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav",
 }
-MAX_UPLOAD_BYTES = 750 * 1024 * 1024
+MAX_UPLOAD_BYTES = MAX_MEDIA_BYTES
 
 # Valid tonic names (matches analyzer._NOTE_NAMES).
 _NOTE_NAMES = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
@@ -286,7 +293,7 @@ class StudioService:
                 while chunk := source.read(1024 * 1024):
                     size += len(chunk)
                     if size > MAX_UPLOAD_BYTES:
-                        raise UserError("audio file exceeds the 750 MB local upload limit")
+                        raise PayloadTooLargeError("audio file exceeds the 750 MB local upload limit")
                     output.write(chunk)
             if size == 0:
                 raise UserError("uploaded file is empty")
@@ -1014,8 +1021,9 @@ class StudioService:
             if result.cancelled:
                 raise JobCancelled()
             if result.returncode != 0:
+                detail = media.sanitize_text(result.stderr_tail[-400:], 400)
                 raise UserError(
-                    f"download failed: {result.stderr_tail[-400:]}"
+                    f"download failed: {detail or 'yt-dlp exited unsuccessfully'}"
                 )
 
             # Resolve the downloaded artifact from an explicit, validated path.
@@ -1080,14 +1088,21 @@ class StudioService:
         """
         for suffix in ALLOWED_AUDIO_SUFFIXES:
             candidate = work_dir / f"{video_id}{suffix}"
-            if candidate.is_file():
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            if candidate.stat().st_size > MAX_UPLOAD_BYTES:
+                candidate.unlink(missing_ok=True)
+                raise PayloadTooLargeError("downloaded audio exceeds the 750 MB library limit")
+            if candidate.stat().st_size > 0:
                 return candidate
         return None
 
     def _read_info_json(self, work_dir: Path, video_id: str) -> dict | None:
         """Read and sanitize the controlled ``.info.json`` sidecar, if present."""
         info_path = work_dir / f"{video_id}.info.json"
-        if not info_path.is_file():
+        if info_path.is_symlink() or not info_path.is_file():
+            return None
+        if info_path.stat().st_size > 2 * 1024 * 1024:
             return None
         try:
             raw = json.loads(info_path.read_text(encoding="utf-8"))
@@ -1177,7 +1192,7 @@ class StudioService:
                 while chunk := source.read(1024 * 1024):
                     size += len(chunk)
                     if size > MAX_UPLOAD_BYTES:
-                        raise UserError("audio file exceeds the 750 MB local upload limit")
+                        raise PayloadTooLargeError("audio file exceeds the 750 MB local upload limit")
                     output.write(chunk)
             if size == 0:
                 raise UserError("uploaded file is empty")
