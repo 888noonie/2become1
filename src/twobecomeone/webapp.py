@@ -229,12 +229,12 @@ def create_app(data_dir: str | Path | None = None):
         return service.list_stems(track_id)
 
     @app.get("/api/stems/{stem_set_id}/audio")
-    def stem_audio(stem_set_id: str, name: str = Query(...)):
+    def stem_audio(stem_set_id: str, name: str = Query(...), download: bool = Query(default=False)):
         path = service.stem_audio_path(stem_set_id, name)
         media_type = mimetypes.guess_type(path.name)[0] or "audio/wav"
         return FileResponse(
             path, media_type=media_type, filename=path.name,
-            content_disposition_type="inline",
+            content_disposition_type="attachment" if download else "inline",
         )
 
     # ------------------------------------------------------------------
@@ -265,6 +265,20 @@ def create_app(data_dir: str | Path | None = None):
     def delete_project(project_id: str):
         service.delete_project(project_id)
         return None
+
+    # ------------------------------------------------------------------
+    # Render plan (read-only; shares the renderer's planning logic)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/renders/plan")
+    def render_plan(body: RenderBody):
+        """Return the exact plan a real render would execute.
+
+        Server-authored and read-only: never queues a job, decodes media, runs
+        Demucs, or writes output. The UI displays this verbatim instead of
+        reimplementing tempo/key math.
+        """
+        return service.plan_render(RenderOptions(**body.model_dump()))
 
     # ------------------------------------------------------------------
     # Jobs

@@ -689,11 +689,34 @@ class StudioService:
         if "lead_track_id" in fields:
             self._validate_project_track(fields["lead_track_id"], "lead_track_id")
 
-        # Validate variants.
+        # Validate variants against the track assigned to each role, checking
+        # the *prospective* project as one atomic whole so a multi-field PATCH
+        # can assign a track and its variant together or not at all.
+        current = self._projects.get(project_id)  # 404s for unknown projects
+        prospective_anchor = fields.get("anchor_track_id", current["anchor_track_id"])
+        prospective_lead = fields.get("lead_track_id", current["lead_track_id"])
+        anchor_variant = projects.validate_variant(
+            fields.get("anchor_variant", current["anchor_variant"])
+        )
+        lead_variant = projects.validate_variant(
+            fields.get("lead_variant", current["lead_variant"])
+        )
+        for role, tid, variant in (
+            ("anchor", prospective_anchor, anchor_variant),
+            ("lead", prospective_lead, lead_variant),
+        ):
+            if variant is None or variant == "full":
+                continue
+            if tid is None:
+                raise UserError(f"{role}_variant '{variant}' requires an assigned {role} track")
+            if not self._variant_available(self._track_content_hash(tid), variant):
+                raise UserError(
+                    f"stem variant '{variant}' is not available for the assigned {role} track"
+                )
         if "anchor_variant" in fields:
-            fields["anchor_variant"] = projects.validate_variant(fields["anchor_variant"])
+            fields["anchor_variant"] = anchor_variant
         if "lead_variant" in fields:
-            fields["lead_variant"] = projects.validate_variant(fields["lead_variant"])
+            fields["lead_variant"] = lead_variant
 
         # Validate settings.
         if "settings" in fields:
@@ -841,6 +864,145 @@ class StudioService:
     # ------------------------------------------------------------------
     # Render orchestration
     # ------------------------------------------------------------------
+
+    def plan_render(self, options: RenderOptions) -> dict:
+        """Compute the exact arrangement plan a real render would execute.
+
+        This is the single source of truth shared by ``POST /api/renders/plan``
+        and ``_run_render``; the Frontend must not reimplement key or tempo
+        math. It never queues a job, decodes media, runs Demucs, or writes
+        output. Variants are resolved against completed, path-valid stem sets
+        only; an unavailable variant is an error, never a silent fallback.
+        """
+        options.validate()
+        anchor = self.get_track(options.anchor_id)
+        lead = self.get_track(options.lead_id)
+        # Fail fast when the underlying media is unavailable.
+        anchor_path = self.track_path(options.anchor_id)
+        lead_path = self.track_path(options.lead_id)
+
+        anchor_variant = options.anchor_variant or "full"
+        lead_variant = options.resolved_lead_variant()
+
+        anchor_info = (
+            self._stem_set_audio_info(
+                self._track_content_hash(options.anchor_id), anchor_variant,
+            )
+            if anchor_variant != "full"
+            else None
+        )
+        lead_info = (
+            self._stem_set_audio_info(self._track_content_hash(options.lead_id), lead_variant)
+            if lead_variant != "full"
+            else None
+        )
+        if anchor_variant != "full" and anchor_info is None:
+            raise UserError(f"stem variant '{anchor_variant}' is not available for this track")
+        if lead_variant != "full" and lead_info is None:
+            raise UserError(f"stem variant '{lead_variant}' is not available for this track")
+
+        tempo_ratio = float(anchor["bpm"]) / float(lead["bpm"])
+        anchor_key = f"{anchor['key']['tonic']} {anchor['key']['mode']}"
+        lead_key = f"{lead['key']['tonic']} {lead['key']['mode']}"
+        semitone_shift = (
+            0 if options.pitch_mode == "preserve"
+            else assembler.semitones_to_match(anchor_key, lead_key)
+        )
+
+        # Mirror build_mash's duration derivation from stored durations.
+        anchor_available = float(anchor["duration"]) - options.anchor_start
+        lead_available = (float(lead["duration"]) - options.lead_start) / tempo_ratio
+        available = max(0.0, min(anchor_available, lead_available))
+        requested = options.duration
+        output_duration = requested if requested is not None else available
+        if output_duration <= 0:
+            raise UserError("requested mash duration is zero or negative")
+
+        bpm_change_percent = (tempo_ratio - 1.0) * 100.0
+
+        warnings: list[str] = []
+
+        def _almost_int(value: float, tolerance: float = 0.05) -> bool:
+            return abs(value - round(value)) <= tolerance
+
+        ratio_label: str
+        if _almost_int(tempo_ratio) and round(tempo_ratio) >= 2:
+            n = int(round(tempo_ratio))
+            ratio_label = f"{n}:1"
+            warnings.append(
+                f"The lead is at {ratio_label} tempo ratio to the foundation "
+                "and will be heavily time-stretched; expect audible artifacts."
+            )
+        elif _almost_int(1.0 / tempo_ratio) and round(1.0 / tempo_ratio) >= 2:
+            n = int(round(1.0 / tempo_ratio))
+            ratio_label = f"1:{n}"
+            warnings.append(
+                f"The lead is at a {ratio_label} tempo ratio to the foundation "
+                "and will be heavily time-stretched; expect audible artifacts."
+            )
+        elif not (0.5 <= tempo_ratio <= 2.0):
+            warnings.append(
+                "The tempo ratio is outside ffmpeg's comfortable 0.5–2.0 range; "
+                "a chained stretch will be used."
+            )
+
+        if requested is not None and requested > available + 1e-6:
+            warnings.append(
+                "Requested duration exceeds the available overlap; the output "
+                "will end with the shorter source region."
+            )
+        if abs(semitone_shift) >= 4:
+            warnings.append(
+                f"A {semitone_shift:+d}-semitone shift is large; expect audible "
+                "pitch artifacts on the lead."
+            )
+        if options.pitch_mode == "preserve":
+            warnings.append(
+                "Pitch is preserved: the lead keeps its original key even if it "
+                "clashes with the foundation."
+            )
+        if lead_variant in {"center", "sides"}:
+            warnings.append(
+                f"The lead uses the '{lead_variant}' center/side transform, not "
+                "an isolated stem; residual content is expected."
+            )
+        if anchor_variant in {"center", "sides"}:
+            warnings.append(
+                f"The foundation uses the '{anchor_variant}' center/side "
+                "transform, not an isolated stem."
+            )
+
+        def _source(track: dict, variant: str, info) -> dict:
+            return {
+                "track_id": track["id"],
+                "variant": variant,
+                "name": variant,
+                "method": info[1] if info else None,
+                "model_name": info[2] if info else None,
+                "device": info[3] if info else None,
+                "stem_set_id": info[0] if info else None,
+            }
+
+        return {
+            "tempo_ratio": round(tempo_ratio, 4),
+            "bpm_change_percent": round(bpm_change_percent, 2),
+            "semitone_shift": semitone_shift,
+            "effective_bpm": {"anchor": anchor["bpm"], "lead": lead["bpm"]},
+            "effective_keys": {"anchor": anchor["key"], "lead": lead["key"]},
+            "anchor_variant": anchor_variant,
+            "lead_variant": lead_variant,
+            "pitch_mode": options.pitch_mode,
+            "selected_sources": {
+                "anchor": _source(anchor, anchor_variant, anchor_info),
+                "lead": _source(lead, lead_variant, lead_info),
+            },
+            "duration": {
+                "requested": requested,
+                "available": round(available, 3),
+                "output": round(output_duration, 3),
+            },
+            "warnings": warnings,
+        }
 
     def _run_render(
         self,
@@ -1427,28 +1589,99 @@ class StudioService:
         )
         return self.get_job(job["id"])
 
+    def _variant_available(self, track_sha256: str, variant: str) -> bool:
+        """True when a completed stem set provides a playable ``variant`` file."""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT paths_json FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'",
+                    (track_sha256,),
+                ).fetchall()
+        except sqlite3.Error:
+            return False
+        for row in rows:
+            paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+            rel = paths.get(variant)
+            if rel is not None and (self.data_dir / rel).is_file():
+                return True
+        return False
+
+    def _stem_set_audio_info(
+        self, track_sha256: str, variant: str
+    ) -> tuple[str, str, str, str | None] | None:
+        """Return (stem_set_id, method, model_name, device) for a variant."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'"
+                " ORDER BY created_at DESC",
+                (track_sha256,),
+            ).fetchall()
+        for row in rows:
+            paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+            rel = paths.get(variant)
+            if rel is not None and (self.data_dir / rel).is_file():
+                return (row["id"], row["method"], row["model_name"], row["device"])
+        return None
+
     def list_stems(self, track_id: str) -> dict:
         """List truthful available stems for a track.
 
         ``full`` always exists for a valid track. Other variants exist only when
-        a completed, path-valid stem set provides them.
+        a completed, path-valid stem set provides them. Responses never contain
+        absolute filesystem paths; the audio route is server-authored.
+
+        Returns the backward-compatible top-level ``stems: [name, ...]`` alias
+        plus structured ``variants`` entries with ``name``, ``stem_set_id``,
+        ``method``, ``model_name``, ``device``, and a playable ``audio_url``.
+        The structured entries re-validate files on every call, so a cached
+        stem set stays playable after a server restart without any remembered
+        in-process job result.
         """
         self.get_track(track_id)
         track_sha256 = self._track_content_hash(track_id)
-        available = {"full": True}
+        available: dict[str, bool] = {}
+        order: list[str] = []
+        variants: list[dict] = [
+            {
+                "name": "full",
+                "stem_set_id": None,
+                "method": None,
+                "model_name": None,
+                "device": None,
+                "audio_url": f"/api/tracks/{track_id}/audio",
+            }
+        ]
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'",
+                "SELECT * FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'"
+                " ORDER BY created_at DESC",
                 (track_sha256,),
             ).fetchall()
         for row in rows:
             paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
             for name, rel in paths.items():
-                # Only advertise stems whose files actually exist and decode.
                 full = self.data_dir / rel
-                if full.is_file():
-                    available[name] = True
-        return {"track_id": track_id, "stems": sorted(available.keys())}
+                if not full.is_file():
+                    continue
+                available[name] = True
+                if name in order:
+                    continue
+                order.append(name)
+                variants.append(
+                    {
+                        "name": name,
+                        "stem_set_id": row["id"],
+                        "method": row["method"],
+                        "model_name": row["model_name"],
+                        "device": row["device"],
+                        "audio_url": (
+                            f"/api/stems/{row['id']}/audio?name={name}"
+                        ),
+                    }
+                )
+        stems = sorted({"full", *available.keys()})
+        variants.sort(key=lambda v: stems.index(v["name"]))
+        return {"track_id": track_id, "stems": stems, "variants": variants}
 
     def stem_audio_path(self, stem_set_id: str, name: str) -> Path:
         """Resolve a stem's audio path via strict stem-set/name lookup.
