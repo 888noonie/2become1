@@ -110,6 +110,13 @@ MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
             "ALTER TABLE jobs ADD COLUMN progress_json TEXT",
         ],
     ),
+    (
+        5,
+        "content hash index",
+        [
+            "CREATE INDEX idx_tracks_content_sha256 ON tracks(content_sha256)",
+        ],
+    ),
 ]
 
 

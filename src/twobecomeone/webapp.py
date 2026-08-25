@@ -86,6 +86,21 @@ def create_app(data_dir: str | Path | None = None):
     def import_track(body: TrackImportBody):
         return service.ingest_youtube(body.url)
 
+    @app.post("/api/imports/youtube", status_code=202)
+    def import_youtube(body: TrackImportBody):
+        return service.submit_youtube_import(body.url)
+
+    @app.post("/api/imports/upload", status_code=202)
+    def import_upload(file: UploadFile = File(...)):
+        if not file.filename:
+            raise UserError("file name is required")
+        # Stage the upload beneath incoming/ before queueing the import job.
+        staged = service.stage_upload(file.file, file.filename)
+        try:
+            return service.submit_upload_import(staged)
+        finally:
+            file.file.close()
+
     @app.get("/api/tracks")
     def list_tracks():
         return {"tracks": service.list_tracks()}

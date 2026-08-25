@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from . import analyzer, assembler, beatgrid, migrations, separator, sources
+from . import analyzer, assembler, beatgrid, media, migrations, separator, sources
 from .common import UserError
 from .contracts import TERMINAL_JOB_STATES, JobKind
 from .jobs import CancellationToken, JobEngine, JobStore
@@ -206,14 +206,31 @@ class StudioService:
             destination.unlink(missing_ok=True)
             raise
 
+        # Content hash for deduplication.
+        content_hash = media.sha256_file(destination)
+
+        # Deduplicate: if an identical track already exists, return it and
+        # discard the new copy.
+        existing = self._find_by_hash(content_hash)
+        if existing is not None:
+            destination.unlink(missing_ok=True)
+            return existing
+
+        # Generate waveform peaks.
+        try:
+            waveform = media.generate_waveform(destination)
+        except UserError:
+            waveform = None
+
         now = time.time()
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO tracks
                    (id, original_name, path, size_bytes, bpm, tonic, mode, confidence, duration,
                     beat_interval, first_beat, suggested_downbeat, beat_confidence,
-                    source_kind, source_ref, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    source_kind, source_ref, content_sha256, metadata_json,
+                    waveform_path, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     track_id, Path(original_name).name, str(destination), size,
                     float(result.bpm), result.key["tonic"], result.key["mode"],
@@ -223,10 +240,25 @@ class StudioService:
                     grid.suggested_downbeat if grid else None,
                     grid.confidence if grid else None,
                     source_kind, source_ref,
+                    content_hash,
+                    None,
+                    json.dumps(waveform) if waveform else None,
                     now,
                 ),
             )
         return self.get_track(track_id)
+
+    def _find_by_hash(self, content_hash: str) -> dict | None:
+        """Return an existing track with the given content hash, or None."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM tracks WHERE content_sha256 = ? AND deleted_at IS NULL "
+                "ORDER BY created_at ASC LIMIT 1",
+                (content_hash,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._track_dict(row)
 
     def ingest_path(
         self,
@@ -402,15 +434,22 @@ class StudioService:
         return self.get_job(job["id"])
 
     def retry_job(self, job_id: str) -> dict:
-        """Retry a failed/interrupted render job by cloning its request."""
+        """Retry a failed/interrupted/cancelled job by cloning its request.
+
+        Import jobs resume from the same ``work_key`` (partial download); render
+        jobs re-run from scratch.
+        """
         if self._closed:
             raise UserError("studio service is closed")
         job = self._store.get(job_id)
         kind = JobKind(job["kind"])
-        if kind not in {JobKind.PREVIEW, JobKind.RENDER}:
+        if kind == JobKind.IMPORT:
+            new_job = self._engine.retry(job_id, self._import_run_fn(job["request"]))
+        elif kind in {JobKind.PREVIEW, JobKind.RENDER}:
+            options = RenderOptions(**job["request"])
+            new_job = self._engine.retry(job_id, self._render_run_fn(options))
+        else:
             raise UserError(f"retry is not yet supported for {kind.value} jobs")
-        options = RenderOptions(**job["request"])
-        new_job = self._engine.retry(job_id, self._render_run_fn(options))
         return self.get_job(new_job["id"])
 
     def cancel_job(self, job_id: str) -> dict:
@@ -418,6 +457,176 @@ class StudioService:
             raise UserError("studio service is closed")
         job = self._engine.cancel(job_id)
         return self._job_api_dict(job)
+
+    # ------------------------------------------------------------------
+    # Import orchestration (asynchronous acquisition)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _work_key(url: str) -> str:
+        """Stable, relative work key for a canonical URL (resolves under incoming/)."""
+        return hashlib.sha256(url.strip().encode("utf-8")).hexdigest()[:20]
+
+    def _import_run_fn(self, request: dict):
+        def run(job_id: str, token: CancellationToken) -> dict:
+            return self._run_import(job_id, token, request)
+        return run
+
+    def _run_import(
+        self,
+        job_id: str,
+        token: CancellationToken,
+        request: dict,
+    ) -> dict:
+        """Perform an asynchronous import (YouTube download or upload analysis)."""
+        source_kind = request.get("source_kind", "youtube")
+        if source_kind == "youtube":
+            url = request["canonical_url"]
+            work_key = request.get("work_key") or self._work_key(url)
+            work_dir = self.incoming_dir / work_key
+            work_dir.mkdir(parents=True, exist_ok=True)
+
+            self._store.update(
+                job_id, stage="downloading", progress=5,
+                message="Downloading audio",
+            )
+
+            def on_progress(detail: dict) -> None:
+                percent = detail.get("percent")
+                fields: dict = {
+                    "progress_detail": {
+                        "stage": "downloading",
+                        "percent": percent,
+                        "bytes": detail.get("bytes"),
+                        "total_bytes": detail.get("total_bytes"),
+                        "speed": detail.get("speed"),
+                        "eta": detail.get("eta"),
+                        "measured": percent is not None,
+                    },
+                }
+                if percent is not None:
+                    fields["progress"] = int(percent)
+                self._store.update(job_id, **fields)
+
+            from . import acquisition
+            from .jobs import JobCancelled
+            result = acquisition.download_youtube(
+                url, work_dir, token=token, on_progress=on_progress,
+            )
+            if result.cancelled:
+                raise JobCancelled()
+            if result.returncode != 0:
+                raise UserError(
+                    f"download failed: {result.stderr_tail[-400:]}"
+                )
+
+            # Locate the produced audio file (ID-based, beneath work_dir).
+            downloaded = self._find_downloaded_audio(work_dir)
+            if downloaded is None:
+                raise UserError("download completed but no audio file was produced")
+
+            self._store.update(
+                job_id, stage="analyzing", progress=80,
+                message="Analyzing tempo, key and beat grid",
+            )
+            token.raise_if_cancelled()
+            track = self.ingest_path(
+                downloaded, source_kind="youtube", source_ref=url,
+            )
+            # Clean staging only after successful managed ingestion.
+            shutil.rmtree(work_dir, ignore_errors=True)
+            return {
+                "result": {"track_id": track["id"], "name": track["name"]},
+                "message": "Import complete",
+            }
+
+        if source_kind == "upload":
+            # Uploads are staged by the HTTP layer; here we analyze an already
+            # staged file path.
+            staged = request.get("staged_path")
+            if not staged:
+                raise UserError("upload import requires a staged path")
+            staged_path = media.validate_managed_path(staged, self.incoming_dir)
+            self._store.update(
+                job_id, stage="analyzing", progress=50,
+                message="Analyzing tempo, key and beat grid",
+            )
+            token.raise_if_cancelled()
+            track = self.ingest_path(staged_path, source_kind="upload")
+            staged_path.unlink(missing_ok=True)
+            return {
+                "result": {"track_id": track["id"], "name": track["name"]},
+                "message": "Import complete",
+            }
+
+        raise UserError(f"unknown import source: {source_kind}")
+
+    def _find_downloaded_audio(self, work_dir: Path) -> Path | None:
+        """Return the produced audio file beneath ``work_dir``, or None."""
+        for suffix in ALLOWED_AUDIO_SUFFIXES:
+            candidates = list(work_dir.glob(f"*{suffix}"))
+            for candidate in candidates:
+                if candidate.is_file():
+                    return candidate
+        return None
+
+    def submit_youtube_import(self, url: str) -> dict:
+        """Queue an asynchronous YouTube import and return the job snapshot."""
+        if self._closed:
+            raise UserError("studio service is closed")
+        if not sources.is_youtube_url(url):
+            raise UserError("enter a valid youtube.com or youtu.be URL")
+        canonical = url.strip()
+        request = {
+            "source_kind": "youtube",
+            "canonical_url": canonical,
+            "work_key": self._work_key(canonical),
+        }
+        job = self._engine.submit(
+            JobKind.IMPORT, request, self._import_run_fn(request), executor="acquisition",
+        )
+        return self.get_job(job["id"])
+
+    def submit_upload_import(self, staged_path: str | Path) -> dict:
+        """Queue an asynchronous upload import for an already-staged file."""
+        if self._closed:
+            raise UserError("studio service is closed")
+        staged = media.validate_managed_path(staged_path, self.incoming_dir)
+        request = {
+            "source_kind": "upload",
+            "staged_path": str(staged),
+        }
+        job = self._engine.submit(
+            JobKind.IMPORT, request, self._import_run_fn(request), executor="acquisition",
+        )
+        return self.get_job(job["id"])
+
+    def stage_upload(self, source: BinaryIO, original_name: str) -> Path:
+        """Stage an uploaded file beneath ``incoming/`` for later import.
+
+        Enforces the 750 MB ceiling and a safe, ID-based filename (never the
+        uploader's name). Returns the staged path.
+        """
+        suffix = Path(original_name).suffix.lower()
+        if suffix not in ALLOWED_AUDIO_SUFFIXES:
+            supported = ", ".join(sorted(ALLOWED_AUDIO_SUFFIXES))
+            raise UserError(f"unsupported audio type '{suffix or 'none'}'; choose one of: {supported}")
+        staged_id = uuid.uuid4().hex
+        staged = self.incoming_dir / f"{staged_id}{suffix}"
+        size = 0
+        try:
+            with staged.open("xb") as output:
+                while chunk := source.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_BYTES:
+                        raise UserError("audio file exceeds the 750 MB local upload limit")
+                    output.write(chunk)
+            if size == 0:
+                raise UserError("uploaded file is empty")
+        except Exception:
+            staged.unlink(missing_ok=True)
+            raise
+        return staged
 
     def wait_for_job(self, job_id: str, timeout: float = 60.0) -> dict:
         deadline = time.monotonic() + timeout

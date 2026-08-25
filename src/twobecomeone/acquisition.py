@@ -253,3 +253,64 @@ def _terminate_group(proc: subprocess.Popen) -> None:
             proc.wait(timeout=KILL_GRACE_SEC)
         except subprocess.TimeoutExpired:
             pass
+
+
+# ---------------------------------------------------------------------------
+# yt-dlp download
+# ---------------------------------------------------------------------------
+
+# Progress template: a marker-prefixed, machine-readable line. yt-dlp
+# substitutes the fields; we parse only lines carrying MARKER.
+_PROGRESS_TEMPLATE = (
+    f"{MARKER} downloaded=%(progress.downloaded_bytes)s "
+    f"total=%(progress.total_bytes)s percent=%(progress._percent_str)s "
+    f"speed=%(progress.speed)s eta=%(progress.eta)s"
+)
+
+
+def yt_dlp_argv(url: str, work_dir: str, output_template: str) -> list[str]:
+    """Build the controlled yt-dlp argument list (no shell, no title paths)."""
+    return [
+        "yt-dlp",
+        "--ignore-config",
+        "--no-playlist",
+        "--continue",
+        "--newline",
+        "--progress",
+        "--progress-template", _PROGRESS_TEMPLATE,
+        "--progress-delta", "0.5",
+        "--write-info-json",
+        "-x",
+        "--audio-format", "mp3",
+        "--audio-quality", "0",
+        "-o", output_template,
+        url,
+    ]
+
+
+def download_youtube(
+    url: str,
+    work_dir: str | Path,
+    *,
+    token: CancellationToken,
+    on_progress: Callable[[dict], None] | None = None,
+    timeout: float | None = None,
+) -> SubprocessResult:
+    """Download a YouTube video's audio into ``work_dir`` using yt-dlp.
+
+    The output template is ID-based (never the video title as a path) and
+    resolves beneath ``work_dir``. ``--continue`` makes the download resumable;
+    a cancelled/failed run leaves the partial ``.part`` file in place for a
+    later resume with the same ``work_dir``.
+    """
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    output_template = str(work_dir / "%(id)s.%(ext)s")
+    argv = yt_dlp_argv(url, str(work_dir), output_template)
+    return run_process(
+        argv,
+        token=token,
+        on_progress=on_progress,
+        timeout=timeout,
+        cwd=str(work_dir),
+    )

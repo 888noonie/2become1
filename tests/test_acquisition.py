@@ -117,3 +117,49 @@ class TestCancellation:
         assert not t.is_alive(), "cancellation did not terminate the child"
         result = result_holder["result"]
         assert result.returncode != 0 or result.cancelled
+
+
+class TestResume:
+    def test_resume_continues_from_partial_bytes(self, tmp_path):
+        """A second run with the same work dir continues from existing bytes."""
+        out = tmp_path / "resumable.bin"
+        token = CancellationToken()
+
+        # First run: interrupt it part-way by cancelling.
+        import threading
+
+        first_result = {}
+
+        def first():
+            first_result["r"] = acquisition.run_process(
+                [sys.executable, str(Path(__file__).with_name("fake_resumable.py")),
+                 "--out", str(out), "--total", "1000", "--chunks", "10",
+                 "--delay", "0.3"],
+                token=token,
+                on_progress=lambda d: None,
+                timeout=60.0,
+            )
+
+        t = threading.Thread(target=first)
+        t.start()
+        time.sleep(0.8)  # let it write a couple chunks
+        token.cancel()
+        t.join(timeout=15.0)
+
+        part = Path(str(out) + ".part")
+        assert part.exists(), "partial .part file should remain after cancellation"
+        partial_size = part.stat().st_size
+        assert 0 < partial_size < 1000, f"expected partial bytes, got {partial_size}"
+
+        # Second run: fresh token, same out path -> resumes from partial.
+        token2 = CancellationToken()
+        second = acquisition.run_process(
+            [sys.executable, str(Path(__file__).with_name("fake_resumable.py")),
+             "--out", str(out), "--total", "1000", "--chunks", "10"],
+            token=token2,
+            on_progress=lambda d: None,
+            timeout=60.0,
+        )
+        assert second.returncode == 0
+        assert out.exists()
+        assert out.stat().st_size == 1000, "resume must complete the full payload"
