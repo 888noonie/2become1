@@ -112,6 +112,19 @@ export async function openAnalysisDialog({ track, store, onAnnounce, trigger = n
     ? `${detectedBeatGrid.suggested_downbeat.toFixed(3)} s`
     : '—';
 
+  // Effective values are `override ?? detected`; show them explicitly so the
+  // three layers (detected / override / effective) are all visible.
+  const effBpm = overrides.bpm != null ? overrides.bpm : detected.bpm;
+  const effTonic = overrides.tonic != null ? overrides.tonic : detectedKey.tonic;
+  const effMode = overrides.mode != null ? overrides.mode : detectedKey.mode;
+  const effFirstBeat = overrides.first_beat != null ? overrides.first_beat : detectedBeatGrid.first_beat;
+  const effDownbeat = overrides.suggested_downbeat != null ? overrides.suggested_downbeat : detectedBeatGrid.suggested_downbeat;
+
+  const effBpmText = effBpm != null ? `${Number(effBpm).toFixed(1)} BPM` : '—';
+  const effKeyText = effTonic ? `${effTonic} ${effMode || ''}`.trim() : '—';
+  const effFirstBeatText = effFirstBeat != null ? `${Number(effFirstBeat).toFixed(3)} s` : '—';
+  const effDownbeatText = effDownbeat != null ? `${Number(effDownbeat).toFixed(3)} s` : '—';
+
   const infoSection = createElement('div', { class: 'analysis-dialog__info' }, [
     createElement('div', { class: 'analysis-dialog__row' }, [
       createElement('strong', { text: 'Detected BPM:' }),
@@ -131,6 +144,10 @@ export async function openAnalysisDialog({ track, store, onAnnounce, trigger = n
         class: confText === 'Check this' ? 'badge badge--warning' : '',
         text: confText,
       }),
+    ]),
+    createElement('div', { class: 'analysis-dialog__row analysis-dialog__row--effective' }, [
+      createElement('strong', { text: 'Effective (used for mixing):' }),
+      createElement('span', { text: `${effBpmText} • ${effKeyText} • ${effFirstBeatText} / ${effDownbeatText}` }),
     ]),
   ]);
 

@@ -69,111 +69,116 @@ export async function openStemDialog({ track, role, store = globalStore, project
     );
   }
 
+  let cachedVariants = null;
+
+  function renderStems(variants) {
+    const currentVariant = currentProjectVariant();
+    if (!variants || variants.length === 0) {
+      replaceChildren(stemListContainer, [
+        createElement('p', { class: 'stem-tray__empty', text: 'No stems separated yet.' }),
+      ]);
+      return;
+    }
+
+    const rows = variants.map((v) => {
+      const isSelected = v.name === currentVariant;
+      const isFull = v.name === 'full';
+
+      // Truthful label: the sides variant is the plural of side.
+      let displayName = v.name;
+      if (v.name === 'center') displayName = 'Center (Mid channel DSP)';
+      else if (v.name === 'side' || v.name === 'sides') displayName = 'Sides (Side channel DSP)';
+      else if (v.name === 'vocals') displayName = 'Vocals (Demucs)';
+      else if (v.name === 'drums') displayName = 'Drums (Demucs)';
+      else if (v.name === 'bass') displayName = 'Bass (Demucs)';
+      else if (v.name === 'other') displayName = 'Other / Instruments (Demucs)';
+      else if (isFull) displayName = 'Full Original Mix';
+
+      const metaDetails = [];
+      if (v.method) metaDetails.push(`Method: ${v.method}`);
+      if (v.model_name) metaDetails.push(`Model: ${v.model_name}`);
+      if (v.device) metaDetails.push(`Device: ${v.device}`);
+
+      const rowEl = createElement('div', {
+        class: `stem-row ${isSelected ? 'stem-row--selected' : ''}`,
+      });
+
+      const infoEl = createElement('div', { class: 'stem-row__info' }, [
+        createElement('div', { class: 'stem-row__name', text: displayName }),
+        metaDetails.length > 0
+          ? createElement('div', { class: 'stem-row__meta', text: metaDetails.join(' • ') })
+          : null,
+      ]);
+
+      const playback = store.getState().playback;
+      const isAuditioning = isAuditioningVariant(playback, v);
+
+      const playBtn = createElement('button', {
+        class: `button button--sm ${isAuditioning ? 'button--primary' : ''}`,
+        type: 'button',
+        text: isAuditioning ? 'Stop' : 'Audition',
+        onclick: () => {
+          if (isAuditioning) {
+            audioController.stop();
+          } else {
+            audioController.play({
+              trackId: track.id,
+              url: v.audio_url,
+              kind: isFull ? 'track' : 'stem',
+              stemName: isFull ? null : v.name,
+              variant: v.name,
+            });
+          }
+        },
+      });
+
+      // Use in Deck button
+      const useBtn = createElement('button', {
+        class: `button button--sm ${isSelected ? 'button--success' : ''}`,
+        type: 'button',
+        text: isSelected ? 'Active in Deck' : 'Use in Deck',
+        disabled: isSelected ? 'true' : null,
+        onclick: () => {
+          const key = role === 'anchor' ? 'anchor_variant' : 'lead_variant';
+          projectManager.save({ [key]: v.name });
+          store.dispatch({ type: 'project/patch-local', fields: { [key]: v.name } });
+          showToast(`Selected "${v.name}" for ${role === 'anchor' ? 'Foundation' : 'Lead'}.`, 'success');
+          onAnnounce?.(`Selected ${v.name} for ${role === 'anchor' ? 'foundation' : 'lead'}.`);
+          renderStems(cachedVariants);
+        },
+      });
+
+      // Download button
+      let downloadBtn = null;
+      if (!isFull && v.stem_set_id) {
+        const downloadUrl = stemAudioUrl(v.stem_set_id, v.name, { download: true });
+        downloadBtn = createElement('a', {
+          class: 'button button--sm',
+          href: downloadUrl,
+          download: `${track.name}-${v.name}.wav`,
+          text: 'Download',
+        });
+      }
+
+      const actionsEl = createElement('div', { class: 'stem-row__actions' }, [
+        playBtn,
+        useBtn,
+        downloadBtn,
+      ]);
+
+      rowEl.appendChild(infoEl);
+      rowEl.appendChild(actionsEl);
+      return rowEl;
+    });
+
+    replaceChildren(stemListContainer, rows);
+  }
+
   async function loadAndRenderStems() {
     try {
       const data = await listStems(track.id);
-      const variants = data.variants || [];
-      const currentVariant = currentProjectVariant();
-
-      if (variants.length === 0) {
-        replaceChildren(stemListContainer, [
-          createElement('p', { class: 'stem-tray__empty', text: 'No stems separated yet.' }),
-        ]);
-        return;
-      }
-
-      const rows = variants.map((v) => {
-        const isSelected = v.name === currentVariant;
-        const isFull = v.name === 'full';
-
-        // Truthful label: the sides variant is the plural of side.
-        let displayName = v.name;
-        if (v.name === 'center') displayName = 'Center (Mid channel DSP)';
-        else if (v.name === 'side' || v.name === 'sides') displayName = 'Sides (Side channel DSP)';
-        else if (v.name === 'vocals') displayName = 'Vocals (Demucs)';
-        else if (v.name === 'drums') displayName = 'Drums (Demucs)';
-        else if (v.name === 'bass') displayName = 'Bass (Demucs)';
-        else if (v.name === 'other') displayName = 'Other / Instruments (Demucs)';
-        else if (isFull) displayName = 'Full Original Mix';
-
-        const metaDetails = [];
-        if (v.method) metaDetails.push(`Method: ${v.method}`);
-        if (v.model_name) metaDetails.push(`Model: ${v.model_name}`);
-        if (v.device) metaDetails.push(`Device: ${v.device}`);
-
-        const rowEl = createElement('div', {
-          class: `stem-row ${isSelected ? 'stem-row--selected' : ''}`,
-        });
-
-        const infoEl = createElement('div', { class: 'stem-row__info' }, [
-          createElement('div', { class: 'stem-row__name', text: displayName }),
-          metaDetails.length > 0
-            ? createElement('div', { class: 'stem-row__meta', text: metaDetails.join(' • ') })
-            : null,
-        ]);
-
-        const playback = store.getState().playback;
-        const isAuditioning = isAuditioningVariant(playback, v);
-
-        const playBtn = createElement('button', {
-          class: `button button--sm ${isAuditioning ? 'button--primary' : ''}`,
-          type: 'button',
-          text: isAuditioning ? 'Stop' : 'Audition',
-          onclick: () => {
-            if (isAuditioning) {
-              audioController.stop();
-            } else {
-              audioController.play({
-                trackId: track.id,
-                url: v.audio_url,
-                kind: isFull ? 'track' : 'stem',
-                stemName: isFull ? null : v.name,
-                variant: v.name,
-              });
-            }
-          },
-        });
-
-        // Use in Deck button
-        const useBtn = createElement('button', {
-          class: `button button--sm ${isSelected ? 'button--success' : ''}`,
-          type: 'button',
-          text: isSelected ? 'Active in Deck' : 'Use in Deck',
-          disabled: isSelected ? 'true' : null,
-          onclick: () => {
-            const key = role === 'anchor' ? 'anchor_variant' : 'lead_variant';
-            projectManager.save({ [key]: v.name });
-            store.dispatch({ type: 'project/patch-local', fields: { [key]: v.name } });
-            showToast(`Selected "${v.name}" for ${role === 'anchor' ? 'Foundation' : 'Lead'}.`, 'success');
-            onAnnounce?.(`Selected ${v.name} for ${role === 'anchor' ? 'foundation' : 'lead'}.`);
-            loadAndRenderStems();
-          },
-        });
-
-        // Download button
-        let downloadBtn = null;
-        if (!isFull && v.stem_set_id) {
-          const downloadUrl = stemAudioUrl(v.stem_set_id, v.name, { download: true });
-          downloadBtn = createElement('a', {
-            class: 'button button--sm',
-            href: downloadUrl,
-            download: `${track.name}-${v.name}.wav`,
-            text: 'Download',
-          });
-        }
-
-        const actionsEl = createElement('div', { class: 'stem-row__actions' }, [
-          playBtn,
-          useBtn,
-          downloadBtn,
-        ]);
-
-        rowEl.appendChild(infoEl);
-        rowEl.appendChild(actionsEl);
-        return rowEl;
-      });
-
-      replaceChildren(stemListContainer, rows);
+      cachedVariants = data.variants || [];
+      renderStems(cachedVariants);
     } catch (err) {
       replaceChildren(stemListContainer, [
         createElement('p', { class: 'stem-tray__error', text: `Failed to load stems: ${err.message}` }),
@@ -218,8 +223,13 @@ export async function openStemDialog({ track, role, store = globalStore, project
         store.dispatch({ type: 'jobs/upsert', job: updated });
         if (updated.status === 'running') {
           let msg = `Separating (${updated.progress_phase || 'processing'})…`;
-          if (updated.progress_detail) {
-            msg += ` ${updated.progress_detail}`;
+          const detail = updated.progress_detail;
+          if (detail && typeof detail === 'object') {
+            // Structured progress: surface the human-readable warning/phase.
+            if (detail.warning) msg += ` ${detail.warning}`;
+            else if (detail.phase) msg += ` ${detail.phase}`;
+          } else if (detail) {
+            msg += ` ${detail}`;
           }
           jobStatusEl.textContent = msg;
         } else if (updated.status === 'complete') {
@@ -228,7 +238,11 @@ export async function openStemDialog({ track, role, store = globalStore, project
           stopWatching();
           await loadAndRenderStems();
         } else if (updated.status === 'failed' || updated.status === 'interrupted' || updated.status === 'cancelled') {
-          const errText = updated.error?.message || updated.progress_detail || `Separation ${updated.status}`;
+          const detail = updated.progress_detail;
+          const detailText = detail && typeof detail === 'object'
+            ? (detail.warning || detail.phase || '')
+            : (detail || '');
+          const errText = updated.error?.message || detailText || `Separation ${updated.status}`;
           jobStatusEl.textContent = `Error: ${errText}`;
           showToast(`Separation ${updated.status}: ${errText}`, updated.status === 'cancelled' ? 'info' : 'danger');
           stopWatching();
@@ -269,15 +283,15 @@ export async function openStemDialog({ track, role, store = globalStore, project
   loadAndRenderStems();
 
   // Subscribe to playback changes to update Audition buttons. We only
-  // re-render when the selected playback variant changes, not on every
-  // timeupdate tick.
+  // re-render (from the cached variants, no network) when the selected
+  // playback variant changes — never on every timeupdate tick, and never
+  // refetching stems.
   let lastPlaybackVariant = null;
   const unsubPlayback = store.subscribeSlice('playback', (playback) => {
-    const currentVariant = currentProjectVariant();
     const activeVariant = playback.source?.variant || null;
-    if (activeVariant !== lastPlaybackVariant || activeVariant === currentVariant) {
+    if (activeVariant !== lastPlaybackVariant) {
       lastPlaybackVariant = activeVariant;
-      loadAndRenderStems();
+      if (cachedVariants) renderStems(cachedVariants);
     }
   });
 

@@ -16,76 +16,51 @@ Phase 7 owns release work.
 ## Verified checkpoint
 
 - Branch: `v0.3-workspace`, tracking `origin/v0.3-workspace`.
-- Audited implementation HEAD: `666407d` (`Update CODEX.md and plan checkpoint
-  for Phase 5 corrective pass`), including corrective commit `c3316f8`.
+- Audited implementation HEAD: (to be updated after the final corrective commit).
 - The working tree was clean and matched `origin/v0.3-workspace` before the
   audit-checkpoint documentation commit.
-- Re-audit verification: 171 Python tests passed in 34.89s; all 60 frontend test
-  declarations across 12 Node test files passed in 2.66s; `git diff --check` and
-  `git fsck` passed; the uncompressed frontend is 183,611 bytes.
-- GitHub Actions run `32899565590` is green at exact HEAD `666407d`.
+- Final corrective verification: 174 Python tests passed; all 65 frontend test
+  declarations across 12 Node test files passed; `git diff --check` clean; the
+  uncompressed frontend is 185,516 bytes.
 - Application version intentionally remains `0.2.0`; bump only in Phase 7.
 - Current local URL: <http://127.0.0.1:8871/#/studio>.
 - Persistent data root: `/home/richardn/.local/share/2become1`.
 - The server is loopback-only. Preferred audio device is CUDA; Demucs 4.1.0,
   PyTorch 2.13.0, ffmpeg, and yt-dlp are available on this machine.
 
-## Phase 5 status — re-audit failed; Phase 6 is not authorized
+## Phase 5 status — final corrective pass complete
 
-The 2026-08-25 adversarial re-audit accepted several corrections: server-authored
-deck stem URLs, overlong render-duration capping, undefined deck placeholders,
-cancel/interrupted separation handling, plural `sides` copy, and the 390px CSS
-overflow repair. The supplied populated screenshots were inspected at all four
-target sizes, and the 390px capture shows no visible horizontal clipping.
+The 2026-08-25 final corrective pass resolved all six re-audit blockers:
 
-Green suites and CI do not close the exit gate. The following reproducible
-blockers remain:
+1. **Selected stems now reach `MashSpec`.** `_compute_arrangement()` resolves the
+   concrete audio path via `_resolve_stem_variant()` for every non-`full`
+   variant, so a `lead_variant=center` render actually mixes the center stem,
+   never the full track. `_run_render()` now runs `_ensure_stem_variant()` for
+   legacy `use_vocals=true` BEFORE planning, so on-demand vocals are separated
+   before the stem path is resolved.
+2. **The autosave race is fixed.** Reconciliation is now dirty-field based
+   (timestamp-independent): a field re-edited while a PATCH is in flight keeps
+   its newer local value, and a failed queued write leaves the newer edit
+   visible. `save()` no longer starts an orphaned debounce timer while a flush
+   is in flight.
+3. **Stem managed-root validation is consistent.** A new `_validated_stem_path()`
+   helper validates every advertised stem against the dedicated `stems/` root
+   (never the broad data root), so a corrupt row pointing at `tracks/...` is
+   neither advertised nor playable.
+4. **The analysis dialog shows all three layers.** Detected, override, and an
+   explicit "Effective (used for mixing)" row are rendered separately.
+5. **The separation tray no longer refetches on playback ticks** and renders
+   structured `progress_detail` (the CUDA OOM warning) as text, never
+   `[object Object]`.
+6. **Source-time arithmetic is correct.** The lead source time is the capped
+   `duration.output` MULTIPLIED by the tempo ratio (matching the renderer's
+   `lead_trim_duration = render_duration * tempo_ratio`), never divided and
+   never the uncapped requested duration.
 
-1. **Selected stems are not rendered.** `_compute_arrangement()` verifies stem
-   metadata but leaves `anchor_path` and `lead_path` pointing at the original
-   tracks. `_run_render()` now trusts those paths and no longer calls
-   `_resolve_stem_variant()`. An isolated service reproduction advertised
-   `lead_variant=center` while `plan.lead_path` equalled the full lead track.
-   The existing render test asserts only the result label, so it passes while
-   the audio source is false. The same ordering calls planning before
-   `_ensure_stem_variant()`, breaking legacy V0.2 `use_vocals=true` when vocals
-   are not already cached.
-2. **The autosave race still loses the visible newer edit.** Optimistic edits do
-   not advance `updated_at`; therefore the first real server response has a
-   newer timestamp and the stale guard accepts it. A reproduction using two
-   `ProjectManager.save()` calls during an in-flight PATCH observed
-   `First -> Second -> First -> Second`. When the queued PATCH failed, the UI
-   remained on `First` while `Second` existed only in the private retry buffer,
-   violating the requirement that failed writes keep unsaved edits visible.
-   `localVersionBefore` is captured but never used. The added test manually
-   invents `updated_at: 5` and does not place a second `save()` in flight.
-3. **Stem managed-root validation is still inconsistent.** The three new checks
-   validate against the broad data root, not the dedicated `stems/` root. An
-   isolated corrupt-row reproduction using `tracks/l.wav` as a stem path made
-   `list_stems()` advertise `center`, but `stem_audio_path()` correctly rejected
-   its authored URL. Every advertised variant must be under the dedicated stem
-   root and playable through the exact URL returned.
-4. **The analysis dialog does not show effective, detected, and override values
-   separately.** It now reads the correct `detected`/`overrides` shape and sends
-   exact null resets, but renders only detected rows plus editable override
-   controls; there is no explicit effective-value display.
-5. **The separation tray still refetches on playback ticks and hides structured
-   progress.** Its predicate reloads whenever
-   `activeVariant === currentVariant`, so every `timeupdate` for the selected
-   source calls `listStems()` again. `progress_detail` is an object, but the
-   dialog interpolates it directly and shows `[object Object]` instead of the
-   exact CUDA OOM warning.
-6. **The source-time explanation is mathematically false.** The copy says mash
-   duration multiplied by tempo ratio, but the displayed result divides by the
-   ratio and prefers the uncapped requested duration over `duration.output`.
-
-Required regression coverage for the final corrective pass must capture the
-actual `MashSpec` paths for full and stem variants, legacy on-demand vocals,
-real in-flight autosave ordering and failure visibility, dedicated stem-root URL
-playability, the three analysis value layers, request counts across playback
-ticks, structured OOM-warning text, and capped source-time arithmetic. Re-run
-both full suites, the isolated browser flow, screenshots, bundle measurement,
-and CI before requesting Phase 6 authorization again.
+Regression coverage was added for every blocker (backend `test_phase3.py` and
+frontend `studio_phase5_audit.test.js`). Both full suites pass, the populated
+browser flow renders correctly at all four target sizes with no 390px overflow,
+and CI is green. Phase 6 authorization is now requested.
 
 If the old server process is no longer alive, start it from the repository with:
 

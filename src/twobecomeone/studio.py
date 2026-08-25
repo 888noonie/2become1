@@ -886,11 +886,16 @@ class StudioService:
         options.validate()
         anchor = self.get_track(options.anchor_id)
         lead = self.get_track(options.lead_id)
-        anchor_path = self.track_path(options.anchor_id)
-        lead_path = self.track_path(options.lead_id)
 
         anchor_variant = options.anchor_variant or "full"
         lead_variant = options.resolved_lead_variant()
+
+        # Resolve the concrete audio paths. A non-full variant must resolve to
+        # a real, path-valid stem file; otherwise this raises (never silently
+        # renders the full mix). This is the single source of truth for what
+        # actually reaches MashSpec.
+        anchor_path = self._resolve_stem_variant(options.anchor_id, anchor_variant)
+        lead_path = self._resolve_stem_variant(options.lead_id, lead_variant)
 
         anchor_info = (
             self._stem_set_audio_info(
@@ -1064,8 +1069,16 @@ class StudioService:
         )
         token.raise_if_cancelled()
 
-        # Single source of truth: planning handles tempo, key, duration,
-        # stem variant resolution, and all user-facing warnings.
+        # Legacy use_vocals: true triggers separation through the cache (reusing
+        # any existing stem set) rather than a second unmanaged Demucs path.
+        # This must run BEFORE planning, because planning now resolves the
+        # concrete stem path and would otherwise fail when vocals are not yet
+        # cached.
+        if options.use_vocals and options.resolved_lead_variant() == "vocals":
+            self._ensure_stem_variant(options.lead_id, "vocals", job_id, token)
+
+        # Single source of truth: planning handles tempo, key, duration, and
+        # stem variant resolution (including the concrete audio paths).
         plan = self._compute_arrangement(options)
 
         anchor_path = plan.anchor_path
@@ -1073,11 +1086,6 @@ class StudioService:
         tempo_ratio = plan.tempo_ratio
         semitone_shift = plan.semitone_shift
         duration = plan.output_duration
-
-        # Legacy use_vocals: true triggers separation through the cache (reusing
-        # any existing stem set) rather than a second unmanaged Demucs path.
-        if options.use_vocals and options.resolved_lead_variant() == "vocals":
-            self._ensure_stem_variant(options.lead_id, "vocals", job_id, token)
 
         self._store.update(
             job_id, stage="rendering", progress=58,
@@ -1618,6 +1626,25 @@ class StudioService:
         )
         return self.get_job(job["id"])
 
+    def _validated_stem_path(self, rel: str) -> Path | None:
+        """Return the resolved stem file if ``rel`` is playable under stems/.
+
+        ``rel`` is a database-stored path relative to the data root (e.g.
+        ``stems/<id>/<name>.wav``). It is only accepted when it resolves to a
+        real file beneath the dedicated ``stems/`` root — never the broad data
+        root — so a corrupt row pointing at ``tracks/...`` cannot be advertised
+        as a playable stem.
+        """
+        if not rel:
+            return None
+        try:
+            resolved = media.validate_managed_path(self.data_dir / rel, self.stem_dir)
+        except UserError:
+            return None
+        if not resolved.is_file():
+            return None
+        return resolved
+
     def _variant_available(self, track_sha256: str, variant: str) -> bool:
         """True when a completed stem set provides a playable ``variant`` file."""
         try:
@@ -1633,11 +1660,8 @@ class StudioService:
             rel = paths.get(variant)
             if rel is None:
                 continue
-            try:
-                media.validate_managed_path(self.data_dir / rel, self.data_dir)
-            except UserError:
-                continue
-            return True
+            if self._validated_stem_path(rel) is not None:
+                return True
         return False
 
     def _stem_set_audio_info(
@@ -1655,11 +1679,8 @@ class StudioService:
             rel = paths.get(variant)
             if rel is None:
                 continue
-            try:
-                media.validate_managed_path(self.data_dir / rel, self.data_dir)
-            except UserError:
-                continue
-            return (row["id"], row["method"], row["model_name"], row["device"])
+            if self._validated_stem_path(rel) is not None:
+                return (row["id"], row["method"], row["model_name"], row["device"])
         return None
 
     def list_stems(self, track_id: str) -> dict:
@@ -1699,11 +1720,7 @@ class StudioService:
         for row in rows:
             paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
             for name, rel in paths.items():
-                try:
-                    media.validate_managed_path(self.data_dir / rel, self.data_dir)
-                except UserError:
-                    continue
-                if not (self.data_dir / rel).is_file():
+                if self._validated_stem_path(rel) is None:
                     continue
                 available[name] = True
                 if name in order:
@@ -1773,9 +1790,9 @@ class StudioService:
             paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
             rel = paths.get(variant)
             if rel is not None:
-                full = self.data_dir / rel
-                if full.is_file():
-                    return full
+                resolved = self._validated_stem_path(rel)
+                if resolved is not None:
+                    return resolved
         raise UserError(f"stem variant '{variant}' is not available for this track")
 
     def _ensure_stem_variant(

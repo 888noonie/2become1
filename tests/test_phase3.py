@@ -6,6 +6,7 @@ import json
 import math
 import sqlite3
 import struct
+import time
 import wave
 from pathlib import Path
 
@@ -418,6 +419,125 @@ class TestRenderVariants:
             completed = service.wait_for_job(job["id"], timeout=60)
             assert completed["status"] == "failed"
             assert "not available" in completed["error"]
+        finally:
+            service.close()
+
+    def test_render_uses_stem_path_not_full_track(self, tmp_path):
+        """Audit regression: a selected stem variant must reach MashSpec.
+
+        Previously ``_compute_arrangement`` verified stem metadata but left the
+        concrete path pointing at the full track, so a render advertised
+        ``lead_variant=center`` while actually mixing the full lead.
+        """
+        service = StudioService(tmp_path / "data")
+        try:
+            a = _ingest(service, synth_track(tmp_path / "a.wav", bpm=100, root=261.63))
+            l = _ingest(service, synth_track(tmp_path / "l.wav", bpm=120, root=220.0))
+            sep = service.submit_separation(l["id"], method="ffmpeg")
+            service.wait_for_job(sep["id"], timeout=60)
+
+            plan = service._compute_arrangement(RenderOptions(
+                anchor_id=a["id"], lead_id=l["id"], lead_variant="center",
+                duration=2.0, preview=True,
+            ))
+            full_lead = service.track_path(l["id"])
+            assert plan.lead_path != full_lead, "lead path must not be the full track"
+            assert service.stem_dir.resolve() in plan.lead_path.resolve().parents, \
+                "lead path must be under the dedicated stems/ root"
+            assert plan.lead_path.name == "center.wav"
+        finally:
+            service.close()
+
+    def test_corrupt_stem_row_not_advertised(self, tmp_path):
+        """Audit regression: a stem row pointing outside stems/ is not playable.
+
+        A corrupt ``paths_json`` entry pointing at ``tracks/...`` must not be
+        advertised by ``list_stems`` nor accepted by ``_variant_available``,
+        even though it resolves under the broad data root.
+        """
+        service = StudioService(tmp_path / "data")
+        try:
+            l = _ingest(service, synth_track(tmp_path / "l.wav", bpm=120, root=220.0))
+            sha = service._track_content_hash(l["id"])
+            # Insert a corrupt completed stem set whose "center" path points at
+            # the full track file (under tracks/, not stems/).
+            with service._connect() as conn:
+                conn.execute(
+                    "INSERT INTO stem_sets (id, track_id, method, model, device,"
+                    " status, paths_json, track_sha256, model_name, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, 'complete', ?, ?, ?, ?)",
+                    (
+                        "corruptset", l["id"], "ffmpeg", "center-side-v1", "cpu",
+                        json.dumps({"center": f"tracks/{l['id']}.wav"}),
+                        sha, "center-side-v1", time.time(),
+                    ),
+                )
+            assert service._variant_available(sha, "center") is False
+            data = service.list_stems(l["id"])
+            names = [v["name"] for v in data["variants"]]
+            assert "center" not in names
+        finally:
+            service.close()
+
+    def test_legacy_use_vocals_ensures_before_planning(self, tmp_path, monkeypatch):
+        """Audit regression: legacy use_vocals must separate before planning.
+
+        Planning now resolves the concrete stem path, so on-demand vocals must
+        be ensured BEFORE ``_compute_arrangement`` runs — otherwise a render
+        with ``use_vocals=True`` and no cached vocals would fail.
+        """
+        service = StudioService(tmp_path / "data")
+        try:
+            a = _ingest(service, synth_track(tmp_path / "a.wav", bpm=100, root=261.63))
+            l = _ingest(service, synth_track(tmp_path / "l.wav", bpm=120, root=220.0))
+
+            calls = []
+            real_ensure = service._ensure_stem_variant
+            real_compute = service._compute_arrangement
+
+            def fake_ensure(track_id, variant, job_id, token):
+                calls.append("ensure")
+                # Simulate a successful on-demand separation by writing a real
+                # stem set row so the subsequent planning resolves the path.
+                sha = service._track_content_hash(track_id)
+                stem_set_id = "legacyvocals"
+                final_dir = service.stem_dir / stem_set_id
+                final_dir.mkdir(parents=True, exist_ok=True)
+                (final_dir / "vocals.wav").write_bytes(b"RIFFxxxxWAVEfmt ")
+                with service._connect() as conn:
+                    conn.execute(
+                        "INSERT INTO stem_sets (id, track_id, method, model, device,"
+                        " status, paths_json, track_sha256, model_name, created_at)"
+                        " VALUES (?, ?, ?, ?, ?, 'complete', ?, ?, ?, ?)",
+                        (
+                            stem_set_id, track_id, "demucs", "htdemucs@test", "cpu",
+                            json.dumps({"vocals": f"stems/{stem_set_id}/vocals.wav"}),
+                            sha, "htdemucs@test", time.time(),
+                        ),
+                    )
+
+            def fake_compute(options):
+                calls.append("compute")
+                return real_compute(options)
+
+            monkeypatch.setattr(service, "_ensure_stem_variant", fake_ensure)
+            monkeypatch.setattr(service, "_compute_arrangement", fake_compute)
+
+            # Call _run_render directly with a no-op token.
+            from twobecomeone.jobs import CancellationToken
+            token = CancellationToken()
+            try:
+                service._run_render("jobid", token, RenderOptions(
+                    anchor_id=a["id"], lead_id=l["id"], use_vocals=True,
+                    duration=2.0, preview=True,
+                ))
+            except Exception:
+                # The render itself may fail on the fake WAV bytes; the ordering
+                # assertion below is what matters.
+                pass
+
+            assert calls[0] == "ensure", f"ensure must run before compute, got {calls}"
+            assert "compute" in calls
         finally:
             service.close()
 

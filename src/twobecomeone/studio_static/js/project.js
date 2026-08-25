@@ -106,6 +106,13 @@ export class ProjectManager {
     this.store.dispatch({ type: 'project/patch-local', fields });
     Object.assign(this._dirty, fields);
     this._publishDirty();
+    if (this._inflight) {
+      // A flush is already in flight; its continuation reschedules a 0ms flush
+      // to pick up these newly-dirty fields. Do not start a second debounce
+      // timer here — it would be orphaned when the in-flight flush overwrites
+      // this._timer, causing a spurious extra request after the test/teardown.
+      return;
+    }
     if (this._timer) clearTimeout(this._timer);
     this._timer = setTimeout(() => this._flush(), DEBOUNCE_MS);
   }
@@ -122,8 +129,9 @@ export class ProjectManager {
   /**
    * Serialize network saves: never overlap requests, and never let an older
    * response clobber newer local edits. On success the server response is
-   * merged; on failure the user's unsaved edits stay visible and are
-   * offered for retry.
+   * merged, but any field re-edited while the PATCH was in flight keeps its
+   * newer local value. On failure the user's unsaved edits stay visible and
+   * are offered for retry.
    */
   async _flush() {
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
@@ -140,43 +148,35 @@ export class ProjectManager {
       });
       return;
     }
-    // Snapshot the local project version before the network request so we
-    // can detect and reject stale responses.
-    const localVersionBefore = {
-      project: this.store.getState().currentProject,
-      updated_at: project.updated_at,
-    };
     const controller = new AbortController();
     this._inflight = { controller, fields };
     this._publishDirty();
     try {
       const saved = await patchProject(project.id, fields, controller.signal);
       const current = this.store.getState().currentProject;
-      // Stale response guard: if local edits have advanced past the version
-      // we sent, keep current local state and only adopt server-authored
-      // metadata for fields that are no longer dirty.
-      const isStale =
-        current.id === project.id &&
-        current.updated_at != null &&
-        saved.updated_at != null &&
-        saved.updated_at < current.updated_at;
-      if (isStale) {
-        // Don't clobber newer local edits; for every field we sent, prefer
-        // the newer local value. Everything else is authoritative from the
-        // server response.
-        const reconciled = { ...saved };
-        for (const key of Object.keys(fields)) {
-          if (key !== 'id' && key !== 'updated_at') {
-            reconciled[key] = current[key];
-          }
+      // Reconcile against fields re-edited while this PATCH was in flight.
+      // A field that is dirty again carries a newer local value that must win
+      // over the (older) server response. This is timestamp-independent: the
+      // optimistic patch does not advance updated_at, so comparing timestamps
+      // would wrongly accept a stale response.
+      const reconciled = { ...saved };
+      let keptLocal = false;
+      for (const key of Object.keys(fields)) {
+        if (
+          key !== 'id' &&
+          key !== 'updated_at' &&
+          Object.prototype.hasOwnProperty.call(this._dirty, key)
+        ) {
+          reconciled[key] = current[key];
+          keptLocal = true;
         }
-        // Preserve local updated_at because the server returned an older one.
-        reconciled.updated_at = current.updated_at;
-        this.store.dispatch({ type: 'project/set', project: reconciled });
-      } else {
-        // Authoritative response: apply it directly.
-        this.store.dispatch({ type: 'project/set', project: saved });
       }
+      if (keptLocal) {
+        // The server's updated_at reflects the older write; keep the local one
+        // so the newer (still-unsaved) edit is not mislabelled as persisted.
+        reconciled.updated_at = current.updated_at;
+      }
+      this.store.dispatch({ type: 'project/set', project: reconciled });
       this.store.dispatch({
         type: 'save/status',
         status: Object.keys(this._dirty).length ? 'saving' : 'saved',

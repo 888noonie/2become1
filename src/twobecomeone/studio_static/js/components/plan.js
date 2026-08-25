@@ -212,8 +212,6 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
         const tempoRatioText = d.tempo_ratio != null ? `${d.tempo_ratio.toFixed(3)}x` : '—';
 
         const outputDuration = d.duration?.output ?? d.output_duration ?? 0;
-        const requestedDuration = d.duration?.requested ?? 0;
-        const availableDuration = d.duration?.available ?? 0;
 
         const metricsEl = createElement('div', { class: 'plan-metrics' }, [
           createElement('div', { class: 'plan-metric' }, [
@@ -235,8 +233,13 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
         ]);
 
         // Source-time explanation: how the lead maps onto the anchor clock.
+        // The renderer trims the lead to `output_duration * tempo_ratio` before
+        // stretching, so source time consumed is the capped output duration
+        // MULTIPLIED by the tempo ratio (never divided, never the uncapped
+        // requested duration).
+        const sourceTime = outputDuration * (d.tempo_ratio || 1);
         const leadOnAnchorClock = d.tempo_ratio
-          ? `Lead source ${formatTime(requestedDuration || outputDuration)} × ${d.tempo_ratio.toFixed(3)} = ${formatTime((requestedDuration || outputDuration) / (d.tempo_ratio || 1))} source time.`
+          ? `Lead source ${formatTime(outputDuration)} × ${d.tempo_ratio.toFixed(3)} = ${formatTime(sourceTime)} source time.`
           : '';
 
         const warningsEl = createElement('div', { class: 'plan-warnings' });
