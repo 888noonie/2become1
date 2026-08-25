@@ -103,6 +103,13 @@ MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
             "CREATE INDEX idx_stem_sets_track ON stem_sets(track_id)",
         ],
     ),
+    (
+        4,
+        "job progress_json",
+        [
+            "ALTER TABLE jobs ADD COLUMN progress_json TEXT",
+        ],
+    ),
 ]
 
 

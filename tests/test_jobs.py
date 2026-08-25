@@ -45,6 +45,7 @@ def _make_store(tmp_path: Path) -> JobStore:
                 executor TEXT,
                 cancel_requested INTEGER NOT NULL DEFAULT 0,
                 parent_job_id TEXT,
+                progress_json TEXT,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             );
@@ -57,12 +58,24 @@ class TestTransitionMatrix:
     def test_allowed_transitions(self):
         assert can_transition(JobStatus.QUEUED, JobStatus.RUNNING)
         assert can_transition(JobStatus.QUEUED, JobStatus.CANCELLED)
+        assert can_transition(JobStatus.QUEUED, JobStatus.INTERRUPTED)
         assert can_transition(JobStatus.RUNNING, JobStatus.COMPLETE)
         assert can_transition(JobStatus.RUNNING, JobStatus.FAILED)
         assert can_transition(JobStatus.RUNNING, JobStatus.CANCELLED)
-        assert can_transition(JobStatus.FAILED, JobStatus.QUEUED)
-        assert can_transition(JobStatus.INTERRUPTED, JobStatus.QUEUED)
-        assert can_transition(JobStatus.CANCELLED, JobStatus.QUEUED)
+        assert can_transition(JobStatus.RUNNING, JobStatus.INTERRUPTED)
+
+    def test_terminal_states_are_immutable(self):
+        # Terminal states have no outgoing transitions.
+        for terminal in (
+            JobStatus.COMPLETE,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+            JobStatus.INTERRUPTED,
+        ):
+            for target in JobStatus:
+                assert not can_transition(terminal, target), (
+                    f"{terminal.value} must not transition to {target.value}"
+                )
 
     def test_forbidden_transitions(self):
         assert not can_transition(JobStatus.COMPLETE, JobStatus.RUNNING)
@@ -70,6 +83,9 @@ class TestTransitionMatrix:
         assert not can_transition(JobStatus.QUEUED, JobStatus.COMPLETE)
         assert not can_transition(JobStatus.FAILED, JobStatus.COMPLETE)
         assert not can_transition(JobStatus.CANCELLED, JobStatus.COMPLETE)
+        assert not can_transition(JobStatus.FAILED, JobStatus.QUEUED)
+        assert not can_transition(JobStatus.INTERRUPTED, JobStatus.QUEUED)
+        assert not can_transition(JobStatus.CANCELLED, JobStatus.QUEUED)
 
     def test_store_enforces_matrix(self, tmp_path):
         store = _make_store(tmp_path)
@@ -83,6 +99,12 @@ class TestTransitionMatrix:
         store = _make_store(tmp_path)
         with pytest.raises(Exception, match="unknown job"):
             store.transition("nope", JobStatus.RUNNING)
+
+    def test_store_rejects_unknown_field(self, tmp_path):
+        store = _make_store(tmp_path)
+        job_id = store.create(JobKind.RENDER, {})
+        with pytest.raises(Exception, match="unknown job field"):
+            store.update(job_id, malicious_column="DROP TABLE jobs")
 
 
 class TestJobStore:
@@ -139,7 +161,7 @@ class TestJobStore:
         job_id = store.create(JobKind.RENDER, {})
         store.transition(job_id, JobStatus.RUNNING)
         store.transition(job_id, JobStatus.COMPLETE)
-        with pytest.raises(Exception, match="only failed or interrupted"):
+        with pytest.raises(Exception, match="only failed, interrupted, or cancelled"):
             store.clone_for_retry(job_id)
 
     def test_mark_interrupted_on_startup(self, tmp_path):
@@ -317,6 +339,38 @@ class TestJobEngine:
         with pytest.raises(Exception, match="closed"):
             engine.submit(JobKind.RENDER, {}, lambda *a: {})
 
+    def test_three_worker_sqlite_stress(self, tmp_path):
+        # Two acquisition workers + one audio worker hammering the store
+        # concurrently must not produce SQLite lock errors.
+        store = _make_store(tmp_path)
+        engine = JobEngine(store)
+        errors = []
+        try:
+            def run(job_id, token):
+                for _ in range(50):
+                    store.update(job_id, progress=1, message="tick")
+                return {"result": {}, "message": "done"}
+
+            # Two imports (acquisition pool) + one render (audio pool).
+            jobs = [
+                engine.submit(JobKind.IMPORT, {"url": "a"}, run),
+                engine.submit(JobKind.IMPORT, {"url": "b"}, run),
+                engine.submit(JobKind.RENDER, {}, run),
+            ]
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                statuses = {store.get(j["id"])["status"] for j in jobs}
+                if statuses <= {"complete", "failed"}:
+                    break
+                time.sleep(0.05)
+            for j in jobs:
+                final = store.get(j["id"])
+                if final["status"] == "failed":
+                    errors.append(final["error"])
+            assert not errors, f"stress test produced failures: {errors}"
+        finally:
+            engine.shutdown()
+
 
 class TestStudioServiceJobs:
     def test_render_job_uses_engine_and_no_output_path_leak(self, tmp_path):
@@ -369,53 +423,23 @@ class TestStudioServiceJobs:
             service.close()
 
     def test_restart_marks_jobs_interrupted(self, tmp_path):
-        import math
-        import struct
-        import wave
-
-        def synth(path, bpm, root, duration=4.0):
-            sr = 22050
-            beat = 60.0 / bpm
-            samples = bytearray()
-            for i in range(int(sr * duration)):
-                t = i / sr
-                chord = (math.sin(2 * math.pi * root * t)
-                         + 0.7 * math.sin(2 * math.pi * root * 1.25 * t)
-                         + 0.6 * math.sin(2 * math.pi * root * 1.5 * t)) / 3
-                click = 0.45 * math.sin(2 * math.pi * 90 * t) if (t % beat) < 0.04 else 0
-                v = int(max(-1, min(1, chord + click)) * 22000)
-                samples += struct.pack("<hh", v, v)
-            with wave.open(str(path), "wb") as w:
-                w.setnchannels(2)
-                w.setsampwidth(2)
-                w.setframerate(sr)
-                w.writeframes(samples)
-
-        anchor = tmp_path / "anchor.wav"
-        lead = tmp_path / "lead.wav"
-        synth(anchor, 100, 261.63)
-        synth(lead, 140, 220.0)
-
+        # Seed a queued job directly into the database, then reopen the service
+        # to simulate a crash/restart. The queued job must be marked
+        # interrupted (not failed, not cancelled) on startup.
         data_dir = tmp_path / "data"
         service = StudioService(data_dir)
-        with anchor.open("rb") as f:
-            a = service.ingest(f, "anchor.wav")
-        with lead.open("rb") as f:
-            l = service.ingest(f, "lead.wav")
-
-        from twobecomeone.studio import RenderOptions
-        job = service.submit_render(RenderOptions(
-            anchor_id=a["id"], lead_id=l["id"], duration=2.0, preview=True,
-        ))
-        # Simulate a crash: close without waiting, then reopen.
-        service.close()
+        # Create a queued job via the store, then abandon WITHOUT clean close
+        # (simulate a crash by not calling close()).
+        from twobecomeone.contracts import JobKind
+        job_id = service._store.create(JobKind.RENDER, {"anchor_id": "x"})
+        # Abandon the service without close() to simulate a crash.
+        service._engine.shutdown(wait=False)
+        del service
 
         service2 = StudioService(data_dir)
         try:
-            # The job was queued/running at close; on reopen it must be
-            # interrupted (or complete if it finished before close).
-            reopened = service2.get_job(job["id"])
-            assert reopened["status"] in {"interrupted", "complete", "failed"}
+            reopened = service2.get_job(job_id)
+            assert reopened["status"] == "interrupted"
         finally:
             service2.close()
 

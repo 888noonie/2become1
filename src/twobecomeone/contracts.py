@@ -146,6 +146,36 @@ class StemSet:
 
 
 @dataclass(frozen=True)
+class ProgressDetail:
+    """Structured, honest progress for a long-running job.
+
+    ``percent`` is measured progress (0-100) when known, else None. ``bytes``,
+    ``speed``, and ``eta`` are optional and may be None/unknown. ``stage`` is a
+    human label; ``measured`` is True when ``percent`` comes from a real
+    measurement (e.g. yt-dlp byte progress) and False when it is stage-based.
+    """
+
+    stage: str
+    percent: float | None = None
+    bytes: int | None = None
+    total_bytes: int | None = None
+    speed: float | None = None
+    eta: float | None = None
+    measured: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "percent": self.percent,
+            "bytes": self.bytes,
+            "total_bytes": self.total_bytes,
+            "speed": self.speed,
+            "eta": self.eta,
+            "measured": self.measured,
+        }
+
+
+@dataclass(frozen=True)
 class TrackModel:
     """A track as returned over the API.
 

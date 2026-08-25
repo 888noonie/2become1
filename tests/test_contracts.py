@@ -10,6 +10,7 @@ from twobecomeone import contracts, migrations
 
 FIXTURES = Path(__file__).with_name("fixtures")
 V02_SCHEMA = FIXTURES / "v0.2_schema.sql"
+V01_SCHEMA = FIXTURES / "v0.1_schema.sql"
 
 
 def _load_v02_db() -> sqlite3.Connection:
@@ -17,6 +18,14 @@ def _load_v02_db() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(V02_SCHEMA.read_text())
+    return conn
+
+
+def _load_v01_db() -> sqlite3.Connection:
+    """Build an in-memory database at the V0.1 schema with seed rows."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(V01_SCHEMA.read_text())
     return conn
 
 
@@ -129,6 +138,51 @@ class TestMigrations:
         second = migrations.run_migrations(conn)
         assert first == [m[0] for m in migrations.MIGRATIONS]
         assert second == []
+
+    def test_v01_database_migrates_to_latest(self):
+        conn = _load_v01_db()
+        applied = migrations.run_migrations(conn)
+        assert applied == [m[0] for m in migrations.MIGRATIONS]
+
+        # V0.2 columns added by migration #0
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(tracks)")}
+        for expected in (
+            "beat_interval", "first_beat", "suggested_downbeat",
+            "beat_confidence", "source_kind", "source_ref",
+        ):
+            assert expected in cols, f"missing V0.2 column {expected}"
+
+        # V0.3 columns added by migration #1
+        for expected in ("display_name", "content_sha256", "deleted_at"):
+            assert expected in cols, f"missing V0.3 column {expected}"
+
+        # progress_json added by migration #4
+        job_cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+        assert "progress_json" in job_cols
+
+    def test_v01_seed_rows_survive_migration(self):
+        conn = _load_v01_db()
+        migrations.run_migrations(conn)
+
+        track = conn.execute(
+            "SELECT original_name, bpm, tonic, mode, source_kind"
+            " FROM tracks WHERE id = 'track-v01-1'"
+        ).fetchone()
+        assert track is not None
+        assert track["original_name"] == "old.wav"
+        assert track["bpm"] == pytest.approx(120.0)
+        assert track["tonic"] == "G"
+        assert track["mode"] == "major"
+        # source_kind defaulted by migration #0
+        assert track["source_kind"] == "upload"
+
+        job = conn.execute(
+            "SELECT kind, status, output_path FROM jobs WHERE id = 'job-v01-1'"
+        ).fetchone()
+        assert job is not None
+        assert job["kind"] == "render"
+        assert job["status"] == "complete"
+        assert job["output_path"] == "/data/renders/job-v01-1.mp3"
 
     def test_failed_migration_rolls_back(self):
         # A migration that fails mid-way must not record its version or leave

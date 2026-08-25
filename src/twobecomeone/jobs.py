@@ -1,17 +1,16 @@
 """Job lifecycle, executors, cancellation, and retry for 2become1.
 
-Phase 1 extracts job orchestration out of ``studio.py`` into this module. It
-owns:
+Phase 1 extracted job orchestration out of ``studio.py``. Phase 2.0 hardens it:
 
-- the explicit state-transition matrix (the single source of truth for which
-  job states may follow which);
-- a SQLite-backed :class:`JobStore` that persists jobs and enforces the matrix;
-- a :class:`JobEngine` with two executors (acquisition: 2 workers; audio/GPU:
-  1 worker) plus per-job cancellation tokens, retry cloning, and clean shutdown.
-
-The engine is deliberately decoupled from the DSP: callers pass a ``run_fn``
-that performs the actual work and returns a result dict. The engine owns only
-the lifecycle around it (running → complete/failed/cancelled).
+- transitions are atomic compare-and-swap (``WHERE id = ? AND status = ?`` with
+  a rowcount check), so two callers cannot both validate against a stale status;
+- writable job fields are whitelisted; caller-controlled column names are never
+  interpolated into SQL;
+- terminal states are immutable (no terminal → queued transition); retry clones
+  a new job instead of mutating the original;
+- a cancellation check runs immediately before a worker is marked complete;
+- shutdown cancels queued futures, terminates registered acquisition
+  subprocesses, and drains active audio work.
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ from typing import Any, Callable
 
 from .common import UserError
 from .contracts import (
-    ACTIVE_JOB_STATES,
     TERMINAL_JOB_STATES,
     JobKind,
     JobStatus,
@@ -38,6 +36,8 @@ from .contracts import (
 # ---------------------------------------------------------------------------
 
 # Allowed transitions: from -> set of allowed "to" states.
+# Terminal states (complete/failed/cancelled/interrupted) are immutable: they
+# have no outgoing transitions. Retry/resume always clones a NEW job.
 TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.QUEUED: frozenset({
         JobStatus.RUNNING,
@@ -50,9 +50,9 @@ TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
         JobStatus.CANCELLED,
         JobStatus.INTERRUPTED,
     }),
-    JobStatus.FAILED: frozenset({JobStatus.QUEUED}),
-    JobStatus.INTERRUPTED: frozenset({JobStatus.QUEUED}),
-    JobStatus.CANCELLED: frozenset({JobStatus.QUEUED}),
+    JobStatus.FAILED: frozenset(),
+    JobStatus.INTERRUPTED: frozenset(),
+    JobStatus.CANCELLED: frozenset(),
     JobStatus.COMPLETE: frozenset(),
 }
 
@@ -96,6 +96,25 @@ class CancellationToken:
 # JobStore
 # ---------------------------------------------------------------------------
 
+# Fields a caller may write, mapped to their column name. ``result`` and
+# ``request`` serialize to JSON columns; everything else maps 1:1. Any field
+# not in this table is rejected — caller-controlled column names are never
+# interpolated into SQL.
+_WRITABLE_FIELDS: dict[str, str] = {
+    "stage": "stage",
+    "progress": "progress",
+    "message": "message",
+    "error": "error",
+    "output_path": "output_path",
+    "executor": "executor",
+    "cancel_requested": "cancel_requested",
+    "parent_job_id": "parent_job_id",
+    "result": "result_json",
+    "request": "request_json",
+    "progress_detail": "progress_json",
+}
+
+
 class JobStore:
     """SQLite persistence for jobs, enforcing the transition matrix.
 
@@ -129,9 +148,29 @@ class JobStore:
             "executor": row["executor"],
             "cancel_requested": bool(row["cancel_requested"]),
             "parent_job_id": row["parent_job_id"],
+            "progress_detail": (
+                json.loads(row["progress_json"]) if row["progress_json"] else None
+            ),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
+
+    @staticmethod
+    def _build_assignments(fields: dict[str, Any]) -> tuple[list[str], list[Any]]:
+        """Validate and map writable fields to (assignments, values)."""
+        assignments: list[str] = []
+        values: list[Any] = []
+        for name, value in fields.items():
+            column = _WRITABLE_FIELDS.get(name)
+            if column is None:
+                raise UserError(f"unknown job field: {name}")
+            if name in {"result", "request", "progress_detail"}:
+                assignments.append(f"{column} = ?")
+                values.append(json.dumps(value))
+            else:
+                assignments.append(f"{column} = ?")
+                values.append(value)
+        return assignments, values
 
     # -- create / read ------------------------------------------------------
 
@@ -211,11 +250,19 @@ class JobStore:
         to_status: JobStatus,
         **fields: Any,
     ) -> None:
-        """Move a job to ``to_status``, validating the transition matrix.
+        """Atomically move a job to ``to_status``, validating the matrix.
 
-        Extra keyword fields (stage, progress, message, result, output_path,
-        error, ...) are written in the same update.
+        The update is a compare-and-swap: it only succeeds if the row's current
+        status still matches the status we validated against. If another caller
+        changed the status concurrently, the update matches zero rows and we
+        raise, so two callers can never both win against a stale status.
         """
+        assignments, values = self._build_assignments(fields)
+        assignments.insert(0, "status = ?")
+        values.insert(0, to_status.value)
+        assignments.append("updated_at = ?")
+        values.append(time.time())
+
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT status FROM jobs WHERE id = ?", (job_id,)
@@ -228,38 +275,20 @@ class JobStore:
                     f"illegal job transition: {current.value} -> {to_status.value}"
                 )
 
-            assignments = ["status = ?"]
-            values: list[Any] = [to_status.value]
-            for name, value in fields.items():
-                if name == "result":
-                    assignments.append("result_json = ?")
-                    values.append(json.dumps(value))
-                elif name == "request":
-                    assignments.append("request_json = ?")
-                    values.append(json.dumps(value))
-                else:
-                    assignments.append(f"{name} = ?")
-                    values.append(value)
-            assignments.append("updated_at = ?")
-            values.append(time.time())
-            values.append(job_id)
-            conn.execute(
-                f"UPDATE jobs SET {', '.join(assignments)} WHERE id = ?", values
+            cur = conn.execute(
+                f"UPDATE jobs SET {', '.join(assignments)} WHERE id = ? AND status = ?",
+                values + [job_id, current.value],
             )
+            if cur.rowcount == 0:
+                raise InvalidTransition(
+                    f"job {job_id} changed state concurrently; transition aborted"
+                )
 
     def update(self, job_id: str, **fields: Any) -> None:
         """Update non-status fields (progress, stage, message, ...) in place."""
         if not fields:
             return
-        assignments: list[str] = []
-        values: list[Any] = []
-        for name, value in fields.items():
-            if name == "result":
-                assignments.append("result_json = ?")
-                values.append(json.dumps(value))
-            else:
-                assignments.append(f"{name} = ?")
-                values.append(value)
+        assignments, values = self._build_assignments(fields)
         assignments.append("updated_at = ?")
         values.append(time.time())
         values.append(job_id)
@@ -276,16 +305,26 @@ class JobStore:
             )
 
     def clone_for_retry(self, job_id: str) -> str:
-        """Clone a failed/interrupted job's request into a fresh queued job."""
+        """Clone a failed/interrupted/cancelled job's request into a fresh job.
+
+        The original terminal job is never mutated; a new queued job is created
+        carrying the same request (and therefore the same ``work_key`` for
+        resumable imports).
+        """
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM jobs WHERE id = ?", (job_id,)
             ).fetchone()
             if row is None:
                 raise UserError(f"unknown job: {job_id}")
-            if row["status"] not in {JobStatus.FAILED.value, JobStatus.INTERRUPTED.value}:
+            if row["status"] not in {
+                JobStatus.FAILED.value,
+                JobStatus.INTERRUPTED.value,
+                JobStatus.CANCELLED.value,
+            }:
                 raise UserError(
-                    f"only failed or interrupted jobs can be retried (got {row['status']})"
+                    f"only failed, interrupted, or cancelled jobs can be retried "
+                    f"(got {row['status']})"
                 )
             new_id = uuid.uuid4().hex
             now = time.time()
@@ -331,6 +370,10 @@ class JobEngine:
     Two pools:
       - acquisition: two workers (downloads/analysis of separate tracks);
       - audio: one worker (Demucs, previews, renders) to protect GPU headroom.
+
+    Run functions may register a "terminator" callable (e.g. to kill a spawned
+    subprocess) via :meth:`register_terminator`; shutdown invokes them so
+    active acquisition subprocesses are terminated rather than left orphaned.
     """
 
     def __init__(self, store: JobStore):
@@ -342,6 +385,7 @@ class JobEngine:
             max_workers=1, thread_name_prefix="2become1-audio"
         )
         self._tokens: dict[str, CancellationToken] = {}
+        self._terminators: dict[str, Callable[[], None]] = {}
         self._lock = threading.Lock()
         self._closed = False
 
@@ -349,6 +393,14 @@ class JobEngine:
         if kind == JobKind.IMPORT:
             return self._acquisition
         return self._audio
+
+    def register_terminator(self, job_id: str, fn: Callable[[], None]) -> None:
+        with self._lock:
+            self._terminators[job_id] = fn
+
+    def unregister_terminator(self, job_id: str) -> None:
+        with self._lock:
+            self._terminators.pop(job_id, None)
 
     def submit(
         self,
@@ -394,15 +446,24 @@ class JobEngine:
                 message="Job failed", error=str(exc),
             )
         else:
-            self.store.transition(
-                job_id, JobStatus.COMPLETE, stage="complete", progress=100,
-                message=result.get("message", "Complete"),
-                result=result.get("result"),
-                output_path=result.get("output_path"),
-            )
+            # A cancellation may have been requested while the run function was
+            # finishing; honour it before marking complete.
+            if token.cancelled:
+                self.store.transition(
+                    job_id, JobStatus.CANCELLED, stage="cancelled", progress=100,
+                    message="Cancelled",
+                )
+            else:
+                self.store.transition(
+                    job_id, JobStatus.COMPLETE, stage="complete", progress=100,
+                    message=result.get("message", "Complete"),
+                    result=result.get("result"),
+                    output_path=result.get("output_path"),
+                )
         finally:
             with self._lock:
                 self._tokens.pop(job_id, None)
+                self._terminators.pop(job_id, None)
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         """Request cancellation of a job.
@@ -432,7 +493,7 @@ class JobEngine:
         job_id: str,
         run_fn: Callable[[str, CancellationToken], dict[str, Any]],
     ) -> dict[str, Any]:
-        """Clone a failed/interrupted job and dispatch it again."""
+        """Clone a failed/interrupted/cancelled job and dispatch it again."""
         if self._closed:
             raise UserError("job engine is closed")
         new_id = self.store.clone_for_retry(job_id)
@@ -446,11 +507,26 @@ class JobEngine:
     def shutdown(self, wait: bool = True) -> None:
         """Stop accepting work and shut down both pools.
 
-        Running jobs are allowed to finish (or become interrupted on restart);
-        queued jobs are not started.
+        Semantics:
+          - stop accepting new submissions;
+          - cancel all outstanding tokens (cooperative);
+          - invoke registered terminators to kill active acquisition
+            subprocesses;
+          - cancel queued futures in both pools;
+          - drain the active audio job (unsafe to interrupt) to completion.
         """
         if self._closed:
             return
         self._closed = True
-        self._acquisition.shutdown(wait=wait, cancel_futures=False)
-        self._audio.shutdown(wait=wait, cancel_futures=False)
+        with self._lock:
+            tokens = list(self._tokens.values())
+            terminators = list(self._terminators.values())
+        for token in tokens:
+            token.cancel()
+        for fn in terminators:
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - best-effort termination
+                pass
+        self._acquisition.shutdown(wait=wait, cancel_futures=True)
+        self._audio.shutdown(wait=wait, cancel_futures=True)
