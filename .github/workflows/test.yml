@@ -12,7 +12,13 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: uv venv .venv --python 3.12
       - run: uv pip install --python .venv/bin/python -e '.[web,dev]'
       - run: .venv/bin/pytest -q
+      - run: npm ci
+      - run: npm test

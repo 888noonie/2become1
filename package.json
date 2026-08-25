@@ -1,0 +1,12 @@
+{
+  "name": "2become1-studio-frontend",
+  "private": true,
+  "type": "module",
+  "description": "Frontend unit tests for the 2become1 Studio (dev-only; no production runtime dependency).",
+  "scripts": {
+    "test": "node --test tests/frontend/*.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}

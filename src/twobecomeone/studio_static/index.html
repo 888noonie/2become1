@@ -3,140 +3,50 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#100b1c">
+  <meta name="theme-color" content="#0b0712">
   <title>2become1 Studio</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23ff4f9a'/%3E%3Cpath d='M17 20c0-7 5-11 15-11 9 0 15 5 15 13 0 11-13 15-18 23h19v10H15c0-17 20-22 20-32 0-3-2-5-5-5-4 0-6 2-6 6l-7-4z' fill='white'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23ff4fa3'/%3E%3Cpath d='M17 20c0-7 5-11 15-11 9 0 15 5 15 13 0 11-13 15-18 23h19v10H15c0-17 20-22 20-32 0-3-2-5-5-5-4 0-6 2-6 6l-7-4z' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/assets/studio.css">
+  <link rel="stylesheet" href="/assets/styles/components.css">
+  <link rel="stylesheet" href="/assets/styles/studio.css">
+  <link rel="stylesheet" href="/assets/styles/library.css">
+  <link rel="stylesheet" href="/assets/styles/responsive.css">
 </head>
 <body>
-  <div class="grain" aria-hidden="true"></div>
-  <header class="topbar">
-    <a class="brand" href="/" aria-label="2become1 Studio home">
-      <span class="brand-mark">2</span>
-      <span class="brand-copy"><strong>BECOME</strong><em>ONE</em></span>
-      <small>STUDIO</small>
-    </a>
-    <div class="engine-pill" id="engine-pill">
-      <span class="pulse"></span>
-      <span id="engine-status">Waking the local engine…</span>
-    </div>
-  </header>
+  <a class="skip-link" href="#main">Skip to content</a>
 
-  <main>
-    <section class="hero">
-      <p class="eyebrow">LOCAL AI MASHUP LAB</p>
-      <h1>Two tracks.<br><span>One electric moment.</span></h1>
-      <p class="hero-copy">Drop a beat and a lead. We’ll read their musical DNA, align the energy, and render the collision on your own machine.</p>
-    </section>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="#/studio" aria-label="2become1 Studio home">
+        <span class="brand-mark" aria-hidden="true">2</span>
+        <span class="brand-copy"><strong>BECOME</strong><em>ONE</em></span>
+      </a>
 
-    <section class="track-stage" aria-label="Source tracks">
-      <article class="track-card anchor-card" data-slot="anchor">
-        <div class="card-kicker"><span>01</span> THE FOUNDATION</div>
-        <div class="drop-zone" tabindex="0" role="button" aria-label="Choose anchor track">
-          <input type="file" accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg,.opus,.aiff,.aac" hidden>
-          <div class="vinyl" aria-hidden="true"><i></i></div>
-          <div class="drop-copy">
-            <strong>DROP THE BEAT</strong>
-            <span>or choose an audio file</span>
-          </div>
-        </div>
-        <form class="source-import">
-          <label for="anchor-url">OR PASTE A YOUTUBE LINK</label>
-          <div><input id="anchor-url" type="url" inputmode="url" autocomplete="url" placeholder="https://youtu.be/…" required><button type="submit">Import</button></div>
-        </form>
-        <div class="uploading" hidden><span></span><p>Reading rhythm &amp; harmony…</p></div>
-        <div class="track-result" hidden>
-          <div class="track-heading"><div><span class="file-label">ANCHOR</span><h2></h2></div><button class="replace" type="button">Replace</button></div>
-          <div class="metrics">
-            <div><strong data-field="bpm">—</strong><span>BPM</span></div>
-            <div><strong data-field="key">—</strong><span>KEY</span></div>
-            <div><strong data-field="duration">—</strong><span>TIME</span></div>
-          </div>
-          <audio controls preload="metadata"></audio>
-        </div>
-      </article>
+      <nav class="nav" aria-label="Primary">
+        <a class="nav__link" href="#/studio" data-route="studio">Studio</a>
+        <a class="nav__link" href="#/library" data-route="library">Library</a>
+        <a class="nav__link" href="#/activity" data-route="activity">
+          Activity
+          <span class="nav__badge" id="active-badge" hidden aria-label="active jobs">0</span>
+        </a>
+        <a class="nav__link" href="#/engine" data-route="engine">Engine</a>
+      </nav>
+    </header>
 
-      <div class="collision" aria-hidden="true">
-        <span></span><div>+</div><span></span>
+    <main id="main" class="view" tabindex="-1"></main>
+
+    <footer class="statusbar">
+      <div class="now-playing" id="now-playing" hidden>
+        <span aria-hidden="true">▶</span>
+        <span class="now-playing__title" id="now-playing-title"></span>
       </div>
+      <span>2become1 runs locally. Your tracks stay on this machine.</span>
+    </footer>
+  </div>
 
-      <article class="track-card lead-card" data-slot="lead">
-        <div class="card-kicker"><span>02</span> THE SPARK</div>
-        <div class="drop-zone" tabindex="0" role="button" aria-label="Choose lead track">
-          <input type="file" accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg,.opus,.aiff,.aac" hidden>
-          <div class="mic" aria-hidden="true"><i></i></div>
-          <div class="drop-copy">
-            <strong>DROP THE LEAD</strong>
-            <span>vocals or a second track</span>
-          </div>
-        </div>
-        <form class="source-import">
-          <label for="lead-url">OR PASTE A YOUTUBE LINK</label>
-          <div><input id="lead-url" type="url" inputmode="url" autocomplete="url" placeholder="https://youtu.be/…" required><button type="submit">Import</button></div>
-        </form>
-        <div class="uploading" hidden><span></span><p>Reading rhythm &amp; harmony…</p></div>
-        <div class="track-result" hidden>
-          <div class="track-heading"><div><span class="file-label">LEAD</span><h2></h2></div><button class="replace" type="button">Replace</button></div>
-          <div class="metrics">
-            <div><strong data-field="bpm">—</strong><span>BPM</span></div>
-            <div><strong data-field="key">—</strong><span>KEY</span></div>
-            <div><strong data-field="duration">—</strong><span>TIME</span></div>
-          </div>
-          <audio controls preload="metadata"></audio>
-        </div>
-      </article>
-    </section>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <div id="dialog-layer"></div>
 
-    <section class="console" id="console" hidden>
-      <div class="console-head">
-        <div><p class="eyebrow">ARRANGEMENT DESK</p><h2>Shape the crossover</h2></div>
-        <div class="console-tools">
-          <div class="compatibility" id="compatibility"><span>READY TO CALCULATE</span></div>
-          <button class="sync-button" id="auto-sync" type="button">✦ Auto-sync suggested beats</button>
-        </div>
-      </div>
-
-      <div class="control-grid">
-        <label><span>Beat starts at</span><output id="anchor-start-out">0.0s</output><input id="anchor-start" type="range" min="0" max="60" step="0.1" value="0"></label>
-        <label><span>Lead starts at</span><output id="lead-start-out">0.0s</output><input id="lead-start" type="range" min="0" max="60" step="0.1" value="0"></label>
-        <label><span>Render length</span><output id="duration-out">12s</output><input id="duration" type="range" min="3" max="60" step="1" value="12"></label>
-        <label><span>Beat weight</span><output id="anchor-gain-out">80%</output><input id="anchor-gain" type="range" min="0" max="1.5" step="0.05" value="0.8"></label>
-        <label><span>Lead weight</span><output id="lead-gain-out">80%</output><input id="lead-gain" type="range" min="0" max="1.5" step="0.05" value="0.8"></label>
-        <label class="switch-row">
-          <span><strong>Isolate lead vocal</strong><small>Demucs · RTX accelerated</small></span>
-          <input id="use-vocals" type="checkbox"><i aria-hidden="true"></i>
-        </label>
-      </div>
-
-      <div class="actions">
-        <button id="preview-button" class="button secondary" type="button"><span>▶</span> Make a 12s preview</button>
-        <button id="render-button" class="button primary" type="button">Create the mashup <span>↗</span></button>
-      </div>
-    </section>
-
-    <section class="render-deck" id="render-deck" hidden aria-live="polite">
-      <div class="render-art"><div class="orbit"></div><span>2<span>♥</span>1</span></div>
-      <div class="render-copy">
-        <p class="eyebrow" id="render-kicker">IN THE MIX</p>
-        <h2 id="render-title">Finding the sweet spot…</h2>
-        <p id="render-message">Your local render engine is getting everything aligned.</p>
-        <div class="progress"><i id="progress-bar"></i></div>
-        <div class="render-meta"><span id="progress-value">0%</span><span id="render-stage">QUEUED</span></div>
-        <div class="result-player" id="result-player" hidden>
-          <audio id="result-audio" controls preload="metadata"></audio>
-          <a id="download-link" class="button download" href="#">Download MP3 <span>↓</span></a>
-        </div>
-      </div>
-    </section>
-
-    <section class="recent" id="recent" hidden>
-      <div class="section-title"><p class="eyebrow">FROM THE VAULT</p><h2>Recent renders</h2></div>
-      <div id="recent-list" class="recent-list"></div>
-    </section>
-  </main>
-
-  <div class="toast" id="toast" role="status" hidden></div>
-  <footer><span>2become1 runs locally. Your tracks stay on this machine.</span><span>V0.2 STUDIO</span></footer>
-  <script src="/assets/studio.js" defer></script>
+  <script type="module" src="/assets/js/app.js"></script>
 </body>
 </html>

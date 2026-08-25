@@ -1,0 +1,191 @@
+/* styles/studio.css — application shell, navigation, and Studio view. */
+
+/* ---- Shell layout ---- */
+.shell {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
+}
+
+.topbar {
+  width: min(var(--content-max), calc(100% - var(--space-10)));
+  margin: 0 auto;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.brand {
+  color: var(--color-text);
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  letter-spacing: -0.05em;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-pill);
+  color: var(--color-background);
+  font-weight: 900;
+  font-size: 27px;
+  background: linear-gradient(135deg, var(--color-anchor), var(--color-waiting));
+  transform: rotate(-8deg);
+}
+
+.brand-copy {
+  display: flex;
+  align-items: baseline;
+  font-size: var(--text-lg);
+}
+
+.brand-copy em {
+  color: var(--color-lead);
+  font-style: normal;
+}
+
+/* ---- Navigation ---- */
+.nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.nav__link {
+  min-height: var(--target-min);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-md);
+  color: var(--color-muted);
+  text-decoration: none;
+  font-weight: 700;
+  position: relative;
+}
+
+.nav__link:hover {
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.nav__link[aria-current="page"] {
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+}
+
+.nav__badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--color-waiting);
+  color: var(--color-background);
+  font-size: var(--text-xs);
+  font-weight: 900;
+}
+
+/* ---- Main view container ---- */
+.view {
+  width: min(var(--content-max), calc(100% - var(--space-10)));
+  margin: 0 auto;
+  padding: var(--space-8) 0 var(--space-16);
+}
+
+/* ---- Status footer ---- */
+.statusbar {
+  width: min(var(--content-max), calc(100% - var(--space-10)));
+  margin: 0 auto;
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+}
+
+.now-playing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.now-playing__title {
+  color: var(--color-text);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Studio view (Phase 5 placeholder + slot summary) ---- */
+.studio-placeholder {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.studio-placeholder__hero {
+  padding: var(--space-10) 0;
+}
+
+.studio-placeholder__hero h1 {
+  font-size: var(--text-3xl);
+  line-height: 0.95;
+  text-transform: uppercase;
+  letter-spacing: -0.05em;
+}
+
+.studio-placeholder__hero h1 span {
+  color: transparent;
+  -webkit-text-stroke: 1px var(--color-text);
+}
+
+.hero-copy {
+  max-width: 660px;
+  margin-top: var(--space-5);
+  color: var(--color-muted);
+  font-size: var(--text-md);
+  line-height: 1.7;
+}
+
+.slot-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.slot-card {
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.slot-card--anchor { border-color: var(--color-anchor); }
+.slot-card--lead { border-color: var(--color-lead); }
+
+.slot-card__title {
+  font-size: var(--text-md);
+}
+
+.slot-card__track {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
