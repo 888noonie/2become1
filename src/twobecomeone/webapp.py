@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
-import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -22,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, separator
+from . import __version__
 from .common import UserError
 from .contracts import TERMINAL_JOB_STATES
 from .studio import RenderOptions, StudioService
@@ -123,13 +122,10 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.get("/api/health")
     def health():
-        return {
-            "status": "ready",
-            "version": __version__,
-            "ffmpeg": bool(shutil.which("ffmpeg")),
-            "preferred_device": separator._pick_demucs_device(),
-            "data_dir": str(service.data_dir),
-        }
+        data = service.health()
+        # Network exposure: report whether the server is bound beyond loopback.
+        data["network_exposure"] = _network_exposure()
+        return data
 
     # ------------------------------------------------------------------
     # Tracks (library)
@@ -155,9 +151,11 @@ def create_app(data_dir: str | Path | None = None):
         q: str | None = Query(default=None),
         status: Literal["active", "trash", "all"] = "active",
         sort: Literal["name", "created", "bpm", "duration"] = "created",
+        source: Literal["upload", "local", "youtube"] | None = Query(default=None),
     ):
         return service.list_tracks_page(
             limit=limit, offset=offset, query=q, status=status, sort=sort,
+            source=source,
         )
 
     @app.get("/api/tracks/{track_id}")
@@ -277,8 +275,17 @@ def create_app(data_dir: str | Path | None = None):
         return service.submit_render(RenderOptions(**body.model_dump()))
 
     @app.get("/api/jobs")
-    def list_jobs():
-        return {"jobs": service.list_jobs()}
+    def list_jobs(
+        limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        status: Literal["queued", "running", "complete", "failed", "cancelled", "interrupted"] | None = Query(default=None),
+        kind: Literal["import", "separate", "preview", "render"] | None = Query(default=None),
+    ):
+        # Retain the V0.2 `{jobs: [...]}` alias when no filters/pagination are
+        # requested; otherwise return the paginated `{items,total,limit,offset}`.
+        if status is None and kind is None and limit == 50 and offset == 0:
+            return {"jobs": service.list_jobs(limit=limit)}
+        return service.list_jobs_page(limit=limit, offset=offset, status=status, kind=kind)
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
@@ -342,3 +349,22 @@ def _placeholder_artwork():
         "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
     )
     return Response(content=gif, media_type="image/gif")
+
+
+def _network_exposure() -> dict:
+    """Report whether the server is bound beyond loopback.
+
+    The bind host is not directly introspectable from the ASGI app, so we
+    report the conservative fact that the Studio is unauthenticated and must be
+    treated as local-only unless the operator explicitly bound a non-loopback
+    host. The Engine view uses this to show a prominent no-auth warning.
+    """
+    return {
+        "authenticated": False,
+        "loopback_only": True,
+        "warning": (
+            "2become1 Studio has no authentication. Keep it bound to "
+            "127.0.0.1; exposing it beyond loopback shares your library and "
+            "jobs with anyone who can reach the port."
+        ),
+    }

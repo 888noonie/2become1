@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from . import analyzer, assembler, beatgrid, media, migrations, projects, separator, sources
+from . import __version__, analyzer, assembler, beatgrid, media, migrations, projects, separator, sources
 from .common import CapabilityError, ConflictError, NotFoundError, UserError
 from .contracts import TERMINAL_JOB_STATES, JobKind
 from .jobs import CancellationToken, JobEngine, JobStore
@@ -486,12 +486,14 @@ class StudioService:
         query: str | None = None,
         status: str = "active",
         sort: str = "created",
+        source: str | None = None,
     ) -> dict:
         """Paginated, searchable, filterable library listing.
 
         Returns ``{items, total, limit, offset}``. ``status`` is one of
         ``active``, ``trash``, or ``all``. ``sort`` is allowlisted to name,
-        created, bpm, or duration.
+        created, bpm, or duration. ``source`` optionally filters by
+        ``source_kind`` (upload/local/youtube).
         """
         limit = max(1, min(100, limit))
         offset = max(0, offset)
@@ -499,6 +501,8 @@ class StudioService:
             raise UserError("status must be active, trash, or all")
         if sort not in self._SORT_COLUMNS:
             raise UserError(f"unknown sort: {sort}")
+        if source is not None and source not in {"upload", "local", "youtube"}:
+            raise UserError(f"unknown source: {source}")
 
         where: list[str] = []
         params: list[Any] = []
@@ -506,6 +510,9 @@ class StudioService:
             where.append("deleted_at IS NULL")
         elif status == "trash":
             where.append("deleted_at IS NOT NULL")
+        if source is not None:
+            where.append("source_kind = ?")
+            params.append(source)
         if query:
             where.append(
                 "(COALESCE(display_name, original_name) LIKE ? OR metadata_json LIKE ?)"
@@ -709,6 +716,111 @@ class StudioService:
     def list_jobs(self, limit: int = 20) -> list[dict]:
         jobs, _total = self._store.list(limit=limit)
         return [self._job_api_dict(job) for job in jobs]
+
+    def list_jobs_page(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+        kind: str | None = None,
+    ) -> dict:
+        """Paginated, filterable job listing for the Activity view.
+
+        Returns ``{items, total, limit, offset}``. ``status`` and ``kind`` are
+        optional filters (allowlisted against the job enums).
+        """
+        from .contracts import JobKind as _JobKind, JobStatus as _JobStatus
+
+        limit = max(1, min(100, limit))
+        offset = max(0, offset)
+        status_filter = None
+        kind_filter = None
+        if status is not None:
+            try:
+                status_filter = _JobStatus(status)
+            except ValueError:
+                raise UserError(f"unknown job status: {status}")
+        if kind is not None:
+            try:
+                kind_filter = _JobKind(kind)
+            except ValueError:
+                raise UserError(f"unknown job kind: {kind}")
+        jobs, total = self._store.list(
+            limit=limit, offset=offset, status=status_filter, kind=kind_filter,
+        )
+        return {
+            "items": [self._job_api_dict(job) for job in jobs],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def job_counts(self) -> dict:
+        """Return active/queued job counts for the Engine view and nav badge."""
+        from .contracts import ACTIVE_JOB_STATES, JobStatus
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM jobs GROUP BY status"
+            ).fetchall()
+        counts = {row["status"]: row["n"] for row in rows}
+        active = sum(counts.get(s.value, 0) for s in ACTIVE_JOB_STATES)
+        queued = counts.get(JobStatus.QUEUED.value, 0)
+        running = counts.get(JobStatus.RUNNING.value, 0)
+        return {
+            "active": active,
+            "queued": queued,
+            "running": running,
+            "by_status": counts,
+        }
+
+    def storage_usage(self) -> dict:
+        """Return the total bytes under the managed data directory."""
+        total = 0
+        for path in self.data_dir.rglob("*"):
+            try:
+                if path.is_file():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+        return {"data_dir": str(self.data_dir), "bytes": total}
+
+    def health(self) -> dict:
+        """Return backend-reported facts for the Engine view.
+
+        Only genuinely available values are reported; nothing is invented.
+        """
+        import importlib.metadata as metadata
+        import shutil as _shutil
+
+        def _version(name: str) -> str | None:
+            try:
+                return metadata.version(name)
+            except Exception:
+                return None
+
+        demucs_available = False
+        try:
+            import demucs.api  # noqa: F401
+            demucs_available = True
+        except Exception:
+            pass
+
+        return {
+            "status": "ready",
+            "version": __version__,
+            "ffmpeg": bool(_shutil.which("ffmpeg")),
+            "yt_dlp": bool(_shutil.which("yt-dlp")),
+            "preferred_device": separator._pick_demucs_device(),
+            "current_device": separator.demucs_device(),
+            "demucs_available": demucs_available,
+            "demucs_version": _version("demucs"),
+            "torch_version": _version("torch"),
+            "data_dir": str(self.data_dir),
+            "queue": self.job_counts(),
+            "storage": self.storage_usage(),
+        }
 
     def job_output_path(self, job_id: str) -> Path:
         output_path = self._store.get_output_path(job_id)
