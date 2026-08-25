@@ -46,6 +46,23 @@ def _migration_0_v01_to_v02(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "tracks", "source_ref", "TEXT")
 
 
+def _migration_7_stem_cache_identity(conn: sqlite3.Connection) -> None:
+    """Give ``stem_sets`` an enforceable cache identity.
+
+    The cache key is ``track_sha256 + method + model_name``. ``model_name`` is
+    stable and version-sensitive (e.g. ``htdemucs@4.1.0`` or ``center-side-v1``)
+    so upgrading the model invalidates old cache entries automatically. All
+    three components are NOT NULL (no nullable cache components), enforced by a
+    unique composite index.
+    """
+    _add_column_if_missing(conn, "stem_sets", "track_sha256", "TEXT NOT NULL DEFAULT ''")
+    _add_column_if_missing(conn, "stem_sets", "model_name", "TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_stem_sets_cache"
+        " ON stem_sets(track_sha256, method, model_name)"
+    )
+
+
 # (version, name, action)
 MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
     (0, "v0.1 to v0.2 track columns", _migration_0_v01_to_v02),
@@ -124,6 +141,11 @@ MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
             "DROP INDEX idx_tracks_content_sha256",
             "CREATE UNIQUE INDEX idx_tracks_content_sha256 ON tracks(content_sha256)",
         ],
+    ),
+    (
+        7,
+        "stem_sets cache identity",
+        _migration_7_stem_cache_identity,
     ),
 ]
 

@@ -20,10 +20,10 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
-from . import analyzer, assembler, beatgrid, media, migrations, separator, sources
-from .common import UserError
+from . import analyzer, assembler, beatgrid, media, migrations, projects, separator, sources
+from .common import CapabilityError, ConflictError, NotFoundError, UserError
 from .contracts import TERMINAL_JOB_STATES, JobKind
 from .jobs import CancellationToken, JobEngine, JobStore
 
@@ -32,6 +32,29 @@ ALLOWED_AUDIO_SUFFIXES = {
     ".aac", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav",
 }
 MAX_UPLOAD_BYTES = 750 * 1024 * 1024
+
+# Valid tonic names (matches analyzer._NOTE_NAMES).
+_NOTE_NAMES = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
+
+
+def _finite_positive(value: Any, name: str) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise UserError(f"{name} must be a number")
+    if not math.isfinite(v) or v <= 0:
+        raise UserError(f"{name} must be a positive finite number")
+    return v
+
+
+def _finite_nonnegative(value: Any, name: str) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise UserError(f"{name} must be a number")
+    if not math.isfinite(v) or v < 0:
+        raise UserError(f"{name} must be a non-negative finite number")
+    return v
 
 
 def default_data_dir() -> Path:
@@ -50,6 +73,9 @@ class RenderOptions:
     use_vocals: bool = False
     stem_method: str = "auto"
     preview: bool = False
+    anchor_variant: str | None = None
+    lead_variant: str | None = None
+    pitch_mode: str = "match"
 
     def validate(self) -> None:
         numeric = {
@@ -71,6 +97,21 @@ class RenderOptions:
             raise UserError("gains must be between 0 and 2")
         if self.stem_method not in {"auto", "demucs", "ffmpeg"}:
             raise UserError(f"unknown stem method: {self.stem_method}")
+        if self.pitch_mode not in {"preserve", "match"}:
+            raise UserError(f"unknown pitch mode: {self.pitch_mode}")
+        # Reject contradictory legacy + explicit variant payloads.
+        if self.use_vocals and self.lead_variant not in (None, "vocals"):
+            raise UserError("use_vocals conflicts with lead_variant; use one or the other")
+        if self.anchor_variant is not None:
+            projects.validate_variant(self.anchor_variant)
+        if self.lead_variant is not None:
+            projects.validate_variant(self.lead_variant)
+
+    def resolved_lead_variant(self) -> str:
+        """Map legacy ``use_vocals`` to an explicit lead variant."""
+        if self.lead_variant is not None:
+            return self.lead_variant
+        return "vocals" if self.use_vocals else "full"
 
 
 class StudioService:
@@ -83,15 +124,18 @@ class StudioService:
         self.render_dir = self.data_dir / "renders"
         self.stem_dir = self.data_dir / "stems"
         self.waveform_dir = self.data_dir / "waveforms"
+        self.artwork_dir = self.data_dir / "artwork"
+        self.temp_dir = self.data_dir / "temp"
         self.db_path = self.data_dir / "studio.sqlite3"
         for directory in (
             self.data_dir, self.track_dir, self.incoming_dir, self.render_dir,
-            self.stem_dir, self.waveform_dir,
+            self.stem_dir, self.waveform_dir, self.artwork_dir, self.temp_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         self._init_db()
         self._store = JobStore(self._connect)
         self._engine = JobEngine(self._store)
+        self._projects = projects.ProjectStore(self._connect)
         self._closed = False
 
     def _connect(self) -> sqlite3.Connection:
@@ -147,29 +191,70 @@ class StudioService:
 
     @staticmethod
     def _track_dict(row: sqlite3.Row) -> dict:
+        # Effective = override when override is not null, otherwise detected.
+        bpm = row["bpm_override"] if row["bpm_override"] is not None else row["bpm"]
+        tonic = row["tonic_override"] if row["tonic_override"] is not None else row["tonic"]
+        mode = row["mode_override"] if row["mode_override"] is not None else row["mode"]
+        first_beat = (
+            row["first_beat_override"]
+            if row["first_beat_override"] is not None
+            else row["first_beat"]
+        )
+        suggested_downbeat = (
+            row["downbeat_override"]
+            if row["downbeat_override"] is not None
+            else row["suggested_downbeat"]
+        )
+
+        display_name = row["display_name"] or row["original_name"]
+
         return {
             "id": row["id"],
-            "name": row["original_name"],
+            "name": display_name,
             "size_bytes": row["size_bytes"],
-            "bpm": row["bpm"],
+            "bpm": bpm,
             "key": {
-                "tonic": row["tonic"],
-                "mode": row["mode"],
+                "tonic": tonic,
+                "mode": mode,
                 "confidence": row["confidence"],
             },
             "duration": row["duration"],
             "beat_grid": {
                 "interval": row["beat_interval"],
-                "first_beat": row["first_beat"],
-                "suggested_downbeat": row["suggested_downbeat"],
+                "first_beat": first_beat,
+                "suggested_downbeat": suggested_downbeat,
                 "confidence": row["beat_confidence"],
+            },
+            "detected": {
+                "bpm": row["bpm"],
+                "key": {
+                    "tonic": row["tonic"],
+                    "mode": row["mode"],
+                    "confidence": row["confidence"],
+                },
+                "beat_grid": {
+                    "interval": row["beat_interval"],
+                    "first_beat": row["first_beat"],
+                    "suggested_downbeat": row["suggested_downbeat"],
+                    "confidence": row["beat_confidence"],
+                },
+            },
+            "overrides": {
+                "bpm": row["bpm_override"],
+                "tonic": row["tonic_override"],
+                "mode": row["mode_override"],
+                "first_beat": row["first_beat_override"],
+                "suggested_downbeat": row["downbeat_override"],
             },
             "source": {
                 "kind": row["source_kind"],
                 "reference": row["source_ref"],
             },
+            "deleted_at": row["deleted_at"],
             "created_at": row["created_at"],
             "audio_url": f"/api/tracks/{row['id']}/audio",
+            "artwork_url": f"/api/tracks/{row['id']}/artwork",
+            "waveform_url": f"/api/tracks/{row['id']}/waveform",
         }
 
     def ingest(
@@ -231,6 +316,20 @@ class StudioService:
         # Sanitize metadata (whitelist + normalization) if provided.
         metadata_json = media.metadata_json(metadata) if metadata else None
 
+        # Artwork: extract embedded cover art (if any) and re-encode to WebP.
+        # Failure is diagnostic only — it must not destroy a valid audio import.
+        artwork_rel: str | None = None
+        try:
+            artwork_rel = f"artwork/{track_id}.webp"
+            artwork_path = self.data_dir / artwork_rel
+            if media.extract_embedded_artwork(destination, artwork_path):
+                # Re-encode the extracted frame to strip metadata/payloads.
+                media.reencode_artwork(artwork_path, artwork_path)
+            else:
+                artwork_rel = None
+        except UserError:
+            artwork_rel = None
+
         now = time.time()
         try:
             with self._connect() as conn:
@@ -239,8 +338,8 @@ class StudioService:
                        (id, original_name, path, size_bytes, bpm, tonic, mode, confidence, duration,
                         beat_interval, first_beat, suggested_downbeat, beat_confidence,
                         source_kind, source_ref, content_sha256, metadata_json,
-                        waveform_path, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        waveform_path, artwork_path, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         track_id, display_name, str(destination), size,
                         float(result.bpm), result.key["tonic"], result.key["mode"],
@@ -253,6 +352,7 @@ class StudioService:
                         content_hash,
                         metadata_json,
                         waveform_rel,
+                        artwork_rel,
                         now,
                     ),
                 )
@@ -262,6 +362,8 @@ class StudioService:
             destination.unlink(missing_ok=True)
             if waveform_rel:
                 (self.data_dir / waveform_rel).unlink(missing_ok=True)
+            if artwork_rel:
+                (self.data_dir / artwork_rel).unlink(missing_ok=True)
             winner = self._find_by_hash(content_hash)
             if winner is None:
                 raise UserError("duplicate import detected but the original track is missing")
@@ -314,25 +416,271 @@ class StudioService:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM tracks WHERE id = ?", (track_id,)).fetchone()
         if row is None:
-            raise UserError(f"unknown track: {track_id}")
+            raise NotFoundError(f"unknown track: {track_id}")
         return self._track_dict(row)
 
-    def track_path(self, track_id: str) -> Path:
+    def _get_track_row(self, track_id: str) -> sqlite3.Row:
         with self._connect() as conn:
-            row = conn.execute("SELECT path FROM tracks WHERE id = ?", (track_id,)).fetchone()
+            row = conn.execute("SELECT * FROM tracks WHERE id = ?", (track_id,)).fetchone()
         if row is None:
-            raise UserError(f"unknown track: {track_id}")
+            raise NotFoundError(f"unknown track: {track_id}")
+        return row
+
+    def track_path(self, track_id: str) -> Path:
+        row = self._get_track_row(track_id)
         path = Path(row["path"])
         if not path.is_file() or self.track_dir.resolve() not in path.resolve().parents:
             raise UserError(f"track media is unavailable: {track_id}")
         return path
 
+    def artwork_path(self, track_id: str) -> Path | None:
+        """Return the managed artwork path, or None if the track has no artwork."""
+        row = self._get_track_row(track_id)
+        rel = row["artwork_path"]
+        if not rel:
+            return None
+        path = self.data_dir / rel
+        if not path.is_file() or self.artwork_dir.resolve() not in path.resolve().parents:
+            return None
+        return path
+
+    def waveform_path(self, track_id: str) -> Path | None:
+        """Return the managed waveform path, or None if unavailable."""
+        row = self._get_track_row(track_id)
+        rel = row["waveform_path"]
+        if not rel:
+            return None
+        path = self.data_dir / rel
+        if not path.is_file() or self.waveform_dir.resolve() not in path.resolve().parents:
+            return None
+        return path
+
+    # ------------------------------------------------------------------
+    # Library: search / filter / sort / trash / restore / overrides
+    # ------------------------------------------------------------------
+
+    _SORT_COLUMNS = {
+        "name": "COALESCE(display_name, original_name)",
+        "created": "created_at",
+        "bpm": "bpm",
+        "duration": "duration",
+    }
+
     def list_tracks(self, limit: int = 40) -> list[dict]:
+        """Backward-compatible list of active tracks (most recent first)."""
+        return self.list_tracks_page(limit=limit)["items"]
+
+    def list_tracks_page(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        query: str | None = None,
+        status: str = "active",
+        sort: str = "created",
+    ) -> dict:
+        """Paginated, searchable, filterable library listing.
+
+        Returns ``{items, total, limit, offset}``. ``status`` is one of
+        ``active``, ``trash``, or ``all``. ``sort`` is allowlisted to name,
+        created, bpm, or duration.
+        """
+        limit = max(1, min(100, limit))
+        offset = max(0, offset)
+        if status not in {"active", "trash", "all"}:
+            raise UserError("status must be active, trash, or all")
+        if sort not in self._SORT_COLUMNS:
+            raise UserError(f"unknown sort: {sort}")
+
+        where: list[str] = []
+        params: list[Any] = []
+        if status == "active":
+            where.append("deleted_at IS NULL")
+        elif status == "trash":
+            where.append("deleted_at IS NOT NULL")
+        if query:
+            where.append(
+                "(COALESCE(display_name, original_name) LIKE ? OR metadata_json LIKE ?)"
+            )
+            like = f"%{query}%"
+            params.extend([like, like])
+
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        order_col = self._SORT_COLUMNS[sort]
+
         with self._connect() as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM tracks {clause}", params
+            ).fetchone()[0]
             rows = conn.execute(
-                "SELECT * FROM tracks ORDER BY created_at DESC LIMIT ?", (limit,)
+                f"SELECT * FROM tracks {clause} ORDER BY {order_col} DESC LIMIT ? OFFSET ?",
+                params + [limit, offset],
             ).fetchall()
-        return [self._track_dict(row) for row in rows]
+        return {
+            "items": [self._track_dict(row) for row in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def update_track(self, track_id: str, **fields: Any) -> dict:
+        """Apply a whitelisted PATCH to a track (display name + overrides).
+
+        JSON ``null`` resets an override. Unknown fields are rejected. The whole
+        patch is validated before any write, so an invalid multi-field patch
+        makes no changes.
+        """
+        allowed = {
+            "display_name", "bpm", "tonic", "mode",
+            "first_beat", "suggested_downbeat",
+        }
+        unknown = set(fields) - allowed
+        if unknown:
+            raise UserError(f"unknown track field: {sorted(unknown)[0]}")
+
+        # Validate everything first (no partial writes).
+        assignments: list[str] = []
+        values: list[Any] = []
+        for key, value in fields.items():
+            if key == "display_name":
+                if value is None:
+                    assignments.append("display_name = NULL")
+                else:
+                    assignments.append("display_name = ?")
+                    values.append(media.sanitize_text(str(value), 300))
+            elif key == "bpm":
+                column = "bpm_override"
+                if value is None:
+                    assignments.append(f"{column} = NULL")
+                else:
+                    v = _finite_positive(value, "bpm")
+                    assignments.append(f"{column} = ?")
+                    values.append(v)
+            elif key == "tonic":
+                column = "tonic_override"
+                if value is None:
+                    assignments.append(f"{column} = NULL")
+                else:
+                    if value not in _NOTE_NAMES:
+                        raise UserError(f"invalid tonic: {value}")
+                    assignments.append(f"{column} = ?")
+                    values.append(value)
+            elif key == "mode":
+                column = "mode_override"
+                if value is None:
+                    assignments.append(f"{column} = NULL")
+                else:
+                    if value not in {"major", "minor"}:
+                        raise UserError(f"invalid mode: {value}")
+                    assignments.append(f"{column} = ?")
+                    values.append(value)
+            elif key == "first_beat":
+                column = "first_beat_override"
+                if value is None:
+                    assignments.append(f"{column} = NULL")
+                else:
+                    v = _finite_nonnegative(value, "first_beat")
+                    assignments.append(f"{column} = ?")
+                    values.append(v)
+            elif key == "suggested_downbeat":
+                column = "downbeat_override"
+                if value is None:
+                    assignments.append(f"{column} = NULL")
+                else:
+                    v = _finite_nonnegative(value, "suggested_downbeat")
+                    assignments.append(f"{column} = ?")
+                    values.append(v)
+
+        values.append(track_id)
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"UPDATE tracks SET {', '.join(assignments)} WHERE id = ?", values
+            )
+            if cur.rowcount == 0:
+                raise UserError(f"unknown track: {track_id}")
+        return self.get_track(track_id)
+
+    def trash_track(self, track_id: str) -> dict:
+        """Soft-delete a track by setting ``deleted_at`` (files are kept)."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE tracks SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+                (time.time(), track_id),
+            )
+            if cur.rowcount == 0:
+                # Either unknown or already trashed.
+                self._get_track_row(track_id)
+        return self.get_track(track_id)
+
+    def restore_track(self, track_id: str) -> dict:
+        """Restore a trashed track by clearing ``deleted_at``."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE tracks SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+                (track_id,),
+            )
+            if cur.rowcount == 0:
+                self._get_track_row(track_id)
+        return self.get_track(track_id)
+
+    def is_track_active(self, track_id: str) -> bool:
+        row = self._get_track_row(track_id)
+        return row["deleted_at"] is None
+
+    # ------------------------------------------------------------------
+    # Projects (Last-Write-Wins)
+    # ------------------------------------------------------------------
+
+    def _validate_project_track(self, track_id: str | None, field: str) -> None:
+        """Validate a project's referenced track exists and is active."""
+        if track_id is None:
+            return
+        self._get_track_row(track_id)  # raises if unknown
+        if not self.is_track_active(track_id):
+            raise ConflictError(f"{field} references a trashed track; restore it first")
+
+    def create_project(self, name: str) -> dict:
+        name = media.sanitize_text(name, projects.MAX_PROJECT_NAME_LEN)
+        if not name:
+            raise UserError("project name is required")
+        return self._projects.create(name)
+
+    def get_project(self, project_id: str) -> dict:
+        return self._projects.get(project_id)
+
+    def list_projects(self, limit: int = 50, offset: int = 0) -> dict:
+        items, total = self._projects.list(limit=limit, offset=offset)
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+    def update_project(self, project_id: str, **fields: Any) -> dict:
+        """Validate and atomically overwrite project state (Last-Write-Wins)."""
+        # Validate name.
+        if "name" in fields:
+            name = media.sanitize_text(str(fields["name"]), projects.MAX_PROJECT_NAME_LEN)
+            if not name:
+                raise UserError("project name is required")
+            fields["name"] = name
+
+        # Validate track existence + active status for newly assigned tracks.
+        if "anchor_track_id" in fields:
+            self._validate_project_track(fields["anchor_track_id"], "anchor_track_id")
+        if "lead_track_id" in fields:
+            self._validate_project_track(fields["lead_track_id"], "lead_track_id")
+
+        # Validate variants.
+        if "anchor_variant" in fields:
+            fields["anchor_variant"] = projects.validate_variant(fields["anchor_variant"])
+        if "lead_variant" in fields:
+            fields["lead_variant"] = projects.validate_variant(fields["lead_variant"])
+
+        # Validate settings.
+        if "settings" in fields:
+            fields["settings"] = projects.validate_settings(fields["settings"])
+
+        return self._projects.update(project_id, **fields)
+
+    def delete_project(self, project_id: str) -> None:
+        self._projects.delete(project_id)
 
     # ------------------------------------------------------------------
     # Job facade (delegates to JobStore / JobEngine)
@@ -387,22 +735,27 @@ class StudioService:
         tempo_ratio = float(anchor["bpm"]) / float(lead["bpm"])
         anchor_key = f"{anchor['key']['tonic']} {anchor['key']['mode']}"
         lead_key = f"{lead['key']['tonic']} {lead['key']['mode']}"
-        semitone_shift = assembler.semitones_to_match(anchor_key, lead_key)
 
-        if options.use_vocals:
-            self._store.update(
-                job_id, stage="separating", progress=18,
-                message="Separating the lead vocal with Demucs",
-            )
-            token.raise_if_cancelled()
-            stems = separator.separate(
-                str(lead_path), self.stem_dir / job_id, method=options.stem_method,
-            )
-            if "vocals" not in stems:
-                raise UserError(
-                    "vocal isolation requires Demucs; center/side fallback cannot provide a vocal stem"
-                )
-            lead_path = stems["vocals"]
+        # Resolve stem variants through the completed, validated cache.
+        anchor_variant = options.anchor_variant or "full"
+        lead_variant = options.resolved_lead_variant()
+
+        # Legacy use_vocals: true triggers separation through the cache (reusing
+        # any existing stem set) rather than a second unmanaged Demucs path.
+        if options.use_vocals and lead_variant == "vocals":
+            self._ensure_stem_variant(options.lead_id, "vocals", job_id, token)
+
+        if anchor_variant != "full":
+            anchor_path = self._resolve_stem_variant(options.anchor_id, anchor_variant)
+        if lead_variant != "full":
+            lead_path = self._resolve_stem_variant(options.lead_id, lead_variant)
+
+        # pitch_mode: "match" shifts the lead to the anchor key; "preserve"
+        # keeps the lead's original pitch (no key shift).
+        if options.pitch_mode == "preserve":
+            semitone_shift = 0
+        else:
+            semitone_shift = assembler.semitones_to_match(anchor_key, lead_key)
 
         duration = options.duration
         if options.preview:
@@ -431,7 +784,9 @@ class StudioService:
             "semitone_shift": semitone_shift,
             "duration": assembler._ffprobe_duration(str(output_path)),
             "true_peak_db": peak.get("true_peak_db"),
-            "demucs_device": separator.demucs_device() if options.use_vocals else None,
+            "anchor_variant": anchor_variant,
+            "lead_variant": lead_variant,
+            "pitch_mode": options.pitch_mode,
         }
         return {
             "result": result,
@@ -696,6 +1051,289 @@ class StudioService:
                 return job
             time.sleep(0.05)
         raise TimeoutError(f"job {job_id} did not finish within {timeout}s")
+
+    # ------------------------------------------------------------------
+    # Separation jobs and stem cache
+    # ------------------------------------------------------------------
+
+    def _track_content_hash(self, track_id: str) -> str:
+        row = self._get_track_row(track_id)
+        return row["content_sha256"]
+
+    def _resolve_separation_method(self, method: str) -> tuple[str, str]:
+        """Resolve ``auto`` to a concrete (method, model_name) pair.
+
+        Returns ``(method, model_name)`` where method is ``demucs`` or
+        ``ffmpeg`` and model_name is a stable, version-sensitive string.
+        """
+        if method == "auto":
+            try:
+                import demucs.api  # noqa: F401
+                return "demucs", separator.demucs_model_name()
+            except Exception:
+                return "ffmpeg", separator.center_side_model_name()
+        if method == "demucs":
+            return "demucs", separator.demucs_model_name()
+        if method == "ffmpeg":
+            return "ffmpeg", separator.center_side_model_name()
+        raise UserError(f"unknown separation method: {method}")
+
+    def _find_cached_stem_set(
+        self, track_sha256: str, method: str, model_name: str
+    ) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM stem_sets WHERE track_sha256 = ? AND method = ?"
+                " AND model_name = ? AND status = 'complete' ORDER BY created_at DESC LIMIT 1",
+                (track_sha256, method, model_name),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._stem_set_dict(row)
+
+    @staticmethod
+    def _stem_set_dict(row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "track_id": row["track_id"],
+            "method": row["method"],
+            "model": row["model_name"],
+            "device": row["device"],
+            "status": row["status"],
+            "stems": json.loads(row["paths_json"]) if row["paths_json"] else {},
+            "created_at": row["created_at"],
+        }
+
+    def _run_separation(
+        self, job_id: str, token: CancellationToken, request: dict
+    ) -> dict:
+        track_id = request["track_id"]
+        method = request.get("method", "auto")
+        track_path = self.track_path(track_id)
+        track_sha256 = self._track_content_hash(track_id)
+
+        concrete_method, model_name = self._resolve_separation_method(method)
+
+        # Cache hit: reuse without invoking Demucs/ffmpeg.
+        cached = self._find_cached_stem_set(track_sha256, concrete_method, model_name)
+        if cached is not None:
+            return {
+                "result": {"stem_set_id": cached["id"], "cached": True},
+                "message": "Separation already cached",
+            }
+
+        self._store.update(
+            job_id, stage="separating", progress=20,
+            message="Separating stems",
+        )
+        token.raise_if_cancelled()
+
+        # Build in a temp dir under the managed root (same filesystem), then
+        # atomically finalize under stems/.
+        temp_dir = self.temp_dir / job_id
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        oom_warning = {"fired": False}
+
+        def on_oom() -> None:
+            oom_warning["fired"] = True
+            self._store.update(
+                job_id,
+                progress_detail={
+                    "stage": "separating",
+                    "warning": "GPU Memory Limit Reached - Falling back to CPU (This will take longer).",
+                },
+            )
+
+        try:
+            stems = separator.separate(
+                str(track_path), temp_dir, method=concrete_method, on_oom=on_oom,
+            )
+        except UserError as exc:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+
+        # Validate every advertised stem exists and decodes.
+        for name, stem_path in stems.items():
+            if not Path(stem_path).is_file():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise UserError(f"separation produced no file for stem: {name}")
+
+        # Atomically finalize under stems/<stem_set_id>/.
+        stem_set_id = uuid.uuid4().hex
+        final_dir = self.stem_dir / stem_set_id
+        final_dir.mkdir(parents=True, exist_ok=True)
+        relative_paths: dict[str, str] = {}
+        try:
+            for name, stem_path in stems.items():
+                final_path = final_dir / f"{name}.wav"
+                Path(stem_path).replace(final_path)
+                relative_paths[name] = f"stems/{stem_set_id}/{name}.wav"
+        except Exception:
+            shutil.rmtree(final_dir, ignore_errors=True)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+        device = separator.demucs_device() if concrete_method == "demucs" else "cpu"
+        now = time.time()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """INSERT INTO stem_sets
+                       (id, track_id, method, model, device, status, paths_json,
+                        track_sha256, model_name, created_at)
+                       VALUES (?, ?, ?, ?, ?, 'complete', ?, ?, ?, ?)""",
+                    (
+                        stem_set_id, track_id, concrete_method, model_name, device,
+                        json.dumps(relative_paths), track_sha256, model_name, now,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            # A concurrent identical separation won; reuse it and clean up.
+            shutil.rmtree(final_dir, ignore_errors=True)
+            winner = self._find_cached_stem_set(track_sha256, concrete_method, model_name)
+            if winner is None:
+                raise UserError("concurrent separation lost but no cache row exists")
+            return {
+                "result": {"stem_set_id": winner["id"], "cached": True},
+                "message": "Separation already cached",
+            }
+
+        return {
+            "result": {
+                "stem_set_id": stem_set_id,
+                "cached": False,
+                "device": device,
+                "stems": sorted(relative_paths.keys()),
+            },
+            "message": "Separation complete",
+        }
+
+    def _separation_run_fn(self, request: dict):
+        def run(job_id: str, token: CancellationToken) -> dict:
+            return self._run_separation(job_id, token, request)
+        return run
+
+    def submit_separation(self, track_id: str, method: str = "auto") -> dict:
+        if self._closed:
+            raise UserError("studio service is closed")
+        self.get_track(track_id)
+        if method not in {"auto", "demucs", "ffmpeg"}:
+            raise UserError(f"unknown separation method: {method}")
+        # Explicit demucs without the capability -> 503 (never silently claim an
+        # ffmpeg center channel is a vocal).
+        if method == "demucs":
+            try:
+                import demucs.api  # noqa: F401
+            except Exception:
+                raise CapabilityError(
+                    "Demucs is not installed; vocal/drums/bass/other separation is unavailable"
+                )
+        request = {"track_id": track_id, "method": method}
+        job = self._engine.submit(
+            JobKind.SEPARATE, request, self._separation_run_fn(request), executor="audio",
+        )
+        return self.get_job(job["id"])
+
+    def list_stems(self, track_id: str) -> dict:
+        """List truthful available stems for a track.
+
+        ``full`` always exists for a valid track. Other variants exist only when
+        a completed, path-valid stem set provides them.
+        """
+        self.get_track(track_id)
+        track_sha256 = self._track_content_hash(track_id)
+        available = {"full": True}
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'",
+                (track_sha256,),
+            ).fetchall()
+        for row in rows:
+            paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+            for name, rel in paths.items():
+                # Only advertise stems whose files actually exist and decode.
+                full = self.data_dir / rel
+                if full.is_file():
+                    available[name] = True
+        return {"track_id": track_id, "stems": sorted(available.keys())}
+
+    def stem_audio_path(self, stem_set_id: str, name: str) -> Path:
+        """Resolve a stem's audio path via strict stem-set/name lookup.
+
+        Never accepts filesystem paths from the request. Refuses corrupt or
+        traversal-containing database paths.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM stem_sets WHERE id = ?", (stem_set_id,)
+            ).fetchone()
+        if row is None:
+            raise UserError(f"unknown stem set: {stem_set_id}")
+        paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+        rel = paths.get(name)
+        if rel is None:
+            raise UserError(f"stem '{name}' not found in stem set {stem_set_id}")
+        # Validate the stored path is a bare relative path under stems/ whose
+        # filename matches the requested stem name (plus a known extension).
+        if Path(rel).stem != name:
+            raise UserError(f"corrupt stem path for '{name}'")
+        path = self.data_dir / rel
+        try:
+            resolved = path.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise UserError(f"stem media is unavailable: {name}")
+        if self.stem_dir.resolve() not in resolved.parents:
+            raise UserError(f"stem path escapes the managed root: {name}")
+        return resolved
+
+    def _resolve_stem_variant(self, track_id: str, variant: str | None) -> Path:
+        """Resolve a requested stem variant to a concrete audio path.
+
+        ``None``/``full`` returns the full track. Other variants must be backed
+        by a completed, path-valid stem set; otherwise a clear conflict is
+        raised (never silently render the full mix).
+        """
+        if variant is None or variant == "full":
+            return self.track_path(track_id)
+        track_sha256 = self._track_content_hash(track_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'",
+                (track_sha256,),
+            ).fetchall()
+        for row in rows:
+            paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+            rel = paths.get(variant)
+            if rel is not None:
+                full = self.data_dir / rel
+                if full.is_file():
+                    return full
+        raise UserError(f"stem variant '{variant}' is not available for this track")
+
+    def _ensure_stem_variant(
+        self, track_id: str, variant: str, job_id: str, token: CancellationToken
+    ) -> None:
+        """Ensure a stem variant exists, separating on demand (legacy use_vocals).
+
+        Reuses the stem cache; only separates if no completed, path-valid stem
+        set provides the variant. Runs synchronously within the render job.
+        """
+        try:
+            self._resolve_stem_variant(track_id, variant)
+            return  # already cached
+        except UserError:
+            pass
+
+        self._store.update(
+            job_id, stage="separating", progress=18,
+            message="Separating the lead vocal with Demucs",
+        )
+        token.raise_if_cancelled()
+        # Run separation inline (reusing the cache path) and wait for it.
+        request = {"track_id": track_id, "method": "auto"}
+        self._run_separation(job_id, token, request)
 
     def close(self) -> None:
         if not self._closed:

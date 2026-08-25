@@ -1,4 +1,10 @@
-"""FastAPI application for the local 2become1 Studio."""
+"""FastAPI application for the local 2become1 Studio.
+
+Phase 3.7: every endpoint returns the single error envelope
+``{"error": {"code", "message", "detail"}}`` with the planned status mapping
+(400/404/409/413/422/503). This module is HTTP validation and mapping only;
+all business logic lives in ``StudioService``.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +14,10 @@ import mimetypes
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import FastAPI, File, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -32,10 +39,39 @@ class RenderBody(BaseModel):
     use_vocals: bool = False
     stem_method: Literal["auto", "demucs", "ffmpeg"] = "auto"
     preview: bool = False
+    anchor_variant: str | None = None
+    lead_variant: str | None = None
+    pitch_mode: Literal["preserve", "match"] = "match"
 
 
 class TrackImportBody(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
+
+
+class TrackPatchBody(BaseModel):
+    display_name: str | None = None
+    bpm: float | None = None
+    tonic: str | None = None
+    mode: str | None = None
+    first_beat: float | None = None
+    suggested_downbeat: float | None = None
+
+
+class ProjectCreateBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class ProjectPatchBody(BaseModel):
+    name: str | None = None
+    anchor_track_id: str | None = None
+    lead_track_id: str | None = None
+    anchor_variant: str | None = None
+    lead_variant: str | None = None
+    settings: dict[str, Any] | None = None
+
+
+class SeparationBody(BaseModel):
+    method: Literal["auto", "demucs", "ffmpeg"] = "auto"
 
 
 # SSE heartbeat interval (seconds). Keeps proxies from closing idle streams.
@@ -61,7 +97,29 @@ def create_app(data_dir: str | Path | None = None):
 
     @app.exception_handler(UserError)
     async def user_error_handler(_request: Request, exc: UserError):
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+        return JSONResponse(
+            status_code=exc.status,
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "detail": exc.detail,
+                }
+            },
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(_request: Request, exc: RequestValidationError):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "validation_error",
+                    "message": "request validation failed",
+                    "detail": str(exc.errors()),
+                }
+            },
+        )
 
     @app.get("/api/health")
     def health():
@@ -72,6 +130,10 @@ def create_app(data_dir: str | Path | None = None):
             "preferred_device": separator._pick_demucs_device(),
             "data_dir": str(service.data_dir),
         }
+
+    # ------------------------------------------------------------------
+    # Tracks (library)
+    # ------------------------------------------------------------------
 
     @app.post("/api/tracks", status_code=201)
     def upload_track(file: UploadFile = File(...)):
@@ -86,6 +148,62 @@ def create_app(data_dir: str | Path | None = None):
     def import_track(body: TrackImportBody):
         return service.ingest_youtube(body.url)
 
+    @app.get("/api/tracks")
+    def list_tracks(
+        limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        q: str | None = Query(default=None),
+        status: Literal["active", "trash", "all"] = "active",
+        sort: Literal["name", "created", "bpm", "duration"] = "created",
+    ):
+        return service.list_tracks_page(
+            limit=limit, offset=offset, query=q, status=status, sort=sort,
+        )
+
+    @app.get("/api/tracks/{track_id}")
+    def get_track(track_id: str):
+        return service.get_track(track_id)
+
+    @app.patch("/api/tracks/{track_id}")
+    def patch_track(track_id: str, body: TrackPatchBody):
+        fields = body.model_dump(exclude_unset=True)
+        return service.update_track(track_id, **fields)
+
+    @app.delete("/api/tracks/{track_id}")
+    def delete_track(track_id: str):
+        return service.trash_track(track_id)
+
+    @app.post("/api/tracks/{track_id}/restore")
+    def restore_track(track_id: str):
+        return service.restore_track(track_id)
+
+    @app.get("/api/tracks/{track_id}/audio")
+    def track_audio(track_id: str):
+        path = service.track_path(track_id)
+        media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return FileResponse(
+            path, media_type=media_type, filename=path.name,
+            content_disposition_type="inline",
+        )
+
+    @app.get("/api/tracks/{track_id}/artwork")
+    def track_artwork(track_id: str):
+        path = service.artwork_path(track_id)
+        if path is None:
+            return _placeholder_artwork()
+        return FileResponse(path, media_type="image/webp", content_disposition_type="inline")
+
+    @app.get("/api/tracks/{track_id}/waveform")
+    def track_waveform(track_id: str):
+        path = service.waveform_path(track_id)
+        if path is None:
+            raise UserError("waveform is unavailable for this track")
+        return FileResponse(path, media_type="application/json")
+
+    # ------------------------------------------------------------------
+    # Imports
+    # ------------------------------------------------------------------
+
     @app.post("/api/imports/youtube", status_code=202)
     def import_youtube(body: TrackImportBody):
         return service.submit_youtube_import(body.url)
@@ -94,27 +212,65 @@ def create_app(data_dir: str | Path | None = None):
     def import_upload(file: UploadFile = File(...)):
         if not file.filename:
             raise UserError("file name is required")
-        # Stage the upload beneath incoming/ and queue the import job with an
-        # opaque staging key (never an absolute path) + the original name.
         staging_key = service.stage_upload(file.file, file.filename)
         try:
             return service.submit_upload_import(staging_key, original_name=file.filename)
         finally:
             file.file.close()
 
-    @app.get("/api/tracks")
-    def list_tracks():
-        return {"tracks": service.list_tracks()}
+    # ------------------------------------------------------------------
+    # Separations and stems
+    # ------------------------------------------------------------------
 
-    @app.get("/api/tracks/{track_id}")
-    def get_track(track_id: str):
-        return service.get_track(track_id)
+    @app.post("/api/tracks/{track_id}/separations", status_code=202)
+    def submit_separation(track_id: str, body: SeparationBody):
+        return service.submit_separation(track_id, method=body.method)
 
-    @app.get("/api/tracks/{track_id}/audio")
-    def track_audio(track_id: str):
-        path = service.track_path(track_id)
-        media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        return FileResponse(path, media_type=media_type, filename=path.name, content_disposition_type="inline")
+    @app.get("/api/tracks/{track_id}/stems")
+    def list_stems(track_id: str):
+        return service.list_stems(track_id)
+
+    @app.get("/api/stems/{stem_set_id}/audio")
+    def stem_audio(stem_set_id: str, name: str = Query(...)):
+        path = service.stem_audio_path(stem_set_id, name)
+        media_type = mimetypes.guess_type(path.name)[0] or "audio/wav"
+        return FileResponse(
+            path, media_type=media_type, filename=path.name,
+            content_disposition_type="inline",
+        )
+
+    # ------------------------------------------------------------------
+    # Projects
+    # ------------------------------------------------------------------
+
+    @app.get("/api/projects")
+    def list_projects(
+        limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ):
+        return service.list_projects(limit=limit, offset=offset)
+
+    @app.post("/api/projects", status_code=201)
+    def create_project(body: ProjectCreateBody):
+        return service.create_project(body.name)
+
+    @app.get("/api/projects/{project_id}")
+    def get_project(project_id: str):
+        return service.get_project(project_id)
+
+    @app.patch("/api/projects/{project_id}")
+    def patch_project(project_id: str, body: ProjectPatchBody):
+        fields = body.model_dump(exclude_unset=True)
+        return service.update_project(project_id, **fields)
+
+    @app.delete("/api/projects/{project_id}", status_code=204)
+    def delete_project(project_id: str):
+        service.delete_project(project_id)
+        return None
+
+    # ------------------------------------------------------------------
+    # Jobs
+    # ------------------------------------------------------------------
 
     @app.post("/api/jobs", status_code=202)
     def submit_job(body: RenderBody):
@@ -150,7 +306,6 @@ def create_app(data_dir: str | Path | None = None):
                     previous = snapshot
                 if job["status"] in {s.value for s in TERMINAL_JOB_STATES}:
                     break
-                # Heartbeat keeps the stream alive through idle proxies.
                 await asyncio.sleep(SSE_HEARTBEAT_SEC)
                 yield ": heartbeat\n\n"
 
@@ -177,3 +332,13 @@ def create_app(data_dir: str | Path | None = None):
         return FileResponse(static_dir / "index.html")
 
     return app
+
+
+def _placeholder_artwork():
+    """A safe placeholder with no untrusted text (a 1x1 transparent GIF)."""
+    import base64
+    from fastapi.responses import Response
+    gif = base64.b64decode(
+        "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+    )
+    return Response(content=gif, media_type="image/gif")

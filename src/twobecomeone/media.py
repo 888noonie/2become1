@@ -17,6 +17,7 @@ import hashlib
 import json
 import math
 import re
+import subprocess
 import unicodedata
 from pathlib import Path
 
@@ -156,3 +157,98 @@ def validate_managed_path(path: str | Path, root: str | Path) -> Path:
     if root_resolved not in resolved.parents and resolved != root_resolved:
         raise UserError(f"path escapes the managed root: {path}")
     return resolved
+
+
+# ---------------------------------------------------------------------------
+# Artwork
+# ---------------------------------------------------------------------------
+
+# Maximum accepted input image size (bytes) and output dimensions.
+MAX_ARTWORK_INPUT_BYTES = 20 * 1024 * 1024
+MAX_ARTWORK_DIMENSION = 1024
+
+
+def reencode_artwork(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    max_dimension: int = MAX_ARTWORK_DIMENSION,
+) -> None:
+    """Decode an untrusted image and re-encode it as a single-frame WebP.
+
+    Uses ffmpeg to decode exactly one frame, strip metadata (EXIF/comments/ICC)
+    and animation, constrain dimensions, and write a clean WebP. The output is
+    written to a temporary file on the same filesystem and atomically replaced
+    into ``destination``.
+
+    Raises ``UserError`` on malformed input, symlinks, or paths outside the
+    job workspace (the caller is responsible for the workspace containment
+    check; this function refuses symlinks and non-regular files).
+    """
+    source_path = Path(source)
+    destination_path = Path(destination)
+
+    # Refuse symlinks and non-regular files outright.
+    if source_path.is_symlink() or not source_path.is_file():
+        raise UserError("artwork source is not a regular file")
+    if source_path.stat().st_size > MAX_ARTWORK_INPUT_BYTES:
+        raise UserError("artwork source exceeds the size limit")
+
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    # Temp file must keep a .webp extension so ffmpeg can infer the muxer.
+    tmp = destination_path.with_name(destination_path.name + ".tmp")
+
+    # -an: no audio; -frames:v 1: exactly one decoded frame; -map_metadata -1
+    # strips metadata; scale constrains dimensions; libwebp re-encodes.
+    cmd = [
+        "ffmpeg", "-y", "-v", "error",
+        "-i", str(source_path),
+        "-an",
+        "-frames:v", "1",
+        "-map_metadata", "-1",
+        "-vf", f"scale='min({max_dimension},iw)':'min({max_dimension},ih)':force_original_aspect_ratio=decrease",
+        "-c:v", "libwebp",
+        "-f", "webp",
+        "-quality", "85",
+        "-loop", "0",
+        str(tmp),
+    ]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        detail = proc.stderr.decode("utf-8", "replace").strip()[:400]
+        raise UserError(f"artwork re-encode failed: {detail or 'malformed image'}")
+
+    if not tmp.is_file() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        raise UserError("artwork re-encode produced no output")
+
+    # Atomic replace on the same filesystem.
+    tmp.replace(destination_path)
+
+
+def extract_embedded_artwork(audio_path: str | Path, destination: str | Path) -> bool:
+    """Extract embedded cover art from an audio file, if present.
+
+    Returns True if artwork was extracted, False if the audio has none. Uses
+    ffmpeg with ``-an`` and ``-frames:v 1`` so it pulls only the first image
+    frame and exits immediately without processing the audio stream.
+    """
+    audio_path = Path(audio_path)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_suffix(destination.suffix + ".tmp")
+    cmd = [
+        "ffmpeg", "-y", "-v", "error",
+        "-i", str(audio_path),
+        "-an",
+        "-frames:v", "1",
+        "-map_metadata", "-1",
+        str(tmp),
+    ]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0 or not tmp.is_file() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        return False
+    tmp.replace(destination)
+    return True

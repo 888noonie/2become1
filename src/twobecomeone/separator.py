@@ -5,10 +5,16 @@ Two strategies:
   2. ffmpeg phase-cancellation fallback — separates center-panned content from
      side content. This is NOT a real vocal/instrumental split; outputs are
      labeled honestly as "center" and "sides".
+
+Phase 3.5 adds a robust CUDA OOM fallback: recognize ``torch.cuda.OutOfMemoryError``
+and wrapped ``RuntimeError`` carrying "CUDA out of memory", release the model
+reference, run ``gc.collect()``, call ``torch.cuda.empty_cache()``, then retry
+exactly once on CPU. The final device is reported truthfully.
 """
 
 from __future__ import annotations
 
+import gc
 import subprocess
 from pathlib import Path
 
@@ -32,6 +38,49 @@ def _pick_demucs_device() -> str:
     return "cpu"
 
 
+def demucs_model_name() -> str:
+    """Return a stable, version-sensitive model name for the cache key.
+
+    e.g. ``htdemucs@4.1.0``. Upgrading the demucs package changes the version
+    and therefore invalidates old cache entries automatically.
+    """
+    try:
+        import importlib.metadata as metadata
+        version = metadata.version("demucs")
+    except Exception:
+        version = "unknown"
+    return f"htdemucs@{version}"
+
+
+def center_side_model_name() -> str:
+    """Stable model name for the ffmpeg center/side transform."""
+    return "center-side-v1"
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """Return True if ``exc`` is a CUDA out-of-memory error (direct or wrapped)."""
+    try:
+        import torch
+        if isinstance(exc, torch.cuda.OutOfMemoryError):
+            return True
+    except Exception:
+        pass
+    return "cuda out of memory" in str(exc).lower()
+
+
+def _release_cuda() -> None:
+    """Release CUDA memory: drop references, collect, and empty the cache."""
+    global _demucs_separator, _demucs_device
+    _demucs_separator = None
+    _demucs_device = None
+    gc.collect()
+    try:
+        import torch
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _demucs_separator_instance(device: str | None = None) -> object:
     global _demucs_separator, _demucs_device
     import demucs.api
@@ -43,8 +92,9 @@ def _demucs_separator_instance(device: str | None = None) -> object:
         _demucs_separator = demucs.api.Separator(device=requested)
         _demucs_device = requested
     except RuntimeError as exc:
-        if requested == "cuda" and "out of memory" in str(exc).lower():
+        if requested == "cuda" and _is_cuda_oom(exc):
             log("CUDA OOM loading Demucs; falling back to CPU")
+            _release_cuda()
             _demucs_separator = demucs.api.Separator(device="cpu")
             _demucs_device = "cpu"
         else:
@@ -79,11 +129,21 @@ def _ffmpeg_fallback(path: str, out_dir: Path) -> dict[str, Path]:
     return {"center": center, "sides": sides}
 
 
-def separate(path: str, out_dir: str | Path, method: str = "auto") -> dict[str, Path]:
+def separate(
+    path: str,
+    out_dir: str | Path,
+    method: str = "auto",
+    *,
+    on_oom: object | None = None,
+) -> dict[str, Path]:
     """Separate `path` into stems under `out_dir`.
 
     `method`: "demucs", "ffmpeg", or "auto" (prefer demucs if importable).
     Returns dict mapping stem name to file path.
+
+    ``on_oom`` is an optional callback invoked (with no arguments) when a CUDA
+    OOM triggers the CPU fallback, so the caller can persist a warning in
+    progress detail.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -110,11 +170,12 @@ def separate(path: str, out_dir: str | Path, method: str = "auto") -> dict[str, 
 
         try:
             origin, separated = sep.separate_audio_file(path)
-        except RuntimeError as exc:
-            if "out of memory" in str(exc).lower() and demucs_device() == "cuda":
+        except Exception as exc:
+            if _is_cuda_oom(exc) and demucs_device() == "cuda":
                 log("CUDA OOM during separation; clearing cache and falling back to CPU")
-                import torch
-                torch.cuda.empty_cache()
+                if on_oom is not None:
+                    on_oom()
+                _release_cuda()
                 sep = _demucs_separator_instance("cpu")
                 origin, separated = sep.separate_audio_file(path)
             else:
