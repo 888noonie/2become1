@@ -8,7 +8,9 @@ that protects a laptop GPU from concurrent Demucs jobs.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
+import shutil
 import sqlite3
 import time
 import uuid
@@ -17,7 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from . import analyzer, assembler, beatgrid, separator
+from . import analyzer, assembler, beatgrid, separator, sources
 from .common import UserError
 
 
@@ -72,10 +74,13 @@ class StudioService:
     def __init__(self, data_dir: str | Path | None = None):
         self.data_dir = Path(data_dir) if data_dir else default_data_dir()
         self.track_dir = self.data_dir / "tracks"
+        self.incoming_dir = self.data_dir / "incoming"
         self.render_dir = self.data_dir / "renders"
         self.stem_dir = self.data_dir / "stems"
         self.db_path = self.data_dir / "studio.sqlite3"
-        for directory in (self.data_dir, self.track_dir, self.render_dir, self.stem_dir):
+        for directory in (
+            self.data_dir, self.track_dir, self.incoming_dir, self.render_dir, self.stem_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
         self._init_db()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="2become1-render")
@@ -105,6 +110,8 @@ class StudioService:
                     first_beat REAL,
                     suggested_downbeat REAL,
                     beat_confidence REAL,
+                    source_kind TEXT NOT NULL DEFAULT 'upload',
+                    source_ref TEXT,
                     created_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -124,9 +131,17 @@ class StudioService:
                 """
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(tracks)")}
-            for name in ("beat_interval", "first_beat", "suggested_downbeat", "beat_confidence"):
+            migrations = {
+                "beat_interval": "REAL",
+                "first_beat": "REAL",
+                "suggested_downbeat": "REAL",
+                "beat_confidence": "REAL",
+                "source_kind": "TEXT NOT NULL DEFAULT 'upload'",
+                "source_ref": "TEXT",
+            }
+            for name, declaration in migrations.items():
                 if name not in columns:
-                    conn.execute(f"ALTER TABLE tracks ADD COLUMN {name} REAL")
+                    conn.execute(f"ALTER TABLE tracks ADD COLUMN {name} {declaration}")
             conn.execute(
                 """UPDATE jobs
                    SET status = 'failed', stage = 'failed', progress = 100,
@@ -155,11 +170,24 @@ class StudioService:
                 "suggested_downbeat": row["suggested_downbeat"],
                 "confidence": row["beat_confidence"],
             },
+            "source": {
+                "kind": row["source_kind"],
+                "reference": row["source_ref"],
+            },
             "created_at": row["created_at"],
             "audio_url": f"/api/tracks/{row['id']}/audio",
         }
 
-    def ingest(self, source: BinaryIO, original_name: str) -> dict:
+    def ingest(
+        self,
+        source: BinaryIO,
+        original_name: str,
+        *,
+        source_kind: str = "upload",
+        source_ref: str | None = None,
+    ) -> dict:
+        if source_kind not in {"upload", "local", "youtube"}:
+            raise UserError(f"unknown media source: {source_kind}")
         suffix = Path(original_name).suffix.lower()
         if suffix not in ALLOWED_AUDIO_SUFFIXES:
             supported = ", ".join(sorted(ALLOWED_AUDIO_SUFFIXES))
@@ -191,8 +219,9 @@ class StudioService:
             conn.execute(
                 """INSERT INTO tracks
                    (id, original_name, path, size_bytes, bpm, tonic, mode, confidence, duration,
-                    beat_interval, first_beat, suggested_downbeat, beat_confidence, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    beat_interval, first_beat, suggested_downbeat, beat_confidence,
+                    source_kind, source_ref, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     track_id, Path(original_name).name, str(destination), size,
                     float(result.bpm), result.key["tonic"], result.key["mode"],
@@ -201,10 +230,38 @@ class StudioService:
                     grid.first_beat if grid else None,
                     grid.suggested_downbeat if grid else None,
                     grid.confidence if grid else None,
+                    source_kind, source_ref,
                     now,
                 ),
             )
         return self.get_track(track_id)
+
+    def ingest_path(
+        self,
+        path: str | Path,
+        *,
+        source_kind: str = "local",
+        source_ref: str | None = None,
+    ) -> dict:
+        """Copy a local audio file into the managed Studio library."""
+        media_path = sources.from_local(path)
+        reference = source_ref if source_ref is not None else str(media_path.resolve())
+        with media_path.open("rb") as source:
+            return self.ingest(
+                source,
+                media_path.name,
+                source_kind=source_kind,
+                source_ref=reference,
+            )
+
+    def ingest_youtube(self, url: str) -> dict:
+        """Download one YouTube video's audio and ingest it as a managed track."""
+        import_id = hashlib.sha256(url.strip().encode("utf-8")).hexdigest()[:20]
+        work_dir = self.incoming_dir / import_id
+        downloaded = sources.from_youtube(url, work_dir)
+        track = self.ingest_path(downloaded, source_kind="youtube", source_ref=url.strip())
+        shutil.rmtree(work_dir, ignore_errors=True)
+        return track
 
     def get_track(self, track_id: str) -> dict:
         with self._connect() as conn:

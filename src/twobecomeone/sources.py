@@ -14,11 +14,13 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
+from .common import UserError
+
 
 def _require_ytdlp() -> None:
     if shutil.which("yt-dlp") is None:
-        raise RuntimeError("yt-dlp is required for YouTube sourcing but not found on PATH. "
-                           "Install it with: uv tool install yt-dlp")
+        raise UserError("yt-dlp is required for YouTube sourcing but not found on PATH. "
+                        "Install it with: uv tool install yt-dlp")
 
 
 # ---------------------------------------------------------------------------
@@ -39,11 +41,27 @@ def from_local(path: str | Path) -> Path:
 # YouTube via yt-dlp
 # ---------------------------------------------------------------------------
 
-_YTDLP_TIMEOUT = 300
+_YTDLP_TIMEOUT = 60 * 60
+
+
+def is_youtube_url(value: str) -> bool:
+    """Return whether *value* is an HTTP(S) YouTube URL."""
+    try:
+        parsed = urllib.parse.urlparse(value.strip())
+    except ValueError:
+        return False
+    hostname = (parsed.hostname or "").lower()
+    return (
+        parsed.scheme in {"http", "https"}
+        and (hostname == "youtu.be" or hostname == "youtube.com" or hostname.endswith(".youtube.com"))
+    )
 
 
 def from_youtube(url: str, out_dir: Path, fmt: str = "bestaudio/best") -> Path:
     """Download audio-only from a YouTube URL using yt-dlp."""
+    url = url.strip()
+    if not is_youtube_url(url):
+        raise UserError("enter a valid youtube.com or youtu.be URL")
     _require_ytdlp()
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "%(title)s.%(ext)s")
@@ -52,6 +70,7 @@ def from_youtube(url: str, out_dir: Path, fmt: str = "bestaudio/best") -> Path:
         "-x",                      # extract audio
         "--audio-format", "mp3",
         "--audio-quality", "0",    # best
+        "--continue",              # resume interrupted partial downloads
         "-o", output_template,
         "-f", fmt,
         "--no-playlist",
@@ -61,18 +80,20 @@ def from_youtube(url: str, out_dir: Path, fmt: str = "bestaudio/best") -> Path:
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=_YTDLP_TIMEOUT)
     except subprocess.TimeoutExpired:
-        raise RuntimeError("yt-dlp timed out downloading the video")
+        raise UserError("yt-dlp timed out after one hour; run the import again to resume")
     if proc.returncode != 0:
-        raise RuntimeError(f"yt-dlp failed: {proc.stderr.decode()[:500]}")
+        detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+        message = detail[-1] if detail else "unknown download error"
+        raise UserError(f"yt-dlp failed: {message[:500]}")
 
     # Extract the last produced file path from stdout
     lines = proc.stdout.decode().splitlines()
     produced = [ln for ln in lines if ln.strip().endswith(".mp3")]
     if not produced:
-        raise RuntimeError("yt-dlp did not report an output mp3")
+        raise UserError("yt-dlp did not report an output mp3")
     result = Path(produced[-1].strip())
     if not result.exists():
-        raise RuntimeError(f"yt-dlp reported missing file: {result}")
+        raise UserError(f"yt-dlp reported a missing file: {result.name}")
     return result
 
 

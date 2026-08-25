@@ -33,6 +33,10 @@ class RenderBody(BaseModel):
     preview: bool = False
 
 
+class TrackImportBody(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
 def create_app(data_dir: str | Path | None = None):
     service = StudioService(data_dir)
 
@@ -72,6 +76,10 @@ def create_app(data_dir: str | Path | None = None):
             return service.ingest(file.file, file.filename)
         finally:
             file.file.close()
+
+    @app.post("/api/tracks/import", status_code=201)
+    def import_track(body: TrackImportBody):
+        return service.ingest_youtube(body.url)
 
     @app.get("/api/tracks")
     def list_tracks():

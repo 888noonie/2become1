@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from twobecomeone import beatgrid
+from twobecomeone import beatgrid, sources
 from twobecomeone.studio import RenderOptions, StudioService
 
 
@@ -56,8 +56,43 @@ def test_studio_ingest_persists_safe_track(tmp_path, studio_tracks):
         assert track["audio_url"].endswith("/audio")
         assert track["beat_grid"]["interval"] > 0
         assert track["beat_grid"]["suggested_downbeat"] >= 0
+        assert track["source"] == {"kind": "upload", "reference": None}
         assert service.track_path(track["id"]).parent == service.track_dir
         assert service.list_tracks()[0]["id"] == track["id"]
+    finally:
+        service.close()
+
+
+def test_studio_ingests_local_path_with_provenance(tmp_path, studio_tracks):
+    service = StudioService(tmp_path / "data")
+    try:
+        track = service.ingest_path(studio_tracks[0])
+        assert track["source"]["kind"] == "local"
+        assert track["source"]["reference"] == str(studio_tracks[0].resolve())
+        assert service.track_path(track["id"]).read_bytes() == studio_tracks[0].read_bytes()
+    finally:
+        service.close()
+
+
+def test_studio_ingests_youtube_then_cleans_incoming(
+    tmp_path, studio_tracks, monkeypatch,
+):
+    service = StudioService(tmp_path / "data")
+    url = "https://youtu.be/example"
+
+    def fake_download(received_url, out_dir):
+        assert received_url == url
+        out_dir.mkdir(parents=True)
+        downloaded = out_dir / "Example track.wav"
+        downloaded.write_bytes(studio_tracks[0].read_bytes())
+        return downloaded
+
+    monkeypatch.setattr(sources, "from_youtube", fake_download)
+    try:
+        track = service.ingest_youtube(url)
+        assert track["name"] == "Example track.wav"
+        assert track["source"] == {"kind": "youtube", "reference": url}
+        assert list(service.incoming_dir.iterdir()) == []
     finally:
         service.close()
 
@@ -103,13 +138,13 @@ def anyio_backend():
 @pytest.mark.anyio
 async def test_web_vertical_slice(tmp_path, studio_tracks):
     pytest.importorskip("fastapi")
-    import httpx2
+    import httpx
     from twobecomeone.webapp import create_app
 
     app = create_app(tmp_path / "web-data")
-    transport = httpx2.ASGITransport(app=app)
+    transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx2.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
             assert (await client.get("/")).status_code == 200
             health = (await client.get("/api/health")).json()
             assert health["status"] == "ready"
@@ -142,5 +177,29 @@ async def test_web_vertical_slice(tmp_path, studio_tracks):
             audio = await client.get(f"/api/jobs/{job_id}/audio")
             assert audio.status_code == 200
             assert audio.headers["content-type"].startswith("audio/mpeg")
+    finally:
+        app.state.studio.close()
+
+
+@pytest.mark.anyio
+async def test_web_imports_youtube_into_track_library(
+    tmp_path, studio_tracks, monkeypatch,
+):
+    pytest.importorskip("fastapi")
+    import httpx
+    from twobecomeone.webapp import create_app
+
+    monkeypatch.setattr(sources, "from_youtube", lambda _url, _out_dir: studio_tracks[0])
+    app = create_app(tmp_path / "web-import-data")
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+            response = await client.post(
+                "/api/tracks/import", json={"url": "https://youtube.com/watch?v=example"},
+            )
+            assert response.status_code == 201, response.text
+            track = response.json()
+            assert track["source"]["kind"] == "youtube"
+            assert (await client.get(track["audio_url"])).status_code == 200
     finally:
         app.state.studio.close()

@@ -86,6 +86,32 @@ def cmd_torrent(args) -> int:
     return 0
 
 
+def cmd_import(args) -> int:
+    """Import a local path or YouTube URL into the managed Studio library."""
+    from .studio import StudioService
+
+    service = StudioService(args.data_dir)
+    try:
+        if sources.is_youtube_url(args.source):
+            track = service.ingest_youtube(args.source)
+        elif "://" in args.source:
+            raise UserError("only local audio paths and YouTube URLs are supported")
+        else:
+            track = service.ingest_path(args.source)
+    finally:
+        service.close()
+
+    if args.json:
+        print(json.dumps(track, indent=2))
+    else:
+        print(f"imported '{track['name']}'")
+        print(f"  ID   : {track['id']}")
+        print(f"  BPM  : {track['bpm']:.1f}")
+        print(f"  Key  : {track['key']['tonic']} {track['key']['mode']}")
+        print(f"  Source: {track['source']['kind']}")
+    return 0
+
+
 def cmd_web(args) -> int:
     """Launch the local-first Studio web application."""
     try:
@@ -231,9 +257,17 @@ def main(argv=None) -> int:
     t.add_argument("--json", action="store_true")
     t.set_defaults(func=cmd_torrent)
 
+    i = sub.add_parser("import", help="add a local file or YouTube URL to the Studio library")
+    i.add_argument("source", help="audio file path or youtube.com/youtu.be URL")
+    i.add_argument("--data-dir", default=None,
+                   help="media/project storage (default: ~/.local/share/2become1)")
+    i.add_argument("--json", action="store_true")
+    i.set_defaults(func=cmd_import)
+
     w = sub.add_parser("web", help="launch the local 2become1 Studio")
     w.add_argument("--host", default="127.0.0.1",
-                   help="bind address (default: local machine only)")
+                   help=("bind address (default: local machine only; 0.0.0.0 exposes the "
+                         "unauthenticated Studio to your network)"))
     w.add_argument("--port", type=int, default=8765)
     w.add_argument("--data-dir", default=None,
                    help="media/project storage (default: ~/.local/share/2become1)")

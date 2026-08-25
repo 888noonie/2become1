@@ -21,10 +21,13 @@ uv pip install --python .venv/bin/python -e '.[web,demucs]'
 
 Open <http://127.0.0.1:8765>. The server binds to the local machine only by
 default, and project media is kept under `~/.local/share/2become1/`.
+Binding to `0.0.0.0` exposes the unauthenticated Studio and its media routes to
+your network; only do that on a network you trust.
 
 The Studio provides:
 
-- two drag-and-drop audio decks with BPM, key, duration, and playback;
+- two audio decks accepting drag-and-drop files or single-track YouTube links;
+- one managed local media library with source provenance, BPM, key, duration, and playback;
 - lightweight first-beat/downbeat suggestions with manual correction;
 - start-offset, render-duration, and gain controls;
 - optional CUDA-accelerated Demucs lead-vocal isolation;
@@ -39,6 +42,10 @@ The underlying engine remains fully scriptable:
 ```bash
 # Analyze tempo and key
 .venv/bin/twobecomeone analyze track_a.mp3 track_b.mp3
+
+# Import a local file or permitted YouTube source into the Studio library
+.venv/bin/twobecomeone import track_a.flac
+.venv/bin/twobecomeone import 'https://youtu.be/VIDEO_ID'
 
 # Machine-readable analysis
 .venv/bin/twobecomeone analyze track_a.mp3 --json
@@ -58,8 +65,9 @@ The underlying engine remains fully scriptable:
 .venv/bin/twobecomeone mash anchor.mp3 lead.mp3 --dry-run --json
 ```
 
-The source module also contains experimental YouTube and public-index search
-helpers. They are intentionally absent from the Studio's default interface.
+YouTube imports use `yt-dlp`, fetch one video only, extract a high-quality MP3,
+and then pass through the same managed ingestion and analysis path as uploads.
+Public-index torrent search remains an experimental CLI-only helper.
 
 ## Architecture
 
@@ -98,7 +106,9 @@ HTTP upload-to-render vertical slice.
 - The ffmpeg fallback is a center/side transform, not vocal isolation.
 - Vercel can host a static demonstration, but real ffmpeg/Torch processing
   belongs on this local backend or a dedicated GPU service.
-- YouTube/torrent acquisition is not part of the launch UI.
+- YouTube importing requires `yt-dlp` on `PATH` and does not bypass access controls;
+  use media you own or have permission to download and remix.
+- Torrent acquisition is not part of the launch UI.
 
 ## License
 

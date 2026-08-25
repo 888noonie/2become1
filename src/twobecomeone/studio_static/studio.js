@@ -38,6 +38,7 @@ function setupDropCard(card) {
   const slot = card.dataset.slot;
   const zone = $('.drop-zone', card);
   const input = $('input[type=file]', card);
+  const sourceForm = $('.source-import', card);
   const choose = () => input.click();
   zone.addEventListener('click', choose);
   zone.addEventListener('keydown', event => {
@@ -54,22 +55,64 @@ function setupDropCard(card) {
     const file = event.dataTransfer.files[0];
     if (file) uploadTrack(slot, file, card);
   });
-  $('.replace', card).addEventListener('click', choose);
+  sourceForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const url = $('input[type=url]', sourceForm).value.trim();
+    if (url) importTrack(slot, url, card);
+  });
+  $('.replace', card).addEventListener('click', () => {
+    $('.track-result', card).hidden = true;
+    zone.hidden = false;
+    sourceForm.hidden = false;
+    input.value = '';
+  });
+}
+
+function setImporting(card, message) {
+  $('.drop-zone', card).hidden = true;
+  $('.source-import', card).hidden = true;
+  $('.track-result', card).hidden = true;
+  $('.uploading', card).hidden = false;
+  $('.uploading p', card).textContent = message;
+}
+
+function restoreImportChoices(card) {
+  $('.drop-zone', card).hidden = false;
+  $('.source-import', card).hidden = false;
+}
+
+function acceptTrack(slot, card, track) {
+  state[slot] = track;
+  renderTrack(card, track);
+  updateConsole();
 }
 
 async function uploadTrack(slot, file, card) {
-  $('.drop-zone', card).hidden = true;
-  $('.track-result', card).hidden = true;
-  $('.uploading', card).hidden = false;
+  setImporting(card, 'Copying audio & reading its musical DNA…');
   const form = new FormData();
   form.append('file', file, file.name);
   try {
     const track = await api('/api/tracks', { method: 'POST', body: form });
-    state[slot] = track;
-    renderTrack(card, track);
-    updateConsole();
+    acceptTrack(slot, card, track);
   } catch (error) {
-    $('.drop-zone', card).hidden = false;
+    restoreImportChoices(card);
+    toast(error.message);
+  } finally {
+    $('.uploading', card).hidden = true;
+  }
+}
+
+async function importTrack(slot, url, card) {
+  setImporting(card, 'Fetching audio locally, then reading rhythm & harmony…');
+  try {
+    const track = await api('/api/tracks/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    acceptTrack(slot, card, track);
+  } catch (error) {
+    restoreImportChoices(card);
     toast(error.message);
   } finally {
     $('.uploading', card).hidden = true;
@@ -79,6 +122,9 @@ async function uploadTrack(slot, file, card) {
 function renderTrack(card, track) {
   const result = $('.track-result', card);
   $('h2', result).textContent = track.name;
+  const role = card.dataset.slot.toUpperCase();
+  const origin = track.source?.kind === 'youtube' ? 'YOUTUBE' : 'LOCAL';
+  $('.file-label', result).textContent = `${role} · ${origin}`;
   $('[data-field=bpm]', result).textContent = Number(track.bpm).toFixed(1);
   $('[data-field=key]', result).textContent = `${track.key.tonic} ${track.key.mode === 'major' ? 'maj' : 'min'}`;
   $('[data-field=duration]', result).textContent = formatTime(track.duration);

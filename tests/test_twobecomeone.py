@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from twobecomeone import analyzer, assembler, cli, separator
+from twobecomeone import analyzer, assembler, cli, separator, sources
 from twobecomeone.common import UserError
 
 
@@ -246,6 +246,21 @@ class TestSeparator:
 
 
 class TestCli:
+    def test_youtube_url_validation(self):
+        assert sources.is_youtube_url("https://youtu.be/abc")
+        assert sources.is_youtube_url("https://www.youtube.com/watch?v=abc")
+        assert not sources.is_youtube_url("https://youtube.example/watch?v=abc")
+        assert not sources.is_youtube_url("/tmp/youtube.mp3")
+
+    def test_import_local_track(self, tmp_path, capsys):
+        assert cli.main([
+            "import", str(FIXTURES / "c_major_100.wav"),
+            "--data-dir", str(tmp_path / "library"), "--json",
+        ]) == 0
+        track = json.loads(capsys.readouterr().out)
+        assert track["source"]["kind"] == "local"
+        assert track["bpm"] > 0
+
     def test_json_stdout_is_valid(self, capsys):
         assert cli.main(["analyze", str(FIXTURES / "c_major_100.wav"), "--json"]) == 0
         captured = capsys.readouterr()

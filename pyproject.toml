@@ -18,7 +18,7 @@ web = [
     "uvicorn>=0.35",
 ]
 dev = [
-    "httpx2>=0.1",
+    "httpx>=0.28",
     "pytest>=8.0",
 ]
 
