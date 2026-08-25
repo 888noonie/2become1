@@ -123,6 +123,8 @@
   color: var(--color-text);
   background: var(--color-surface);
   font-size: var(--text-base);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .input:focus,

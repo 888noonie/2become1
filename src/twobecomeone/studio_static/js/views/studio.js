@@ -206,9 +206,9 @@ export function mountStudio({ container }) {
   }
 
   // Mount decks
-  anchorDisposer = mountDeck({ container: anchorDeckMount, role: 'anchor', onAnnounce });
-  leadDisposer = mountDeck({ container: leadDeckMount, role: 'lead', onAnnounce });
-  planDisposer = mountPlan({ container: planContainer, store });
+  anchorDisposer = mountDeck({ container: anchorDeckMount, role: 'anchor', onAnnounce, store, projectManager });
+  leadDisposer = mountDeck({ container: leadDeckMount, role: 'lead', onAnnounce, store, projectManager });
+  planDisposer = mountPlan({ container: planContainer, store, projectManager });
 
   updateHeader();
 

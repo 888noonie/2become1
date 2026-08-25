@@ -76,6 +76,27 @@
     grid-template-columns: 1fr;
   }
 
+  .deck__header {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .deck__actions {
+    flex-wrap: wrap;
+  }
+
+  .waveform__controls {
+    display: grid;
+    grid-template-columns: 1fr auto;
+  }
+
+  .waveform__slider {
+    grid-column: 1 / -1;
+  }
+
+  .waveform__cue-input {
+    width: 100%;
+  }
   .toast {
     left: var(--space-4);
     right: var(--space-4);

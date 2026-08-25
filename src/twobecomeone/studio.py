@@ -874,10 +874,18 @@ class StudioService:
         output. Variants are resolved against completed, path-valid stem sets
         only; an unavailable variant is an error, never a silent fallback.
         """
+        return self._compute_arrangement(options).to_api_dict()
+
+    def _compute_arrangement(self, options: RenderOptions):
+        """Internal shared planning result.
+
+        Returns an ArrangementPlan exposing tempo_ratio, semitone_shift,
+        duration, anchor_path, lead_path, and an API dict. Preview capping is
+        applied here so the read-only plan matches the actual render.
+        """
         options.validate()
         anchor = self.get_track(options.anchor_id)
         lead = self.get_track(options.lead_id)
-        # Fail fast when the underlying media is unavailable.
         anchor_path = self.track_path(options.anchor_id)
         lead_path = self.track_path(options.lead_id)
 
@@ -915,6 +923,17 @@ class StudioService:
         available = max(0.0, min(anchor_available, lead_available))
         requested = options.duration
         output_duration = requested if requested is not None else available
+        # Cap to the available overlap so the plan reports exactly what the
+        # renderer will produce (ffmpeg stops at the shorter source's EOF).
+        if output_duration > available:
+            output_duration = available
+        # Preview duration cap is part of the shared plan so the read-only
+        # endpoint shows exactly the same value the renderer will produce.
+        if options.preview:
+            if requested is None:
+                output_duration = min(output_duration, 12.0)
+            if output_duration > 20.0:
+                output_duration = 20.0
         if output_duration <= 0:
             raise UserError("requested mash duration is zero or negative")
 
@@ -954,7 +973,7 @@ class StudioService:
         if abs(semitone_shift) >= 4:
             warnings.append(
                 f"A {semitone_shift:+d}-semitone shift is large; expect audible "
-                "pitch artifacts on the lead."
+                f"pitch artifacts on the lead."
             )
         if options.pitch_mode == "preserve":
             warnings.append(
@@ -983,7 +1002,7 @@ class StudioService:
                 "stem_set_id": info[0] if info else None,
             }
 
-        return {
+        api_dict = {
             "tempo_ratio": round(tempo_ratio, 4),
             "bpm_change_percent": round(bpm_change_percent, 2),
             "semitone_shift": semitone_shift,
@@ -1001,8 +1020,36 @@ class StudioService:
                 "available": round(available, 3),
                 "output": round(output_duration, 3),
             },
+            # Backward-compatible alias used by older frontends.
+            "output_duration": round(output_duration, 3),
             "warnings": warnings,
         }
+
+        class ArrangementPlan:
+            __slots__ = (
+                "tempo_ratio", "semitone_shift", "output_duration", "duration",
+                "anchor_path", "lead_path", "anchor_start", "lead_start",
+                "anchor_gain", "lead_gain", "pitch_mode", "api_dict",
+            )
+
+            def __init__(self):
+                self.tempo_ratio = tempo_ratio
+                self.semitone_shift = semitone_shift
+                self.output_duration = output_duration
+                self.duration = output_duration
+                self.anchor_path = anchor_path
+                self.lead_path = lead_path
+                self.anchor_start = options.anchor_start
+                self.lead_start = options.lead_start
+                self.anchor_gain = options.anchor_gain
+                self.lead_gain = options.lead_gain
+                self.pitch_mode = options.pitch_mode
+                self.api_dict = api_dict
+
+            def to_api_dict(self) -> dict:
+                return self.api_dict
+
+        return ArrangementPlan()
 
     def _run_render(
         self,
@@ -1017,38 +1064,20 @@ class StudioService:
         )
         token.raise_if_cancelled()
 
-        anchor = self.get_track(options.anchor_id)
-        lead = self.get_track(options.lead_id)
-        anchor_path = self.track_path(options.anchor_id)
-        lead_path = self.track_path(options.lead_id)
-        tempo_ratio = float(anchor["bpm"]) / float(lead["bpm"])
-        anchor_key = f"{anchor['key']['tonic']} {anchor['key']['mode']}"
-        lead_key = f"{lead['key']['tonic']} {lead['key']['mode']}"
+        # Single source of truth: planning handles tempo, key, duration,
+        # stem variant resolution, and all user-facing warnings.
+        plan = self._compute_arrangement(options)
 
-        # Resolve stem variants through the completed, validated cache.
-        anchor_variant = options.anchor_variant or "full"
-        lead_variant = options.resolved_lead_variant()
+        anchor_path = plan.anchor_path
+        lead_path = plan.lead_path
+        tempo_ratio = plan.tempo_ratio
+        semitone_shift = plan.semitone_shift
+        duration = plan.output_duration
 
         # Legacy use_vocals: true triggers separation through the cache (reusing
         # any existing stem set) rather than a second unmanaged Demucs path.
-        if options.use_vocals and lead_variant == "vocals":
+        if options.use_vocals and options.resolved_lead_variant() == "vocals":
             self._ensure_stem_variant(options.lead_id, "vocals", job_id, token)
-
-        if anchor_variant != "full":
-            anchor_path = self._resolve_stem_variant(options.anchor_id, anchor_variant)
-        if lead_variant != "full":
-            lead_path = self._resolve_stem_variant(options.lead_id, lead_variant)
-
-        # pitch_mode: "match" shifts the lead to the anchor key; "preserve"
-        # keeps the lead's original pitch (no key shift).
-        if options.pitch_mode == "preserve":
-            semitone_shift = 0
-        else:
-            semitone_shift = assembler.semitones_to_match(anchor_key, lead_key)
-
-        duration = options.duration
-        if options.preview:
-            duration = min(duration if duration is not None else 12.0, 20.0)
 
         self._store.update(
             job_id, stage="rendering", progress=58,
@@ -1060,10 +1089,10 @@ class StudioService:
         spec = assembler.MashSpec(
             anchor_path=anchor_path,
             lead_path=lead_path,
-            anchor_gain=options.anchor_gain,
-            lead_gain=options.lead_gain,
-            anchor_start=options.anchor_start,
-            lead_start=options.lead_start,
+            anchor_gain=plan.anchor_gain,
+            lead_gain=plan.lead_gain,
+            anchor_start=plan.anchor_start,
+            lead_start=plan.lead_start,
             duration=duration,
         )
         assembler.build_mash(spec, tempo_ratio, semitone_shift, str(output_path))
@@ -1073,8 +1102,8 @@ class StudioService:
             "semitone_shift": semitone_shift,
             "duration": assembler._ffprobe_duration(str(output_path)),
             "true_peak_db": peak.get("true_peak_db"),
-            "anchor_variant": anchor_variant,
-            "lead_variant": lead_variant,
+            "anchor_variant": options.anchor_variant or "full",
+            "lead_variant": options.resolved_lead_variant(),
             "pitch_mode": options.pitch_mode,
         }
         return {
@@ -1602,8 +1631,13 @@ class StudioService:
         for row in rows:
             paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
             rel = paths.get(variant)
-            if rel is not None and (self.data_dir / rel).is_file():
-                return True
+            if rel is None:
+                continue
+            try:
+                media.validate_managed_path(self.data_dir / rel, self.data_dir)
+            except UserError:
+                continue
+            return True
         return False
 
     def _stem_set_audio_info(
@@ -1619,8 +1653,13 @@ class StudioService:
         for row in rows:
             paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
             rel = paths.get(variant)
-            if rel is not None and (self.data_dir / rel).is_file():
-                return (row["id"], row["method"], row["model_name"], row["device"])
+            if rel is None:
+                continue
+            try:
+                media.validate_managed_path(self.data_dir / rel, self.data_dir)
+            except UserError:
+                continue
+            return (row["id"], row["method"], row["model_name"], row["device"])
         return None
 
     def list_stems(self, track_id: str) -> dict:
@@ -1660,8 +1699,11 @@ class StudioService:
         for row in rows:
             paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
             for name, rel in paths.items():
-                full = self.data_dir / rel
-                if not full.is_file():
+                try:
+                    media.validate_managed_path(self.data_dir / rel, self.data_dir)
+                except UserError:
+                    continue
+                if not (self.data_dir / rel).is_file():
                     continue
                 available[name] = True
                 if name in order:

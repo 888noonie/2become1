@@ -97,11 +97,25 @@ body {
   background:
     radial-gradient(circle at 15% 5%, rgba(115, 48, 168, 0.26), transparent 33rem),
     radial-gradient(circle at 91% 25%, rgba(16, 129, 176, 0.18), transparent 32rem),
-    linear-gradient(145deg, #0b0712 0%, #110a1c 48%, #080b14 100%);
-  overflow-x: hidden;
+    radial-gradient(circle at 45% 95%, rgba(115, 48, 168, 0.16), transparent 30rem),
+    var(--color-background);
   font-family: var(--font-sans);
   font-size: var(--text-base);
   line-height: 1.5;
+  /* Allow small screens to horizontally scroll if a component exceeds the
+   * viewport instead of hiding overflow. */
+  overflow-x: visible;
+}
+
+@media (max-width: 480px) {
+  html {
+    overflow-x: hidden;
+  }
+
+  body {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 h1, h2, h3, h4 {

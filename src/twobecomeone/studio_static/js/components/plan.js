@@ -14,10 +14,13 @@
 
 import { createElement, replaceChildren } from '../dom.js';
 import { planRender } from '../api.js';
-import { projectManager } from '../app-context.js';
+import { projectManager as globalProjectManager } from '../app-context.js';
 import { formatTime } from '../format.js';
 
-export function mountPlan({ container, store }) {
+export function mountPlan({ container, store, projectManager = globalProjectManager }) {
+  if (!store) {
+    throw new Error('mountPlan requires a store');
+  }
   const root = createElement('section', {
     class: 'studio-plan',
     'aria-label': 'Arrangement and Render Plan',
@@ -151,9 +154,26 @@ export function mountPlan({ container, store }) {
       ]),
     ]);
 
+    const sourceGroup = createElement('fieldset', { class: 'plan-group' }, [
+      createElement('legend', { class: 'plan-group__title', text: 'Source' }),
+      createElement('div', { class: 'plan-group__fields' }, [
+        createElement('div', { class: 'plan-source-info' }, [
+          createElement('p', {
+            class: 'plan-hint',
+            text: `Foundation: ${project.anchor_track_id ? 'selected track' : 'none'} • Lead: ${project.lead_track_id ? 'selected track' : 'none'}`,
+          }),
+          createElement('p', {
+            class: 'plan-hint',
+            text: 'Lead is time-stretched to the Foundation tempo. Source time consumed is mash duration × tempo ratio.',
+          }),
+        ]),
+      ]),
+    ]);
+
     const controlsContainer = createElement('div', { class: 'plan-controls' }, [
       timingGroup,
       harmonyGroup,
+      sourceGroup,
       mixGroup,
     ]);
 
@@ -191,7 +211,11 @@ export function mountPlan({ container, store }) {
 
         const tempoRatioText = d.tempo_ratio != null ? `${d.tempo_ratio.toFixed(3)}x` : '—';
 
-        const metricsGrid = createElement('div', { class: 'plan-metrics' }, [
+        const outputDuration = d.duration?.output ?? d.output_duration ?? 0;
+        const requestedDuration = d.duration?.requested ?? 0;
+        const availableDuration = d.duration?.available ?? 0;
+
+        const metricsEl = createElement('div', { class: 'plan-metrics' }, [
           createElement('div', { class: 'plan-metric' }, [
             createElement('span', { class: 'plan-metric__label', text: 'Tempo Stretch' }),
             createElement('span', { class: 'plan-metric__val', text: `${tempoRatioText} (${bpmChangeText})` }),
@@ -202,13 +226,18 @@ export function mountPlan({ container, store }) {
           ]),
           createElement('div', { class: 'plan-metric' }, [
             createElement('span', { class: 'plan-metric__label', text: 'Mash Duration' }),
-            createElement('span', { class: 'plan-metric__val', text: formatTime(d.output_duration) }),
+            createElement('span', { class: 'plan-metric__val', text: formatTime(outputDuration) }),
           ]),
           createElement('div', { class: 'plan-metric' }, [
             createElement('span', { class: 'plan-metric__label', text: 'Pitch Mode' }),
             createElement('span', { class: 'plan-metric__val', text: d.pitch_mode === 'preserve' ? 'Preserve Pitch' : 'Match Key' }),
           ]),
         ]);
+
+        // Source-time explanation: how the lead maps onto the anchor clock.
+        const leadOnAnchorClock = d.tempo_ratio
+          ? `Lead source ${formatTime(requestedDuration || outputDuration)} × ${d.tempo_ratio.toFixed(3)} = ${formatTime((requestedDuration || outputDuration) / (d.tempo_ratio || 1))} source time.`
+          : '';
 
         const warningsEl = createElement('div', { class: 'plan-warnings' });
         if (d.warnings && d.warnings.length > 0) {
@@ -235,7 +264,10 @@ export function mountPlan({ container, store }) {
 
         replaceChildren(planDisplay, [
           createElement('h3', { class: 'plan-output__title', text: 'Exact Render Plan (Server-Authored)' }),
-          metricsGrid,
+          metricsEl,
+          leadOnAnchorClock
+            ? createElement('p', { class: 'plan-source-time', text: leadOnAnchorClock })
+            : null,
           variantsEl,
           warningsEl.hasChildNodes() ? warningsEl : null,
           readyBadge,

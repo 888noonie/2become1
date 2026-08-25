@@ -10,11 +10,49 @@ import { audioController } from '../audio.js';
 import { openSourcePicker } from './source-picker.js';
 import { mountWaveform } from '../waveform.js';
 import { formatBpm, formatKey, formatTime, sourceLabel } from '../format.js';
-import { store, projectManager } from '../app-context.js';
+import { store as globalStore, projectManager as globalProjectManager } from '../app-context.js';
 import { openAnalysisDialog } from './analysis-dialog.js';
 import { openStemDialog } from './stem-dialog.js';
+import { showToast } from './toast.js';
+import { listStems } from '../api.js';
 
-export function mountDeck({ container, role, onAnnounce }) {
+// Module cache for per-track variant URL lookups used by deck playback.
+const stemFetchControllers = new Map();
+
+function getVariantAudioUrl(state, trackId, variant) {
+  if (variant === 'full') return null;
+  const cached = state.stems?.[trackId];
+  if (cached?.variants) {
+    const v = cached.variants.find((entry) => entry.name === variant);
+    return v?.audio_url || null;
+  }
+  return null;
+}
+
+async function loadStemsForTrack(trackId, store) {
+  const previous = stemFetchControllers.get(trackId);
+  if (previous) previous.abort();
+  const controller = new AbortController();
+  stemFetchControllers.set(trackId, controller);
+  try {
+    const data = await listStems(trackId, controller.signal);
+    store.dispatch({ type: 'stems/set', trackId, data });
+    return data;
+  } catch (err) {
+    if (err && err.name === 'AbortError') return null;
+    console.error('failed to load stems for deck', err);
+    return null;
+  } finally {
+    if (stemFetchControllers.get(trackId) === controller) {
+      stemFetchControllers.delete(trackId);
+    }
+  }
+}
+
+export function mountDeck({ container, role, onAnnounce, store = globalStore, projectManager = globalProjectManager }) {
+  if (!container) {
+    throw new Error('mountDeck requires a container');
+  }
   const disposers = [];
   let waveformDisposer = null;
   let currentTrackId = null;
@@ -26,11 +64,17 @@ export function mountDeck({ container, role, onAnnounce }) {
   });
   container.replaceChildren(root);
 
+  let lastState = null;
+
   function render(state) {
+    lastState = state;
     const project = state.currentProject || {};
     const trackId = role === 'anchor' ? project.anchor_track_id : project.lead_track_id;
     const variant = (role === 'anchor' ? project.anchor_variant : project.lead_variant) || 'full';
-    const track = trackId ? state.deckTracks[trackId] : null;
+    // Treat explicit null (unresolvable) and undefined (not yet resolved) as
+    // missing until we have a real track record. This avoids throwing on
+    // undefined during boot/refresh.
+    const track = trackId ? (state.deckTracks[trackId] ?? undefined) : null;
 
     // Header / role label
     const roleBadge = createElement('span', {
@@ -67,8 +111,8 @@ export function mountDeck({ container, role, onAnnounce }) {
       return;
     }
 
-    if (track === null && trackId) {
-      // Explicit missing/trashed state (recoverable, not substituted)
+    if (track === null || track === undefined) {
+      // Explicit missing/trashed state or still resolving (recoverable, not substituted)
       if (waveformDisposer) {
         waveformDisposer();
         waveformDisposer = null;
@@ -76,10 +120,13 @@ export function mountDeck({ container, role, onAnnounce }) {
       currentTrackId = trackId;
       currentTrack = null;
 
+      const isResolving = track === undefined;
       const missingBody = createElement('div', { class: 'deck__missing' }, [
         createElement('p', {
           class: 'deck__missing-text',
-          text: 'Track unavailable (missing or moved to trash).',
+          text: isResolving
+            ? 'Resolving track…'
+            : 'Track unavailable (missing or moved to trash).',
         }),
         createElement('div', { class: 'deck__missing-actions' }, [
           createElement('button', {
@@ -178,10 +225,32 @@ export function mountDeck({ container, role, onAnnounce }) {
         if (isThisPlaying) {
           audioController.pause();
         } else {
-          // Play full or variant
-          const url = variant === 'full'
-            ? track.audio_url
-            : `/api/stems/by-track/${encodeURIComponent(track.id)}/audio?name=${encodeURIComponent(variant)}`;
+          // Use the structured server-authored audio URL. For full mix it is
+          // the track audio endpoint; for stems it comes from the stem tray.
+          let url = track.audio_url;
+          if (variant !== 'full') {
+            const variantUrl = getVariantAudioUrl(store.getState(), track.id, variant);
+            if (variantUrl) {
+              url = variantUrl;
+            } else {
+              // Load stems once, then retry the click by re-rendering.
+              loadStemsForTrack(track.id, store).then(() => {
+                const freshUrl = getVariantAudioUrl(store.getState(), track.id, variant);
+                if (freshUrl) {
+                  audioController.play({
+                    trackId: track.id,
+                    url: freshUrl,
+                    kind: 'stem',
+                    stemName: variant,
+                    variant,
+                  });
+                } else {
+                  showToast?.(`Variant "${variant}" is not available for playback.`, 'danger');
+                }
+              });
+              return;
+            }
+          }
           audioController.play({
             trackId: track.id,
             url,

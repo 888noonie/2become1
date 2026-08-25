@@ -94,9 +94,16 @@ export class ProjectManager {
     }));
   }
 
-  /** Queue a debounced, serialized save of the given project fields. */
+  /**
+   * Queue a debounced, serialized save of the given project fields.
+   * Applies an optimistic local patch immediately so the UI never appears to
+   * lag behind user input. Network responses are authoritative only for the
+   * fields they actually wrote.
+   */
   save(fields) {
     if (!this.store.getState().currentProject?.id) return;
+    // Optimistic local patch first so controls reflect the change instantly.
+    this.store.dispatch({ type: 'project/patch-local', fields });
     Object.assign(this._dirty, fields);
     this._publishDirty();
     if (this._timer) clearTimeout(this._timer);
@@ -115,7 +122,7 @@ export class ProjectManager {
   /**
    * Serialize network saves: never overlap requests, and never let an older
    * response clobber newer local edits. On success the server response is
-   * authoritative; on failure the user's unsaved edits stay visible and are
+   * merged; on failure the user's unsaved edits stay visible and are
    * offered for retry.
    */
   async _flush() {
@@ -125,15 +132,51 @@ export class ProjectManager {
     this._dirty = {};
     const project = this.store.getState().currentProject;
     if (!project?.id || Object.keys(fields).length === 0) {
-      this._publishDirty();
+      this.store.dispatch({
+        type: 'save/status',
+        status: 'saved',
+        pending: [],
+        error: null,
+      });
       return;
     }
+    // Snapshot the local project version before the network request so we
+    // can detect and reject stale responses.
+    const localVersionBefore = {
+      project: this.store.getState().currentProject,
+      updated_at: project.updated_at,
+    };
     const controller = new AbortController();
-    this._inflight = { controller };
+    this._inflight = { controller, fields };
     this._publishDirty();
     try {
       const saved = await patchProject(project.id, fields, controller.signal);
-      this.store.dispatch({ type: 'project/set', project: saved });
+      const current = this.store.getState().currentProject;
+      // Stale response guard: if local edits have advanced past the version
+      // we sent, keep current local state and only adopt server-authored
+      // metadata for fields that are no longer dirty.
+      const isStale =
+        current.id === project.id &&
+        current.updated_at != null &&
+        saved.updated_at != null &&
+        saved.updated_at < current.updated_at;
+      if (isStale) {
+        // Don't clobber newer local edits; for every field we sent, prefer
+        // the newer local value. Everything else is authoritative from the
+        // server response.
+        const reconciled = { ...saved };
+        for (const key of Object.keys(fields)) {
+          if (key !== 'id' && key !== 'updated_at') {
+            reconciled[key] = current[key];
+          }
+        }
+        // Preserve local updated_at because the server returned an older one.
+        reconciled.updated_at = current.updated_at;
+        this.store.dispatch({ type: 'project/set', project: reconciled });
+      } else {
+        // Authoritative response: apply it directly.
+        this.store.dispatch({ type: 'project/set', project: saved });
+      }
       this.store.dispatch({
         type: 'save/status',
         status: Object.keys(this._dirty).length ? 'saving' : 'saved',

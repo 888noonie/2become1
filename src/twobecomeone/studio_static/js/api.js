@@ -396,3 +396,7 @@ export function updateTrackAnalysis(trackId, overrides, signal) {
   if ('suggested_downbeat' in overrides) fields.suggested_downbeat = overrides.suggested_downbeat;
   return patchTrack(trackId, fields, signal);
 }
+
+export function getTrackWaveform(trackId, signal) {
+  return get(`/api/tracks/${trackId}/waveform`, signal);
+}

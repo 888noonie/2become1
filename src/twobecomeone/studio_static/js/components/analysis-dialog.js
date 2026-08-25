@@ -9,7 +9,7 @@
 import { createElement } from '../dom.js';
 import { openDialog } from './dialog.js';
 import { showToast } from './toast.js';
-import { updateTrackAnalysis, getTrack } from '../api.js';
+import { updateTrackAnalysis } from '../api.js';
 
 const TONICS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const MODES = [
@@ -17,13 +17,21 @@ const MODES = [
   { value: 'minor', label: 'Minor' },
 ];
 
+function hasAnyOverrideValue(overrides) {
+  if (!overrides) return false;
+  return overrides.bpm != null ||
+    overrides.tonic != null ||
+    overrides.mode != null ||
+    overrides.first_beat != null ||
+    overrides.suggested_downbeat != null;
+}
+
 export async function openAnalysisDialog({ track, store, onAnnounce, trigger = null }) {
-  const detected = track.detected_analysis || {
-    bpm: track.bpm,
-    key: track.key,
-    beat_grid: track.beat_grid,
-  };
-  const overrides = track.analysis_overrides || {};
+  // The API returns flat detected and overrides objects on every track.
+  const detected = track.detected || {};
+  const overrides = track.overrides || {};
+  const detectedKey = detected.key || track.key || {};
+  const detectedBeatGrid = detected.beat_grid || track.beat_grid || {};
 
   // Form inputs for overrides
   const bpmInput = createElement('input', {
@@ -45,11 +53,11 @@ export async function openAnalysisDialog({ track, store, onAnnounce, trigger = n
     ...TONICS.map((t) => createElement('option', {
       value: t,
       text: t,
-      selected: (overrides.key?.tonic || (overrides.key == null ? '' : '')) === t ? 'true' : null,
+      selected: overrides.tonic === t ? 'true' : null,
     })),
   ]);
-  if (overrides.key?.tonic) {
-    tonicSelect.value = overrides.key.tonic;
+  if (overrides.tonic) {
+    tonicSelect.value = overrides.tonic;
   }
 
   const modeSelect = createElement('select', {
@@ -60,11 +68,11 @@ export async function openAnalysisDialog({ track, store, onAnnounce, trigger = n
     ...MODES.map((m) => createElement('option', {
       value: m.value,
       text: m.label,
-      selected: (overrides.key?.mode || '') === m.value ? 'true' : null,
+      selected: overrides.mode === m.value ? 'true' : null,
     })),
   ]);
-  if (overrides.key?.mode) {
-    modeSelect.value = overrides.key.mode;
+  if (overrides.mode) {
+    modeSelect.value = overrides.mode;
   }
 
   const firstBeatInput = createElement('input', {
@@ -72,8 +80,8 @@ export async function openAnalysisDialog({ track, store, onAnnounce, trigger = n
     type: 'number',
     step: '0.001',
     min: '0',
-    placeholder: String(detected.beat_grid?.first_beat != null ? detected.beat_grid.first_beat.toFixed(3) : ''),
-    value: overrides.beat_grid?.first_beat != null ? String(overrides.beat_grid.first_beat) : '',
+    placeholder: String(detectedBeatGrid.first_beat != null ? detectedBeatGrid.first_beat.toFixed(3) : ''),
+    value: overrides.first_beat != null ? String(overrides.first_beat) : '',
     'aria-label': 'Override First Beat (s)',
   });
 
@@ -82,8 +90,8 @@ export async function openAnalysisDialog({ track, store, onAnnounce, trigger = n
     type: 'number',
     step: '0.001',
     min: '0',
-    placeholder: String(detected.beat_grid?.suggested_downbeat != null ? detected.beat_grid.suggested_downbeat.toFixed(3) : ''),
-    value: overrides.beat_grid?.suggested_downbeat != null ? String(overrides.beat_grid.suggested_downbeat) : '',
+    placeholder: String(detectedBeatGrid.suggested_downbeat != null ? detectedBeatGrid.suggested_downbeat.toFixed(3) : ''),
+    value: overrides.suggested_downbeat != null ? String(overrides.suggested_downbeat) : '',
     'aria-label': 'Override Suggested Downbeat (s)',
   });
 
@@ -93,15 +101,15 @@ export async function openAnalysisDialog({ track, store, onAnnounce, trigger = n
     ? 'Check this'
     : (typeof confVal === 'number' ? `${Math.round(confVal * 100)}%` : '—');
 
-  const detKeyText = detected.key
-    ? `${detected.key.tonic || '—'} ${detected.key.mode || ''}`.trim()
+  const detKeyText = detectedKey
+    ? `${detectedKey.tonic || '—'} ${detectedKey.mode || ''}`.trim()
     : '—';
   const detBpmText = detected.bpm != null ? `${detected.bpm.toFixed(1)} BPM` : '—';
-  const detFirstBeatText = detected.beat_grid?.first_beat != null
-    ? `${detected.beat_grid.first_beat.toFixed(3)} s`
+  const detFirstBeatText = detectedBeatGrid.first_beat != null
+    ? `${detectedBeatGrid.first_beat.toFixed(3)} s`
     : '—';
-  const detDownbeatText = detected.beat_grid?.suggested_downbeat != null
-    ? `${detected.beat_grid.suggested_downbeat.toFixed(3)} s`
+  const detDownbeatText = detectedBeatGrid.suggested_downbeat != null
+    ? `${detectedBeatGrid.suggested_downbeat.toFixed(3)} s`
     : '—';
 
   const infoSection = createElement('div', { class: 'analysis-dialog__info' }, [
@@ -177,13 +185,21 @@ export async function openAnalysisDialog({ track, store, onAnnounce, trigger = n
   if (result !== 'save') return;
 
   try {
-    let payload = {};
-    if (resetRequested && !bpmInput.value && !tonicSelect.value && !modeSelect.value && !firstBeatInput.value && !downbeatInput.value) {
+    let payload;
+    if (resetRequested && !hasAnyOverrideValue({
+      bpm: bpmInput.value.trim() ? Number(bpmInput.value.trim()) : null,
+      tonic: tonicSelect.value.trim() || null,
+      mode: modeSelect.value.trim() || null,
+      first_beat: firstBeatInput.value.trim() ? Number(firstBeatInput.value.trim()) : null,
+      suggested_downbeat: downbeatInput.value.trim() ? Number(downbeatInput.value.trim()) : null,
+    })) {
       // Send explicit JSON nulls for reset
       payload = {
         bpm: null,
-        key: null,
-        beat_grid: null,
+        tonic: null,
+        mode: null,
+        first_beat: null,
+        suggested_downbeat: null,
       };
     } else {
       // Build override payload
@@ -198,11 +214,13 @@ export async function openAnalysisDialog({ track, store, onAnnounce, trigger = n
         return;
       }
 
-      payload.bpm = bpmVal;
-      payload.tonic = tonicVal;
-      payload.mode = modeVal;
-      payload.first_beat = firstBeatVal;
-      payload.suggested_downbeat = downbeatVal;
+      payload = {
+        bpm: bpmVal,
+        tonic: tonicVal,
+        mode: modeVal,
+        first_beat: firstBeatVal,
+        suggested_downbeat: downbeatVal,
+      };
     }
 
     const updated = await updateTrackAnalysis(track.id, payload);

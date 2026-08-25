@@ -16,15 +16,23 @@ preview/render/results; Phase 7 owns release work.
 ## Verified checkpoint
 
 - Branch: `v0.3-workspace`, tracking `origin/v0.3-workspace`.
-- HEAD: `417abdc` (`Build accessible Studio decks, waveforms, stems, and arrangement plan`).
+- HEAD: (to be updated after corrective pass commit).
 - Working tree is clean.
-- Latest known full verification: 170 Python tests and all 53 frontend test
-  declarations across 11 Node test files passed.
+- Latest known full verification: 170 Python tests and 60 frontend test
+  declarations across 12 Node test files passed.
 - Application version intentionally remains `0.2.0`; bump only in Phase 7.
 - Current local URL: <http://127.0.0.1:8871/#/studio>.
 - Persistent data root: `/home/richardn/.local/share/2become1`.
 - The server is loopback-only. Preferred audio device is CUDA; Demucs 4.1.0,
   PyTorch 2.13.0, ffmpeg, and yt-dlp are available on this machine.
+
+## Phase 5 status
+
+Phase 5 has been implemented and a corrective pass completed for the adversarial
+audit findings. The Studio route now has persisted project loading, dual decks,
+server-authored waveforms, beat-snap cues, analysis correction, truthful stem
+separation/playback, grouped arrangement controls, and an exact shared render plan.
+Phase 6 remains blocked until this corrective pass is re-audited and accepted.
 
 If the old server process is no longer alive, start it from the repository with:
 
@@ -58,9 +66,10 @@ in metadata. Do not silently rewrite an explicitly user-renamed track; title
 presentation can be improved separately while retaining Rename as the source of
 truth.
 
-The Studio route is deliberately a Phase 4 placeholder with two in-memory slot
-cards. Assignments are not yet persisted because Phase 5 owns project loading
-and autosave. Activity and Engine now paint cached boot state immediately.
+The Studio route is now a Phase 5 implementation with persisted project
+lifecycle, dual decks, server-authored waveforms, beat-snap cue controls,
+analysis correction, truthful stem separation and playback, grouped arrangement
+controls, and an exact shared render plan.
 
 Two historical failed import jobs containing `name 'Path' is not defined` may
 remain visible in Activity. They are honest immutable history, not evidence that

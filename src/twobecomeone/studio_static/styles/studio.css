@@ -134,6 +134,7 @@
 .studio {
   display: grid;
   gap: var(--space-6);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .project-header {
@@ -144,6 +145,7 @@
   gap: var(--space-4);
   padding: var(--space-4) 0;
   border-bottom: 1px solid var(--color-border);
+  min-width: 0;
 }
 
 .project-title {
@@ -192,6 +194,7 @@
   background: var(--color-surface);
   display: grid;
   gap: var(--space-4);
+  min-width: 0;
 }
 
 .deck--anchor {
@@ -233,6 +236,11 @@
   display: flex;
   gap: var(--space-4);
   align-items: center;
+  min-width: 0;
+}
+
+.deck__details {
+  min-width: 0;
 }
 
 .deck__art {
@@ -264,6 +272,7 @@
   margin: 0 0 var(--space-1) 0;
   font-size: var(--text-md);
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .deck__meta-row {
@@ -342,6 +351,28 @@
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2);
+  overflow-x: visible;
+}
+
+@media (max-width: 480px) {
+  .waveform__controls {
+    display: grid;
+    grid-template-columns: 1fr auto;
+  }
+
+  .waveform__controls .button {
+    order: 1;
+  }
+
+  .waveform__slider {
+    grid-column: 1 / -1;
+    order: 0;
+  }
+
+  .waveform__cue-input {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
 }
 
 .waveform__slider {
@@ -378,6 +409,7 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: var(--space-4);
+  min-width: 0;
 }
 
 .plan-group {
@@ -385,6 +417,7 @@
   border-radius: var(--radius-md);
   padding: var(--space-4);
   background: var(--color-surface-raised);
+  min-width: 0;
 }
 
 .plan-group__title {
@@ -397,6 +430,8 @@
 .plan-group__fields {
   display: grid;
   gap: var(--space-3);
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .gain-control {

@@ -25,8 +25,8 @@ def anyio_backend():
     return "asyncio"
 
 
-async def _import_track(client, tmp_path: Path, name: str, bpm: float, root: float):
-    p = synth_track(tmp_path / name, bpm=bpm, root=root)
+async def _import_track(client, tmp_path: Path, name: str, bpm: float, root: float, duration: float = 4.0):
+    p = synth_track(tmp_path / name, bpm=bpm, root=root, duration=duration)
     with p.open("rb") as f:
         resp = await client.post("/api/tracks", files={"file": (name, f, "audio/wav")})
     assert resp.status_code == 201, resp.text
@@ -266,7 +266,10 @@ class TestRenderPlan:
                 assert plan["pitch_mode"] == "match"
                 assert plan["duration"]["requested"] == 10.0
                 assert plan["duration"]["available"] is not None
-                assert plan["duration"]["output"] == 10.0
+                # Overlong requests are capped to the available overlap so the
+                # plan reports exactly what the renderer will produce.
+                assert plan["duration"]["output"] == pytest.approx(plan["duration"]["available"], abs=1e-3)
+                assert plan["duration"]["output"] < 10.0
                 assert isinstance(plan["warnings"], list)
                 import json as _json
                 assert str(tmp_path) not in _json.dumps(plan)
@@ -274,6 +277,39 @@ class TestRenderPlan:
                 # Read-only: no job, no output.
                 assert (await c.get("/api/jobs")).json()["jobs"] == jobs_before
                 assert list((tmp_path / "data" / "renders").glob("*")) == renders_before
+        finally:
+            app.state.studio.close()
+
+    @pytest.mark.anyio
+    async def test_plan_caps_overlong_request_to_available(self, tmp_path):
+        """Audit regression: an overlong request must report the capped output.
+
+        The read-only plan previously returned ``output == requested`` (e.g.
+        30.0) even when only ~7.7s of overlap existed, while the renderer
+        silently stopped at the shorter source's EOF. The plan must match.
+        """
+        pytest.importorskip("fastapi")
+        import httpx
+        from twobecomeone.webapp import create_app
+
+        app = create_app(tmp_path / "data")
+        transport = httpx.ASGITransport(app=app)
+        try:
+            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+                a = await _import_track(c, tmp_path, "a.wav", 100, 261.63, duration=8.0)
+                l = await _import_track(c, tmp_path, "l.wav", 100, 261.63, duration=8.0)
+
+                resp = await c.post("/api/renders/plan", json={
+                    "anchor_id": a["id"], "lead_id": l["id"], "duration": 30.0,
+                })
+                assert resp.status_code == 200, resp.text
+                plan = resp.json()
+                assert plan["duration"]["requested"] == 30.0
+                assert plan["duration"]["available"] < 30.0
+                assert plan["duration"]["output"] == pytest.approx(plan["duration"]["available"], abs=1e-3)
+                # Backward-compatible alias agrees.
+                assert plan["output_duration"] == pytest.approx(plan["duration"]["output"], abs=1e-3)
+                assert any("exceeds the available overlap" in w for w in plan["warnings"])
         finally:
             app.state.studio.close()
 

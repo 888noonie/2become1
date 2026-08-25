@@ -1,11 +1,14 @@
 // components/stem-dialog.js — accessible separation modal and stem tray.
 //
 // Phase 5 (Task 5):
-// - Offers Auto, Demucs (4-stem), and Center/side.
+// - Offers Auto, Demucs (4-stem), and Center/sides.
 // - Never implies center/side is isolated vocals (labelled truthfully as Center / Sides).
-// - Submits separation job, monitors via SSE, handles CUDA OOM warnings gracefully.
+// - Submits separation job, monitors via SSE, supports Cancel, and handles
+//   failed/interrupted terminal states gracefully.
 // - Once complete, displays stem tray with truthful name/method/model/device,
 //   Play/Stop via global AudioController, Use in this deck, and Download.
+// - Refreshes the tray on playback state changes only when the selected
+//   stem changes, not on every timeupdate frame.
 
 import { createElement, replaceChildren } from '../dom.js';
 import { openDialog } from './dialog.js';
@@ -14,13 +17,15 @@ import {
   submitSeparation,
   listStems,
   watchJob,
+  cancelJob,
   stemAudioUrl,
 } from '../api.js';
 import { audioController } from '../audio.js';
-import { projectManager } from '../app-context.js';
+import { projectManager as globalProjectManager, store as globalStore } from '../app-context.js';
 
-export async function openStemDialog({ track, role, store, onAnnounce, trigger = null }) {
+export async function openStemDialog({ track, role, store = globalStore, projectManager = globalProjectManager, onAnnounce, trigger = null }) {
   let activeUnsub = null;
+  let activeJobId = null;
   let dialogClose = null;
 
   const stemListContainer = createElement('div', { class: 'stem-tray__list' });
@@ -45,12 +50,30 @@ export async function openStemDialog({ track, role, store, onAnnounce, trigger =
     text: 'Start Separation',
   });
 
+  const cancelBtn = createElement('button', {
+    class: 'button button--danger',
+    type: 'button',
+    text: 'Cancel',
+    disabled: 'true',
+  });
+
+  function currentProjectVariant() {
+    const currentProject = store.getState().currentProject || {};
+    return (role === 'anchor' ? currentProject.anchor_variant : currentProject.lead_variant) || 'full';
+  }
+
+  function isAuditioningVariant(playback, v) {
+    return playback.playing && (
+      playback.source?.url === v.audio_url ||
+      (playback.source?.trackId === track.id && playback.source?.variant === v.name)
+    );
+  }
+
   async function loadAndRenderStems() {
     try {
       const data = await listStems(track.id);
       const variants = data.variants || [];
-      const currentProject = store.getState().currentProject || {};
-      const currentVariant = (role === 'anchor' ? currentProject.anchor_variant : currentProject.lead_variant) || 'full';
+      const currentVariant = currentProjectVariant();
 
       if (variants.length === 0) {
         replaceChildren(stemListContainer, [
@@ -63,10 +86,10 @@ export async function openStemDialog({ track, role, store, onAnnounce, trigger =
         const isSelected = v.name === currentVariant;
         const isFull = v.name === 'full';
 
-        // Truthful label
+        // Truthful label: the sides variant is the plural of side.
         let displayName = v.name;
         if (v.name === 'center') displayName = 'Center (Mid channel DSP)';
-        else if (v.name === 'side') displayName = 'Sides (Side channel DSP)';
+        else if (v.name === 'side' || v.name === 'sides') displayName = 'Sides (Side channel DSP)';
         else if (v.name === 'vocals') displayName = 'Vocals (Demucs)';
         else if (v.name === 'drums') displayName = 'Drums (Demucs)';
         else if (v.name === 'bass') displayName = 'Bass (Demucs)';
@@ -89,12 +112,8 @@ export async function openStemDialog({ track, role, store, onAnnounce, trigger =
             : null,
         ]);
 
-        // Audition button (global AudioController)
         const playback = store.getState().playback;
-        const isAuditioning = playback.playing && (
-          playback.source?.url === v.audio_url ||
-          (playback.source?.trackId === track.id && playback.source?.variant === v.name)
-        );
+        const isAuditioning = isAuditioningVariant(playback, v);
 
         const playBtn = createElement('button', {
           class: `button button--sm ${isAuditioning ? 'button--primary' : ''}`,
@@ -162,21 +181,32 @@ export async function openStemDialog({ track, role, store, onAnnounce, trigger =
     }
   }
 
+  function stopWatching() {
+    if (activeUnsub) {
+      activeUnsub();
+      activeUnsub = null;
+    }
+    activeJobId = null;
+    separateBtn.disabled = false;
+    cancelBtn.disabled = true;
+  }
+
   separateBtn.onclick = async () => {
     separateBtn.disabled = true;
+    cancelBtn.disabled = false;
     const method = methodSelect.value;
     jobStatusEl.textContent = 'Submitting separation job…';
 
     try {
       const job = await submitSeparation(track.id, method);
+      activeJobId = job.id;
       // Upsert job into global Activity store
       store.dispatch({ type: 'jobs/upsert', job });
 
       if (job.status === 'complete') {
-        // Cache hit
+        stopWatching();
         jobStatusEl.textContent = 'Stem separation found in cache.';
         showToast('Stems available immediately (cached).', 'success');
-        separateBtn.disabled = false;
         await loadAndRenderStems();
         return;
       }
@@ -195,34 +225,38 @@ export async function openStemDialog({ track, role, store, onAnnounce, trigger =
         } else if (updated.status === 'complete') {
           jobStatusEl.textContent = 'Separation complete!';
           showToast('Stem separation finished successfully.', 'success');
-          separateBtn.disabled = false;
-          if (activeUnsub) {
-            activeUnsub();
-            activeUnsub = null;
-          }
+          stopWatching();
           await loadAndRenderStems();
-        } else if (updated.status === 'failed' || updated.status === 'cancelled') {
-          const errText = updated.error?.message || updated.progress_detail || 'Separation failed';
+        } else if (updated.status === 'failed' || updated.status === 'interrupted' || updated.status === 'cancelled') {
+          const errText = updated.error?.message || updated.progress_detail || `Separation ${updated.status}`;
           jobStatusEl.textContent = `Error: ${errText}`;
-          showToast(`Separation ${updated.status}: ${errText}`, 'danger');
-          separateBtn.disabled = false;
-          if (activeUnsub) {
-            activeUnsub();
-            activeUnsub = null;
-          }
+          showToast(`Separation ${updated.status}: ${errText}`, updated.status === 'cancelled' ? 'info' : 'danger');
+          stopWatching();
         }
       });
     } catch (err) {
       jobStatusEl.textContent = `Failed: ${err.message}`;
       showToast(err.message || 'Separation failed', 'danger');
-      separateBtn.disabled = false;
+      stopWatching();
+    }
+  };
+
+  cancelBtn.onclick = async () => {
+    if (!activeJobId) return;
+    try {
+      cancelBtn.disabled = true;
+      await cancelJob(activeJobId);
+      jobStatusEl.textContent = 'Cancelling separation…';
+      onAnnounce?.('Cancelling separation job.');
+    } catch (err) {
+      showToast(err.message || 'Cancel failed', 'danger');
     }
   };
 
   const bodyEl = createElement('div', { class: 'stem-dialog' }, [
     createElement('div', { class: 'stem-dialog__section' }, [
       createElement('h4', { text: 'New Separation' }),
-      createElement('div', { class: 'input-group' }, [methodSelect, separateBtn]),
+      createElement('div', { class: 'input-group' }, [methodSelect, separateBtn, cancelBtn]),
       jobStatusEl,
     ]),
     createElement('div', { class: 'stem-dialog__section' }, [
@@ -234,9 +268,17 @@ export async function openStemDialog({ track, role, store, onAnnounce, trigger =
   // Initial stems load
   loadAndRenderStems();
 
-  // Subscribe to playback changes to update Audition buttons
-  const unsubPlayback = store.subscribeSlice('playback', () => {
-    loadAndRenderStems();
+  // Subscribe to playback changes to update Audition buttons. We only
+  // re-render when the selected playback variant changes, not on every
+  // timeupdate tick.
+  let lastPlaybackVariant = null;
+  const unsubPlayback = store.subscribeSlice('playback', (playback) => {
+    const currentVariant = currentProjectVariant();
+    const activeVariant = playback.source?.variant || null;
+    if (activeVariant !== lastPlaybackVariant || activeVariant === currentVariant) {
+      lastPlaybackVariant = activeVariant;
+      loadAndRenderStems();
+    }
   });
 
   await openDialog({
@@ -246,6 +288,6 @@ export async function openStemDialog({ track, role, store, onAnnounce, trigger =
     trigger,
   });
 
-  if (activeUnsub) activeUnsub();
+  stopWatching();
   unsubPlayback();
 }

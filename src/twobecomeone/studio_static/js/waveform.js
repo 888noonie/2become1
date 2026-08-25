@@ -316,5 +316,3 @@ export function mountWaveform({
     if (observer) observer.disconnect();
   };
 }
-
-
