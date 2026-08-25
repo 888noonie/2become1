@@ -3,16 +3,14 @@
 // Phase 4.2/4.4: loads as a native ES module. Wires the StateStore, Router,
 // AudioController, and the active-job badge.
 
-import { StateStore, registerReducers } from './state.js';
 import { Router } from './router.js';
 import { audioController } from './audio.js';
 import { getHealth, listJobs, listTracks } from './api.js';
+import { store, projectManager } from './app-context.js';
 import { mountStudio } from './views/studio.js';
 import { mountLibrary } from './views/library.js';
 import { mountActivity } from './views/activity.js';
 import { mountEngine } from './views/engine.js';
-
-const store = registerReducers(new StateStore());
 
 const container = document.getElementById('main');
 
@@ -97,6 +95,9 @@ async function boot() {
   } catch (err) {
     console.error('library preload failed', err);
   }
+  // Load/create the persisted project after the library is primed so deck
+  // resolution can fall back to per-track fetches when needed.
+  await projectManager.boot();
 }
 
 router.start();

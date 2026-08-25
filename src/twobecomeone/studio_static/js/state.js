@@ -10,6 +10,13 @@ const INITIAL_STATE = {
   route: 'studio',
   health: null,
   currentProject: null,
+  projects: { items: [], total: 0 },
+  // Per-deck resolved tracks keyed by track ID (null payload = unresolvable).
+  deckTracks: {},
+  save: { status: 'idle', pending: [], error: null, lastError: null },
+  plan: { data: null, loading: false, error: null },
+  // Stem metadata per track; payload cache stays outside the store.
+  stems: {},
   library: {
     items: [],
     total: 0,
@@ -132,6 +139,39 @@ export function registerReducers(store) {
   store.register('project/set', (state, action) => ({
     ...state,
     currentProject: action.project,
+  }));
+
+  store.register('project/patch-local', (state, action) => {
+    if (!state.currentProject) return state;
+    return {
+      ...state,
+      currentProject: { ...state.currentProject, ...action.fields },
+    };
+  });
+
+  store.register('projects/set', (state, action) => ({
+    ...state,
+    projects: { items: action.items, total: action.total },
+  }));
+
+  store.register('deckTrack/set', (state, action) => ({
+    ...state,
+    deckTracks: { ...state.deckTracks, [action.trackId]: action.track },
+  }));
+
+  store.register('save/status', (state, action) => {
+    const { type: _type, ...updates } = action;
+    return { ...state, save: { ...state.save, ...updates } };
+  });
+
+  store.register('plan/set', (state, action) => {
+    const { type: _type, ...updates } = action;
+    return { ...state, plan: { ...state.plan, ...updates } };
+  });
+
+  store.register('stems/set', (state, action) => ({
+    ...state,
+    stems: { ...state.stems, [action.trackId]: action.data },
   }));
 
   store.register('project/assign-slot', (state, action) => {

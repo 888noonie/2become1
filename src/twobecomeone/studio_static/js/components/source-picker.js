@@ -14,6 +14,7 @@ import { formatBpm, formatKey, formatTime, sourceLabel } from '../format.js';
 import {
   submitYouTube, submitUpload, watchJob, getTrack,
 } from '../api.js';
+import { projectManager } from '../app-context.js';
 
 const TABS = ['library', 'upload', 'youtube'];
 
@@ -281,7 +282,7 @@ async function onComplete(job, store, slot, statusEl) {
     // Deduplicated import adds the returned track ID only once.
     store.dispatch({ type: 'library/upsert-track', track });
     if (slot) {
-      store.dispatch({ type: 'project/assign-slot', slot, trackId });
+      projectManager.assign(slot, trackId);
       showToast(`Assigned "${track.name}" as ${slot === 'anchor' ? 'foundation' : 'lead'}.`, 'success');
     } else {
       showToast(`Imported "${track.name}".`, 'success');
@@ -294,7 +295,7 @@ async function onComplete(job, store, slot, statusEl) {
 
 function assign(store, slot, track) {
   if (slot) {
-    store.dispatch({ type: 'project/assign-slot', slot, trackId: track.id });
+    projectManager.assign(slot, track.id);
     showToast(`Assigned "${track.name}" as ${slot === 'anchor' ? 'foundation' : 'lead'}.`, 'success');
   }
 }

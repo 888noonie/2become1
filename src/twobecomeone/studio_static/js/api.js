@@ -331,3 +331,58 @@ export function trashTrack(trackId) {
 export function restoreTrack(trackId) {
   return post(`/api/tracks/${trackId}/restore`, {});
 }
+
+// ---------------------------------------------------------------------------
+// Projects (Phase 5)
+// ---------------------------------------------------------------------------
+
+export function listProjects(params = {}, signal) {
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set('limit', params.limit);
+  if (params.offset) qs.set('offset', params.offset);
+  const suffix = qs.toString();
+  return get(`/api/projects${suffix ? `?${suffix}` : ''}`, signal);
+}
+
+export function createProject(name, signal) {
+  return post('/api/projects', { name }, signal);
+}
+
+export function getProject(projectId, signal) {
+  return get(`/api/projects/${projectId}`, signal);
+}
+
+export function patchProject(projectId, fields, signal) {
+  return patch(`/api/projects/${projectId}`, fields, signal);
+}
+
+export function deleteProject(projectId, signal) {
+  return del(`/api/projects/${projectId}`, signal);
+}
+
+// ---------------------------------------------------------------------------
+// Separations, stems, and the exact render plan (Phase 5)
+// ---------------------------------------------------------------------------
+
+export function submitSeparation(trackId, method = 'auto', signal) {
+  return post(`/api/tracks/${trackId}/separations`, { method }, signal);
+}
+
+export function listStems(trackId, signal) {
+  return get(`/api/tracks/${trackId}/stems`, signal);
+}
+
+/** Server-authored stem audio URL; add download=true for an attachment. */
+export function stemAudioUrl(stemSetId, name, { download = false } = {}) {
+  const qs = new URLSearchParams({ name });
+  if (download) qs.set('download', 'true');
+  return `/api/stems/${stemSetId}/audio?${qs.toString()}`;
+}
+
+export function planRender(fields, signal) {
+  return post('/api/renders/plan', fields, signal);
+}
+
+export function patchTrack(trackId, fields, signal) {
+  return patch(`/api/tracks/${trackId}`, fields, signal);
+}

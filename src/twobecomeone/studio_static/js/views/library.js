@@ -14,6 +14,7 @@ import { formatBpm, formatKey, formatTime, sourceLabel } from '../format.js';
 import {
   listTracks, renameTrack, trashTrack, restoreTrack,
 } from '../api.js';
+import { projectManager } from '../app-context.js';
 
 const PAGE_SIZE = 50;
 
@@ -191,7 +192,7 @@ export function mountLibrary({ store, container }) {
   };
 
   const assignSlot = (slot, track) => {
-    store.dispatch({ type: 'project/assign-slot', slot, trackId: track.id });
+    projectManager.assign(slot, track.id);
     showToast(`Assigned "${track.name}" as ${slot === 'anchor' ? 'foundation' : 'lead'}.`, 'success');
   };
 
