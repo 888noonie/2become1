@@ -16,7 +16,7 @@ Phase 7 owns release work.
 ## Verified checkpoint
 
 - Branch: `v0.3-workspace`, tracking `origin/v0.3-workspace`.
-- Audited implementation HEAD: (to be updated after the final corrective commit).
+- Audited implementation HEAD: `d243353` (`Resolve Phase 5 re-audit blockers`).
 - The working tree was clean and matched `origin/v0.3-workspace` before the
   audit-checkpoint documentation commit.
 - Final corrective verification: 174 Python tests passed; all 65 frontend test
