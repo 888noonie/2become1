@@ -386,3 +386,13 @@ export function planRender(fields, signal) {
 export function patchTrack(trackId, fields, signal) {
   return patch(`/api/tracks/${trackId}`, fields, signal);
 }
+
+export function updateTrackAnalysis(trackId, overrides, signal) {
+  const fields = {};
+  if ('bpm' in overrides) fields.bpm = overrides.bpm;
+  if ('tonic' in overrides) fields.tonic = overrides.tonic;
+  if ('mode' in overrides) fields.mode = overrides.mode;
+  if ('first_beat' in overrides) fields.first_beat = overrides.first_beat;
+  if ('suggested_downbeat' in overrides) fields.suggested_downbeat = overrides.suggested_downbeat;
+  return patchTrack(trackId, fields, signal);
+}

@@ -1,0 +1,217 @@
+// components/analysis-dialog.js — accessible track analysis inspection and override.
+//
+// Phase 5 (Task 4): show effective, detected, and current overrides separately
+// for BPM, tonic/mode, first beat, and suggested downbeat. Confidence is
+// informational; low confidence says `Check this`, never `Wrong`.
+// Save validated track PATCH atomically. `Reset to detected` sends JSON nulls
+// for every override field rather than copying detected numbers into overrides.
+
+import { createElement } from '../dom.js';
+import { openDialog } from './dialog.js';
+import { showToast } from './toast.js';
+import { updateTrackAnalysis, getTrack } from '../api.js';
+
+const TONICS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const MODES = [
+  { value: 'major', label: 'Major' },
+  { value: 'minor', label: 'Minor' },
+];
+
+export async function openAnalysisDialog({ track, store, onAnnounce, trigger = null }) {
+  const detected = track.detected_analysis || {
+    bpm: track.bpm,
+    key: track.key,
+    beat_grid: track.beat_grid,
+  };
+  const overrides = track.analysis_overrides || {};
+
+  // Form inputs for overrides
+  const bpmInput = createElement('input', {
+    class: 'input',
+    type: 'number',
+    step: '0.1',
+    min: '40',
+    max: '260',
+    placeholder: String(detected.bpm != null ? detected.bpm.toFixed(1) : ''),
+    value: overrides.bpm != null ? String(overrides.bpm) : '',
+    'aria-label': 'Override BPM',
+  });
+
+  const tonicSelect = createElement('select', {
+    class: 'select',
+    'aria-label': 'Override Key Tonic',
+  }, [
+    createElement('option', { value: '', text: '— Select Tonic —' }),
+    ...TONICS.map((t) => createElement('option', {
+      value: t,
+      text: t,
+      selected: (overrides.key?.tonic || (overrides.key == null ? '' : '')) === t ? 'true' : null,
+    })),
+  ]);
+  if (overrides.key?.tonic) {
+    tonicSelect.value = overrides.key.tonic;
+  }
+
+  const modeSelect = createElement('select', {
+    class: 'select',
+    'aria-label': 'Override Key Mode',
+  }, [
+    createElement('option', { value: '', text: '— Select Mode —' }),
+    ...MODES.map((m) => createElement('option', {
+      value: m.value,
+      text: m.label,
+      selected: (overrides.key?.mode || '') === m.value ? 'true' : null,
+    })),
+  ]);
+  if (overrides.key?.mode) {
+    modeSelect.value = overrides.key.mode;
+  }
+
+  const firstBeatInput = createElement('input', {
+    class: 'input',
+    type: 'number',
+    step: '0.001',
+    min: '0',
+    placeholder: String(detected.beat_grid?.first_beat != null ? detected.beat_grid.first_beat.toFixed(3) : ''),
+    value: overrides.beat_grid?.first_beat != null ? String(overrides.beat_grid.first_beat) : '',
+    'aria-label': 'Override First Beat (s)',
+  });
+
+  const downbeatInput = createElement('input', {
+    class: 'input',
+    type: 'number',
+    step: '0.001',
+    min: '0',
+    placeholder: String(detected.beat_grid?.suggested_downbeat != null ? detected.beat_grid.suggested_downbeat.toFixed(3) : ''),
+    value: overrides.beat_grid?.suggested_downbeat != null ? String(overrides.beat_grid.suggested_downbeat) : '',
+    'aria-label': 'Override Suggested Downbeat (s)',
+  });
+
+  // Confidence & detected info table
+  const confVal = track.confidence ?? track.key?.confidence;
+  const confText = typeof confVal === 'number' && confVal < 0.6
+    ? 'Check this'
+    : (typeof confVal === 'number' ? `${Math.round(confVal * 100)}%` : '—');
+
+  const detKeyText = detected.key
+    ? `${detected.key.tonic || '—'} ${detected.key.mode || ''}`.trim()
+    : '—';
+  const detBpmText = detected.bpm != null ? `${detected.bpm.toFixed(1)} BPM` : '—';
+  const detFirstBeatText = detected.beat_grid?.first_beat != null
+    ? `${detected.beat_grid.first_beat.toFixed(3)} s`
+    : '—';
+  const detDownbeatText = detected.beat_grid?.suggested_downbeat != null
+    ? `${detected.beat_grid.suggested_downbeat.toFixed(3)} s`
+    : '—';
+
+  const infoSection = createElement('div', { class: 'analysis-dialog__info' }, [
+    createElement('div', { class: 'analysis-dialog__row' }, [
+      createElement('strong', { text: 'Detected BPM:' }),
+      createElement('span', { text: detBpmText }),
+    ]),
+    createElement('div', { class: 'analysis-dialog__row' }, [
+      createElement('strong', { text: 'Detected Key:' }),
+      createElement('span', { text: detKeyText }),
+    ]),
+    createElement('div', { class: 'analysis-dialog__row' }, [
+      createElement('strong', { text: 'First Beat / Downbeat:' }),
+      createElement('span', { text: `${detFirstBeatText} / ${detDownbeatText}` }),
+    ]),
+    createElement('div', { class: 'analysis-dialog__row' }, [
+      createElement('strong', { text: 'Confidence:' }),
+      createElement('span', {
+        class: confText === 'Check this' ? 'badge badge--warning' : '',
+        text: confText,
+      }),
+    ]),
+  ]);
+
+  const formSection = createElement('div', { class: 'analysis-dialog__form' }, [
+    createElement('h4', { text: 'Overrides (leave blank to use detected)' }),
+    createElement('label', { class: 'label' }, [
+      createElement('span', { text: 'BPM' }),
+      bpmInput,
+    ]),
+    createElement('label', { class: 'label' }, [
+      createElement('span', { text: 'Key Tonic & Mode' }),
+      createElement('div', { class: 'input-group' }, [tonicSelect, modeSelect]),
+    ]),
+    createElement('label', { class: 'label' }, [
+      createElement('span', { text: 'First Beat (seconds)' }),
+      firstBeatInput,
+    ]),
+    createElement('label', { class: 'label' }, [
+      createElement('span', { text: 'Suggested Downbeat (seconds)' }),
+      downbeatInput,
+    ]),
+  ]);
+
+  let resetRequested = false;
+  const resetBtn = createElement('button', {
+    class: 'button button--danger',
+    type: 'button',
+    text: 'Reset to detected',
+    onclick: () => {
+      resetRequested = true;
+      bpmInput.value = '';
+      tonicSelect.value = '';
+      modeSelect.value = '';
+      firstBeatInput.value = '';
+      downbeatInput.value = '';
+      onAnnounce?.('Analysis inputs reset to detected defaults.');
+    },
+  });
+
+  const bodyNodes = [infoSection, formSection, createElement('div', { class: 'analysis-dialog__reset-wrapper' }, [resetBtn])];
+
+  const result = await openDialog({
+    title: `Edit Analysis: ${track.name}`,
+    body: bodyNodes,
+    actions: [
+      { label: 'Cancel', value: 'cancel' },
+      { label: 'Save Analysis', value: 'save', kind: 'primary' },
+    ],
+    trigger,
+  });
+
+  if (result !== 'save') return;
+
+  try {
+    let payload = {};
+    if (resetRequested && !bpmInput.value && !tonicSelect.value && !modeSelect.value && !firstBeatInput.value && !downbeatInput.value) {
+      // Send explicit JSON nulls for reset
+      payload = {
+        bpm: null,
+        key: null,
+        beat_grid: null,
+      };
+    } else {
+      // Build override payload
+      const bpmVal = bpmInput.value.trim() ? Number(bpmInput.value.trim()) : null;
+      const tonicVal = tonicSelect.value.trim() || null;
+      const modeVal = modeSelect.value.trim() || null;
+      const firstBeatVal = firstBeatInput.value.trim() ? Number(firstBeatInput.value.trim()) : null;
+      const downbeatVal = downbeatInput.value.trim() ? Number(downbeatInput.value.trim()) : null;
+
+      if (bpmVal != null && (!Number.isFinite(bpmVal) || bpmVal <= 0)) {
+        showToast('Invalid BPM value', 'danger');
+        return;
+      }
+
+      payload.bpm = bpmVal;
+      payload.tonic = tonicVal;
+      payload.mode = modeVal;
+      payload.first_beat = firstBeatVal;
+      payload.suggested_downbeat = downbeatVal;
+    }
+
+    const updated = await updateTrackAnalysis(track.id, payload);
+    // Upsert into store library & deck tracks
+    store.dispatch({ type: 'library/upsert-track', track: updated });
+    store.dispatch({ type: 'deckTrack/set', trackId: updated.id, track: updated });
+    showToast(`Analysis updated for "${updated.name}".`, 'success');
+    onAnnounce?.(`Analysis updated for ${updated.name}.`);
+  } catch (err) {
+    showToast(err.message || 'Failed to update analysis', 'danger');
+  }
+}

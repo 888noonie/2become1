@@ -51,21 +51,33 @@ class AudioController {
   }
 
   /**
-   * Load and play a track. Stops and resets any previous source first.
-   * @param {string} trackId
-   * @param {string} url
+   * Load and play an audio source. Stops and resets any previous source first.
+   * Accepts either (trackId, url) for backward compatibility or an options
+   * descriptor { trackId, url, kind, stemName, variant }.
+   *
+   * @param {string|object} source - trackId string or source descriptor object
+   * @param {string} [url] - URL if source was passed as trackId string
    */
-  play(trackId, url) {
+  play(source, url) {
     this.stop();
-    this._current = { trackId, url };
-    this._audio.src = url;
+    const descriptor = typeof source === 'string'
+      ? { trackId: source, url, kind: 'track', stemName: null, variant: 'full' }
+      : {
+          trackId: source.trackId || null,
+          url: source.url,
+          kind: source.kind || (source.stemName ? 'stem' : 'track'),
+          stemName: source.stemName || null,
+          variant: source.variant || (source.stemName || 'full'),
+        };
+    this._current = descriptor;
+    this._audio.src = descriptor.url;
     this._audio.play().catch((err) => {
       if (err && err.name !== 'AbortError') {
         console.error('audio play error', err);
         this._emit('error', { message: 'Audio is unavailable' });
       }
     });
-    this._emit('play', { trackId });
+    this._emit('play', { ...descriptor });
   }
 
   pause() {

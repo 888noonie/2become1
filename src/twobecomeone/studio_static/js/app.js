@@ -51,8 +51,20 @@ function updateNowPlaying() {
 // ---- Audio events -> store ----
 audioController.on((type, payload) => {
   if (type === 'play') {
-    store.dispatch({ type: 'playback/set', trackId: payload.trackId, playing: true });
-  } else if (type === 'pause' || type === 'stop' || type === 'ended') {
+    store.dispatch({
+      type: 'playback/set',
+      trackId: payload.trackId,
+      source: {
+        trackId: payload.trackId,
+        kind: payload.kind || 'track',
+        stemName: payload.stemName || null,
+        variant: payload.variant || 'full',
+        url: payload.url || null,
+      },
+      playing: true,
+      error: null,
+    });
+  } else if (type === 'pause') {
     store.dispatch({ type: 'playback/set', playing: false });
   } else if (type === 'time') {
     store.dispatch({ type: 'playback/set', time: payload });
@@ -60,6 +72,14 @@ audioController.on((type, payload) => {
     store.dispatch({ type: 'playback/set', duration: payload });
   } else if (type === 'error') {
     store.dispatch({ type: 'playback/set', error: payload.message });
+  } else if (type === 'stop') {
+    store.dispatch({
+      type: 'playback/set',
+      trackId: null,
+      source: null,
+      playing: false,
+      time: 0,
+    });
   }
 });
 

@@ -42,6 +42,7 @@ const INITIAL_STATE = {
   },
   playback: {
     trackId: null,
+    source: null, // { trackId, kind: 'track'|'stem', stemName, variant, url } | null
     playing: false,
     time: 0,
     duration: 0,

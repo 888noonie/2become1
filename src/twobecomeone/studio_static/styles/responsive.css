@@ -20,6 +20,14 @@
     grid-template-columns: 1fr;
   }
 
+  .studio__decks {
+    grid-template-columns: 1fr;
+  }
+
+  .plan-controls {
+    grid-template-columns: 1fr;
+  }
+
   .track-list--grid {
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   }

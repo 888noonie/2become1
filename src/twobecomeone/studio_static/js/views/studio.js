@@ -1,15 +1,18 @@
-// views/studio.js — Studio view.
+// views/studio.js — Studio view with dual decks, waveforms, cue controls, and exact arrangement plan.
 //
-// Phase 5 (Task 2): persisted project header (name/rename, recent-project
-// switcher, New mix, confirmed Delete) plus serialized autosave status. Deck
-// slots now persist through the ProjectManager; deck controls, waveforms,
-// cues, and the plan arrive in Tasks 3–6. Phase 4 placeholder is retired.
+// Phase 5:
+// - Persisted project header (name, autosave status, New mix, switch, delete).
+// - Foundation (Anchor) and Lead Decks with full audio transports, responsive DPR waveforms,
+//   seekable playheads, beat snapping, and explicit cue setting.
+// - Analysis correction modal and Stem separation modal with truthful tray.
+// - Grouped arrangement controls (Timing, Harmony, Mix) and exact server-authored plan.
 
-import { createElement } from '../dom.js';
-import { openSourcePicker } from '../components/source-picker.js';
+import { createElement, replaceChildren } from '../dom.js';
 import { confirmDialog, openDialog } from '../components/dialog.js';
 import { showToast } from '../components/toast.js';
 import { store, projectManager } from '../app-context.js';
+import { mountDeck } from '../components/deck.js';
+import { mountPlan } from '../components/plan.js';
 
 function saveStatusLabel(save) {
   if (save.status === 'saving') return 'Saving…';
@@ -132,81 +135,92 @@ async function openSwitcher() {
   });
 }
 
-function slotSummaryCard(slot, label, state) {
-  const project = state.currentProject || {};
-  const trackId = slot === 'anchor' ? project.anchor_track_id : project.lead_track_id;
-  const resolved = trackId ? state.deckTracks[trackId] : null;
-  const track = resolved || state.library.items.find((t) => t.id === trackId) || null;
-
-  const title = createElement('div', { class: 'slot-card__title', text: label });
-  let trackText = 'No track selected';
-  if (trackId && !track) {
-    trackText = 'Track unavailable (missing or trashed)';
-  } else if (track) {
-    trackText = track.name;
-  }
-  const trackEl = createElement('div', { class: 'slot-card__track', text: trackText });
-  const chooseBtn = createElement('button', {
-    class: 'button', type: 'button',
-    text: track ? 'Replace' : 'Choose',
-    onclick: () => openSourcePicker(store, slot),
-  });
-  const actions = [chooseBtn];
-  if (trackId) {
-    actions.push(createElement('button', {
-      class: 'button', type: 'button', text: 'Clear',
-      onclick: () => projectManager.clear(slot),
-    }));
-  }
-  return createElement('div', { class: `slot-card slot-card--${slot}` }, [
-    title, trackEl,
-    createElement('div', { class: 'slot-card__actions' }, actions),
-  ]);
-}
-
 export function mountStudio({ container }) {
-  const render = (state) => {
-    const swapBtn = createElement('button', {
-      class: 'button', type: 'button', text: 'Swap decks',
-      disabled:
-        !(state.currentProject?.anchor_track_id && state.currentProject?.lead_track_id)
-          ? 'true'
-          : null,
-      onclick: () => projectManager.swap(),
-    });
+  const disposers = [];
+  let anchorDisposer = null;
+  let leadDisposer = null;
+  let planDisposer = null;
 
-    const retryBtn = state.save.status === 'error'
-      ? createElement('button', {
-          class: 'button', type: 'button', text: 'Retry save',
-          onclick: () => projectManager.retry(),
-        })
-      : null;
+  const studioRoot = createElement('div', { class: 'studio' });
+  container.replaceChildren(studioRoot);
 
-    container.replaceChildren(
-      createElement('div', { class: 'studio' }, [
-        projectHeader(),
-        retryBtn,
-        createElement('div', { class: 'slot-summary' }, [
-          slotSummaryCard('anchor', 'Foundation', state),
-          swapBtn,
-          slotSummaryCard('lead', 'Lead', state),
-        ]),
-      ]),
-    );
+  const headerContainer = createElement('div', { class: 'studio__header-container' });
+  const liveAnnouncer = createElement('div', {
+    class: 'sr-only',
+    role: 'status',
+    'aria-live': 'polite',
+    'aria-atomic': 'true',
+  });
+  const onAnnounce = (msg) => {
+    liveAnnouncer.textContent = msg;
   };
 
-  const refresh = () => render(store.getState());
-  const subs = [
-    store.subscribeSlice('currentProject', refresh),
-    store.subscribeSlice('deckTracks', refresh),
-    store.subscribeSlice('library', refresh),
-    store.subscribeSlice('save', refresh),
-  ];
-  render(store.getState());
+  const retryContainer = createElement('div', { class: 'studio__retry-container' });
+  const decksContainer = createElement('div', { class: 'studio__decks' });
+  const swapBar = createElement('div', { class: 'studio__swap-bar' });
+  const planContainer = createElement('div', { class: 'studio__plan-container' });
 
-  return () => {
-    for (const unsub of subs) unsub();
-    // Flush pending autosave when leaving the Studio view where practical.
+  const anchorDeckMount = createElement('div', { class: 'deck-slot deck-slot--anchor' });
+  const leadDeckMount = createElement('div', { class: 'deck-slot deck-slot--lead' });
+
+  decksContainer.appendChild(anchorDeckMount);
+  decksContainer.appendChild(leadDeckMount);
+
+  studioRoot.appendChild(headerContainer);
+  studioRoot.appendChild(liveAnnouncer);
+  studioRoot.appendChild(retryContainer);
+  studioRoot.appendChild(swapBar);
+  studioRoot.appendChild(decksContainer);
+  studioRoot.appendChild(planContainer);
+
+  function updateHeader() {
+    replaceChildren(headerContainer, [projectHeader()]);
+
+    const state = store.getState();
+    if (state.save.status === 'error') {
+      replaceChildren(retryContainer, [
+        createElement('button', {
+          class: 'button button--danger',
+          type: 'button',
+          text: 'Retry save',
+          onclick: () => projectManager.retry(),
+        }),
+      ]);
+    } else {
+      replaceChildren(retryContainer, []);
+    }
+
+    const canSwap = Boolean(state.currentProject?.anchor_track_id && state.currentProject?.lead_track_id);
+    const swapBtn = createElement('button', {
+      class: 'button',
+      type: 'button',
+      text: '⇄ Swap Foundation & Lead',
+      disabled: canSwap ? null : 'true',
+      onclick: () => {
+        projectManager.swap();
+        showToast('Swapped Foundation and Lead decks.', 'success');
+        onAnnounce('Swapped Foundation and Lead decks.');
+      },
+    });
+    replaceChildren(swapBar, [swapBtn]);
+  }
+
+  // Mount decks
+  anchorDisposer = mountDeck({ container: anchorDeckMount, role: 'anchor', onAnnounce });
+  leadDisposer = mountDeck({ container: leadDeckMount, role: 'lead', onAnnounce });
+  planDisposer = mountPlan({ container: planContainer, store });
+
+  updateHeader();
+
+  const unsubSave = store.subscribeSlice('save', updateHeader);
+  const unsubProject = store.subscribeSlice('currentProject', updateHeader);
+  disposers.push(unsubSave, unsubProject);
+
+  return function dispose() {
+    for (const d of disposers) d();
+    if (anchorDisposer) anchorDisposer();
+    if (leadDisposer) leadDisposer();
+    if (planDisposer) planDisposer();
     projectManager.flushNow();
   };
 }
