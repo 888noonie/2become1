@@ -1,5 +1,8 @@
 # 2become1 UI/UX Plan — Local First, Vercel-Ready
 
+> Historical V0.2 planning document. It is retained for provenance but is
+> superseded by [`V0.3_IMPLEMENTATION_PLAN.md`](V0.3_IMPLEMENTATION_PLAN.md).
+
 **Author:** kimi
 **Date:** 2026-08-24
 **Target:** V0.2
