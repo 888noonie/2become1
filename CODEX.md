@@ -9,30 +9,83 @@ Repository: `/home/richardn/2become1`
 Authoritative plan: `V0.3_IMPLEMENTATION_PLAN.md`
 
 This file is the durable context for a fresh Codex/Hermes conversation. Read it
-before changing the repository. The next implementation unit is Phase 5 only:
-Studio, projects, waveforms, analysis correction, and stems. Phase 6 owns
-preview/render/results; Phase 7 owns release work.
+before changing the repository. The next implementation unit is a final Phase 5
+corrective pass only. Phase 6 owns preview/render/results but remains blocked;
+Phase 7 owns release work.
 
 ## Verified checkpoint
 
 - Branch: `v0.3-workspace`, tracking `origin/v0.3-workspace`.
-- HEAD: `c3316f8` (`Fix Phase 5 audit findings: analysis reset, autosave, stem URLs, plan parity, mobile overflow`).
-- Working tree is clean.
-- Latest known full verification: 171 Python tests and 60 frontend test
-  declarations across 12 Node test files passed.
+- Audited implementation HEAD: `666407d` (`Update CODEX.md and plan checkpoint
+  for Phase 5 corrective pass`), including corrective commit `c3316f8`.
+- The working tree was clean and matched `origin/v0.3-workspace` before the
+  audit-checkpoint documentation commit.
+- Re-audit verification: 171 Python tests passed in 34.89s; all 60 frontend test
+  declarations across 12 Node test files passed in 2.66s; `git diff --check` and
+  `git fsck` passed; the uncompressed frontend is 183,611 bytes.
+- GitHub Actions run `32899565590` is green at exact HEAD `666407d`.
 - Application version intentionally remains `0.2.0`; bump only in Phase 7.
 - Current local URL: <http://127.0.0.1:8871/#/studio>.
 - Persistent data root: `/home/richardn/.local/share/2become1`.
 - The server is loopback-only. Preferred audio device is CUDA; Demucs 4.1.0,
   PyTorch 2.13.0, ffmpeg, and yt-dlp are available on this machine.
 
-## Phase 5 status
+## Phase 5 status — re-audit failed; Phase 6 is not authorized
 
-Phase 5 has been implemented and a corrective pass completed for the adversarial
-audit findings. The Studio route now has persisted project loading, dual decks,
-server-authored waveforms, beat-snap cues, analysis correction, truthful stem
-separation/playback, grouped arrangement controls, and an exact shared render plan.
-Phase 6 remains blocked until this corrective pass is re-audited and accepted.
+The 2026-08-25 adversarial re-audit accepted several corrections: server-authored
+deck stem URLs, overlong render-duration capping, undefined deck placeholders,
+cancel/interrupted separation handling, plural `sides` copy, and the 390px CSS
+overflow repair. The supplied populated screenshots were inspected at all four
+target sizes, and the 390px capture shows no visible horizontal clipping.
+
+Green suites and CI do not close the exit gate. The following reproducible
+blockers remain:
+
+1. **Selected stems are not rendered.** `_compute_arrangement()` verifies stem
+   metadata but leaves `anchor_path` and `lead_path` pointing at the original
+   tracks. `_run_render()` now trusts those paths and no longer calls
+   `_resolve_stem_variant()`. An isolated service reproduction advertised
+   `lead_variant=center` while `plan.lead_path` equalled the full lead track.
+   The existing render test asserts only the result label, so it passes while
+   the audio source is false. The same ordering calls planning before
+   `_ensure_stem_variant()`, breaking legacy V0.2 `use_vocals=true` when vocals
+   are not already cached.
+2. **The autosave race still loses the visible newer edit.** Optimistic edits do
+   not advance `updated_at`; therefore the first real server response has a
+   newer timestamp and the stale guard accepts it. A reproduction using two
+   `ProjectManager.save()` calls during an in-flight PATCH observed
+   `First -> Second -> First -> Second`. When the queued PATCH failed, the UI
+   remained on `First` while `Second` existed only in the private retry buffer,
+   violating the requirement that failed writes keep unsaved edits visible.
+   `localVersionBefore` is captured but never used. The added test manually
+   invents `updated_at: 5` and does not place a second `save()` in flight.
+3. **Stem managed-root validation is still inconsistent.** The three new checks
+   validate against the broad data root, not the dedicated `stems/` root. An
+   isolated corrupt-row reproduction using `tracks/l.wav` as a stem path made
+   `list_stems()` advertise `center`, but `stem_audio_path()` correctly rejected
+   its authored URL. Every advertised variant must be under the dedicated stem
+   root and playable through the exact URL returned.
+4. **The analysis dialog does not show effective, detected, and override values
+   separately.** It now reads the correct `detected`/`overrides` shape and sends
+   exact null resets, but renders only detected rows plus editable override
+   controls; there is no explicit effective-value display.
+5. **The separation tray still refetches on playback ticks and hides structured
+   progress.** Its predicate reloads whenever
+   `activeVariant === currentVariant`, so every `timeupdate` for the selected
+   source calls `listStems()` again. `progress_detail` is an object, but the
+   dialog interpolates it directly and shows `[object Object]` instead of the
+   exact CUDA OOM warning.
+6. **The source-time explanation is mathematically false.** The copy says mash
+   duration multiplied by tempo ratio, but the displayed result divides by the
+   ratio and prefers the uncapped requested duration over `duration.output`.
+
+Required regression coverage for the final corrective pass must capture the
+actual `MashSpec` paths for full and stem variants, legacy on-demand vocals,
+real in-flight autosave ordering and failure visibility, dedicated stem-root URL
+playability, the three analysis value layers, request counts across playback
+ticks, structured OOM-warning text, and capped source-time arithmetic. Re-run
+both full suites, the isolated browser flow, screenshots, bundle measurement,
+and CI before requesting Phase 6 authorization again.
 
 If the old server process is no longer alive, start it from the repository with:
 
@@ -54,7 +107,7 @@ Do not replace, purge, or recreate Richard's persistent data directory.
 | 3.9 — corrections | `919df7c` | Secure artwork, YouTube thumbnails, atomic stems, OOM warning propagation |
 | 4 — UI foundation | `564c7da`, `64b33f7` | Backend facts plus framework-free SPA shell, Library, Activity, Engine, source flow |
 | 4 hardening | `51d6aa2`, `c0b8b56`, `b87cec3`, `20ab875` | CI, YouTube `Path` fix/hardening, and first-paint fixes |
-| 5 — Studio & Plan | `823113e`, `4779fd4`, `cd21d23`, `417abdc` | Stem & render-plan contracts, project lifecycle/autosave, dual decks, waveforms, cues, analysis editor, truthful stems tray, exact arrangement plan |
+| 5 — Studio & Plan | `823113e`, `4779fd4`, `cd21d23`, `417abdc`, `c3316f8`, `666407d` | Implemented with corrective pass; adversarial re-audit still blocked on the findings above |
 
 ## Current product state
 
@@ -66,10 +119,11 @@ in metadata. Do not silently rewrite an explicitly user-renamed track; title
 presentation can be improved separately while retaining Rename as the source of
 truth.
 
-The Studio route is now a Phase 5 implementation with persisted project
+The Studio route is a substantial Phase 5 implementation with persisted project
 lifecycle, dual decks, server-authored waveforms, beat-snap cue controls,
-analysis correction, truthful stem separation and playback, grouped arrangement
-controls, and an exact shared render plan.
+analysis correction, stem separation/playback, and grouped arrangement controls.
+Do not describe its render plan or autosave as exact until the blockers above
+are corrected and re-audited.
 
 Two historical failed import jobs containing `name 'Path' is not defined` may
 remain visible in Activity. They are honest immutable history, not evidence that
