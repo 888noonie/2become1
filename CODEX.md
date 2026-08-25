@@ -16,9 +16,9 @@ preview/render/results; Phase 7 owns release work.
 ## Verified checkpoint
 
 - Branch: `v0.3-workspace`, tracking `origin/v0.3-workspace`.
-- HEAD: (to be updated after corrective pass commit).
+- HEAD: `c3316f8` (`Fix Phase 5 audit findings: analysis reset, autosave, stem URLs, plan parity, mobile overflow`).
 - Working tree is clean.
-- Latest known full verification: 170 Python tests and 60 frontend test
+- Latest known full verification: 171 Python tests and 60 frontend test
   declarations across 12 Node test files passed.
 - Application version intentionally remains `0.2.0`; bump only in Phase 7.
 - Current local URL: <http://127.0.0.1:8871/#/studio>.
