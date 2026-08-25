@@ -1,26 +1,31 @@
 """Local-first service and job layer for 2become1 Studio.
 
-The CLI and web app share this module instead of wrapping one another.  It owns
-safe media ingestion, persistent project metadata, and the single render queue
-that protects a laptop GPU from concurrent Demucs jobs.
+The CLI and web app share this module instead of wrapping one another. It owns
+safe media ingestion, persistent project metadata, and the job engine that
+protects a laptop GPU from concurrent Demucs jobs.
+
+Phase 1: job persistence/lifecycle now lives in :mod:`twobecomeone.jobs`
+(``JobStore`` + ``JobEngine``). This module keeps the media/library facade and
+the render orchestration, delegating job state transitions to the engine.
 """
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import math
 import shutil
 import sqlite3
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from . import analyzer, assembler, beatgrid, separator, sources
+from . import analyzer, assembler, beatgrid, migrations, separator, sources
 from .common import UserError
+from .contracts import TERMINAL_JOB_STATES, JobKind
+from .jobs import CancellationToken, JobEngine, JobStore
 
 
 ALLOWED_AUDIO_SUFFIXES = {
@@ -69,7 +74,7 @@ class RenderOptions:
 
 
 class StudioService:
-    """Persistent local studio with a deliberately single-worker render queue."""
+    """Persistent local studio with a serialized audio/GPU job engine."""
 
     def __init__(self, data_dir: str | Path | None = None):
         self.data_dir = Path(data_dir) if data_dir else default_data_dir()
@@ -83,7 +88,8 @@ class StudioService:
         ):
             directory.mkdir(parents=True, exist_ok=True)
         self._init_db()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="2become1-render")
+        self._store = JobStore(self._connect)
+        self._engine = JobEngine(self._store)
         self._closed = False
 
     def _connect(self) -> sqlite3.Connection:
@@ -94,6 +100,9 @@ class StudioService:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            # Base tables are created at the V0.2 shape; numbered migrations
+            # then bring the schema forward. Keeping the base at V0.2 avoids
+            # duplicate-column errors when migrations also add those columns.
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS tracks (
@@ -130,26 +139,9 @@ class StudioService:
                 );
                 """
             )
-            columns = {row[1] for row in conn.execute("PRAGMA table_info(tracks)")}
-            migrations = {
-                "beat_interval": "REAL",
-                "first_beat": "REAL",
-                "suggested_downbeat": "REAL",
-                "beat_confidence": "REAL",
-                "source_kind": "TEXT NOT NULL DEFAULT 'upload'",
-                "source_ref": "TEXT",
-            }
-            for name, declaration in migrations.items():
-                if name not in columns:
-                    conn.execute(f"ALTER TABLE tracks ADD COLUMN {name} {declaration}")
-            conn.execute(
-                """UPDATE jobs
-                   SET status = 'failed', stage = 'failed', progress = 100,
-                       message = 'Render interrupted by a Studio restart',
-                       error = 'Studio stopped before this render completed', updated_at = ?
-                   WHERE status IN ('queued', 'running')""",
-                (time.time(),),
-            )
+            migrations.run_migrations(conn)
+        # Recover any jobs left queued/running by a previous process.
+        JobStore(self._connect).mark_interrupted_on_startup()
 
     @staticmethod
     def _track_dict(row: sqlite3.Row) -> dict:
@@ -287,58 +279,115 @@ class StudioService:
             ).fetchall()
         return [self._track_dict(row) for row in rows]
 
-    @staticmethod
-    def _job_dict(row: sqlite3.Row) -> dict:
-        result = json.loads(row["result_json"]) if row["result_json"] else None
-        return {
-            "id": row["id"],
-            "kind": row["kind"],
-            "status": row["status"],
-            "stage": row["stage"],
-            "progress": row["progress"],
-            "message": row["message"],
-            "request": json.loads(row["request_json"]),
-            "result": result,
-            "error": row["error"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-            "audio_url": f"/api/jobs/{row['id']}/audio" if row["output_path"] else None,
-        }
+    # ------------------------------------------------------------------
+    # Job facade (delegates to JobStore / JobEngine)
+    # ------------------------------------------------------------------
+
+    def _job_api_dict(self, job: dict) -> dict:
+        """Add the API-only ``audio_url`` derived from the internal output path.
+
+        ``output_path`` itself is never exposed; only the route is.
+        """
+        output_path = self._store.get_output_path(job["id"])
+        job["audio_url"] = f"/api/jobs/{job['id']}/audio" if output_path else None
+        return job
 
     def get_job(self, job_id: str) -> dict:
-        with self._connect() as conn:
-            row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        if row is None:
-            raise UserError(f"unknown job: {job_id}")
-        return self._job_dict(row)
+        return self._job_api_dict(self._store.get(job_id))
+
+    def list_jobs(self, limit: int = 20) -> list[dict]:
+        jobs, _total = self._store.list(limit=limit)
+        return [self._job_api_dict(job) for job in jobs]
 
     def job_output_path(self, job_id: str) -> Path:
-        with self._connect() as conn:
-            row = conn.execute("SELECT output_path, status FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        if row is None:
-            raise UserError(f"unknown job: {job_id}")
-        if row["status"] != "complete" or not row["output_path"]:
+        output_path = self._store.get_output_path(job_id)
+        if output_path is None:
             raise UserError("render is not complete")
-        path = Path(row["output_path"])
+        path = Path(output_path)
         if not path.is_file() or self.render_dir.resolve() not in path.resolve().parents:
             raise UserError("render output is unavailable")
         return path
 
-    def list_jobs(self, limit: int = 20) -> list[dict]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
-            ).fetchall()
-        return [self._job_dict(row) for row in rows]
+    # ------------------------------------------------------------------
+    # Render orchestration
+    # ------------------------------------------------------------------
 
-    def _update_job(self, job_id: str, **fields: object) -> None:
-        if not fields:
-            return
-        fields["updated_at"] = time.time()
-        assignments = ", ".join(f"{name} = ?" for name in fields)
-        values = list(fields.values()) + [job_id]
-        with self._connect() as conn:
-            conn.execute(f"UPDATE jobs SET {assignments} WHERE id = ?", values)
+    def _run_render(
+        self,
+        job_id: str,
+        token: CancellationToken,
+        options: RenderOptions,
+    ) -> dict:
+        """Perform a render; returns the engine result payload."""
+        self._store.update(
+            job_id, stage="planning", progress=8,
+            message="Reading tempo, key and arrangement settings",
+        )
+        token.raise_if_cancelled()
+
+        anchor = self.get_track(options.anchor_id)
+        lead = self.get_track(options.lead_id)
+        anchor_path = self.track_path(options.anchor_id)
+        lead_path = self.track_path(options.lead_id)
+        tempo_ratio = float(anchor["bpm"]) / float(lead["bpm"])
+        anchor_key = f"{anchor['key']['tonic']} {anchor['key']['mode']}"
+        lead_key = f"{lead['key']['tonic']} {lead['key']['mode']}"
+        semitone_shift = assembler.semitones_to_match(anchor_key, lead_key)
+
+        if options.use_vocals:
+            self._store.update(
+                job_id, stage="separating", progress=18,
+                message="Separating the lead vocal with Demucs",
+            )
+            token.raise_if_cancelled()
+            stems = separator.separate(
+                str(lead_path), self.stem_dir / job_id, method=options.stem_method,
+            )
+            if "vocals" not in stems:
+                raise UserError(
+                    "vocal isolation requires Demucs; center/side fallback cannot provide a vocal stem"
+                )
+            lead_path = stems["vocals"]
+
+        duration = options.duration
+        if options.preview:
+            duration = min(duration if duration is not None else 12.0, 20.0)
+
+        self._store.update(
+            job_id, stage="rendering", progress=58,
+            message="Aligning tempo and key, then shaping the final mix",
+        )
+        token.raise_if_cancelled()
+
+        output_path = self.render_dir / f"{job_id}.mp3"
+        spec = assembler.MashSpec(
+            anchor_path=anchor_path,
+            lead_path=lead_path,
+            anchor_gain=options.anchor_gain,
+            lead_gain=options.lead_gain,
+            anchor_start=options.anchor_start,
+            lead_start=options.lead_start,
+            duration=duration,
+        )
+        assembler.build_mash(spec, tempo_ratio, semitone_shift, str(output_path))
+        peak = assembler.measure_clipping(str(output_path))
+        result = {
+            "tempo_ratio": round(tempo_ratio, 4),
+            "semitone_shift": semitone_shift,
+            "duration": assembler._ffprobe_duration(str(output_path)),
+            "true_peak_db": peak.get("true_peak_db"),
+            "demucs_device": separator.demucs_device() if options.use_vocals else None,
+        }
+        return {
+            "result": result,
+            "output_path": str(output_path),
+            "message": "Your preview is ready" if options.preview else "Your mashup is ready",
+        }
+
+    def _render_run_fn(self, options: RenderOptions):
+        def run(job_id: str, token: CancellationToken) -> dict:
+            return self._run_render(job_id, token, options)
+        return run
 
     def submit_render(self, options: RenderOptions) -> dict:
         if self._closed:
@@ -346,98 +395,40 @@ class StudioService:
         options.validate()
         self.get_track(options.anchor_id)
         self.get_track(options.lead_id)
-        job_id = uuid.uuid4().hex
-        now = time.time()
-        payload = asdict(options)
-        with self._connect() as conn:
-            conn.execute(
-                """INSERT INTO jobs
-                   (id, kind, status, stage, progress, message, request_json,
-                    result_json, output_path, error, created_at, updated_at)
-                   VALUES (?, ?, 'queued', 'queued', 0, 'Waiting for the render engine', ?,
-                           NULL, NULL, NULL, ?, ?)""",
-                (job_id, "preview" if options.preview else "render", json.dumps(payload), now, now),
-            )
-        self._executor.submit(self._run_render, job_id, options)
-        return self.get_job(job_id)
+        kind = JobKind.PREVIEW if options.preview else JobKind.RENDER
+        job = self._engine.submit(
+            kind, asdict(options), self._render_run_fn(options), executor="audio",
+        )
+        return self.get_job(job["id"])
 
-    def _run_render(self, job_id: str, options: RenderOptions) -> None:
-        try:
-            self._update_job(
-                job_id, status="running", stage="planning", progress=8,
-                message="Reading tempo, key and arrangement settings",
-            )
-            anchor = self.get_track(options.anchor_id)
-            lead = self.get_track(options.lead_id)
-            anchor_path = self.track_path(options.anchor_id)
-            lead_path = self.track_path(options.lead_id)
-            tempo_ratio = float(anchor["bpm"]) / float(lead["bpm"])
-            anchor_key = f"{anchor['key']['tonic']} {anchor['key']['mode']}"
-            lead_key = f"{lead['key']['tonic']} {lead['key']['mode']}"
-            semitone_shift = assembler.semitones_to_match(anchor_key, lead_key)
+    def retry_job(self, job_id: str) -> dict:
+        """Retry a failed/interrupted render job by cloning its request."""
+        if self._closed:
+            raise UserError("studio service is closed")
+        job = self._store.get(job_id)
+        kind = JobKind(job["kind"])
+        if kind not in {JobKind.PREVIEW, JobKind.RENDER}:
+            raise UserError(f"retry is not yet supported for {kind.value} jobs")
+        options = RenderOptions(**job["request"])
+        new_job = self._engine.retry(job_id, self._render_run_fn(options))
+        return self.get_job(new_job["id"])
 
-            if options.use_vocals:
-                self._update_job(
-                    job_id, stage="separating", progress=18,
-                    message="Separating the lead vocal with Demucs",
-                )
-                stems = separator.separate(
-                    str(lead_path), self.stem_dir / job_id, method=options.stem_method,
-                )
-                if "vocals" not in stems:
-                    raise UserError(
-                        "vocal isolation requires Demucs; center/side fallback cannot provide a vocal stem"
-                    )
-                lead_path = stems["vocals"]
-
-            duration = options.duration
-            if options.preview:
-                duration = min(duration if duration is not None else 12.0, 20.0)
-
-            self._update_job(
-                job_id, stage="rendering", progress=58,
-                message="Aligning tempo and key, then shaping the final mix",
-            )
-            output_path = self.render_dir / f"{job_id}.mp3"
-            spec = assembler.MashSpec(
-                anchor_path=anchor_path,
-                lead_path=lead_path,
-                anchor_gain=options.anchor_gain,
-                lead_gain=options.lead_gain,
-                anchor_start=options.anchor_start,
-                lead_start=options.lead_start,
-                duration=duration,
-            )
-            assembler.build_mash(spec, tempo_ratio, semitone_shift, str(output_path))
-            peak = assembler.measure_clipping(str(output_path))
-            result = {
-                "tempo_ratio": round(tempo_ratio, 4),
-                "semitone_shift": semitone_shift,
-                "duration": assembler._ffprobe_duration(str(output_path)),
-                "true_peak_db": peak.get("true_peak_db"),
-                "demucs_device": separator.demucs_device() if options.use_vocals else None,
-            }
-            self._update_job(
-                job_id, status="complete", stage="complete", progress=100,
-                message="Your preview is ready" if options.preview else "Your mashup is ready",
-                output_path=str(output_path), result_json=json.dumps(result), error=None,
-            )
-        except Exception as exc:
-            self._update_job(
-                job_id, status="failed", stage="failed", progress=100,
-                message="Render failed", error=str(exc),
-            )
+    def cancel_job(self, job_id: str) -> dict:
+        if self._closed:
+            raise UserError("studio service is closed")
+        job = self._engine.cancel(job_id)
+        return self._job_api_dict(job)
 
     def wait_for_job(self, job_id: str, timeout: float = 60.0) -> dict:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             job = self.get_job(job_id)
-            if job["status"] in {"complete", "failed"}:
+            if job["status"] in {s.value for s in TERMINAL_JOB_STATES}:
                 return job
             time.sleep(0.05)
         raise TimeoutError(f"job {job_id} did not finish within {timeout}s")
 
     def close(self) -> None:
         if not self._closed:
-            self._executor.shutdown(wait=True, cancel_futures=False)
+            self._engine.shutdown(wait=True)
             self._closed = True

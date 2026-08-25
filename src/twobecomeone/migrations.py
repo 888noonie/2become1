@@ -1,24 +1,54 @@
 """Numbered, transactional schema migrations for 2become1.
 
-Phase 0 introduces the migration registry and runner as standalone
-infrastructure. Later phases wire ``run_migrations`` into
-``StudioService._init_db`` so every database is migrated in place on open,
-replacing the ad-hoc ``ALTER TABLE`` loop currently in ``studio.py``.
+Phase 0 introduced the registry and runner. Phase 1 wires ``run_migrations``
+into ``StudioService._init_db``, replacing the ad-hoc ``ALTER TABLE`` loop.
 
-Each migration is a ``(version, name, statements)`` tuple. Versions are
-strictly increasing and applied exactly once. All statements in a migration
-run inside a single transaction, and the version is recorded in the
-``schema_migrations`` table only after the statements succeed, so a failed
-migration leaves no partial state.
+Each migration is a ``(version, name, action)`` tuple where ``action`` is
+either a list of SQL statements or a callable ``(conn) -> None``. Callables
+exist for migrations that need conditional logic (e.g. ``ADD COLUMN`` guarded
+by a ``PRAGMA table_info`` check, since SQLite has no ``ADD COLUMN IF NOT
+EXISTS``).
+
+Versions are strictly increasing and applied exactly once. Each migration runs
+inside an explicit ``BEGIN``/``COMMIT``/``ROLLBACK`` transaction (sqlite3's
+implicit ``with conn:`` does not cover DDL), and the version is recorded only
+after the action succeeds, so a failed migration leaves no partial state.
 """
 
 from __future__ import annotations
 
 import sqlite3
 import time
+from typing import Callable
 
-# (version, name, [statements])
-MIGRATIONS: list[tuple[int, str, list[str]]] = [
+MigrationAction = list[str] | Callable[[sqlite3.Connection], None]
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str,
+                           declaration: str) -> None:
+    """Add ``column`` to ``table`` only if it does not already exist."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+
+def _migration_0_v01_to_v02(conn: sqlite3.Connection) -> None:
+    """Bring a V0.1 database up to the V0.2 column shape.
+
+    New databases already create these columns in the base ``CREATE TABLE``,
+    so this migration must be conditional to avoid duplicate-column errors.
+    """
+    _add_column_if_missing(conn, "tracks", "beat_interval", "REAL")
+    _add_column_if_missing(conn, "tracks", "first_beat", "REAL")
+    _add_column_if_missing(conn, "tracks", "suggested_downbeat", "REAL")
+    _add_column_if_missing(conn, "tracks", "beat_confidence", "REAL")
+    _add_column_if_missing(conn, "tracks", "source_kind", "TEXT NOT NULL DEFAULT 'upload'")
+    _add_column_if_missing(conn, "tracks", "source_ref", "TEXT")
+
+
+# (version, name, action)
+MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
+    (0, "v0.1 to v0.2 track columns", _migration_0_v01_to_v02),
     (
         1,
         "v0.3 track and job columns",
@@ -106,13 +136,16 @@ def run_migrations(conn: sqlite3.Connection) -> list[int]:
     _ensure_migrations_table(conn)
     done = applied_versions(conn)
     applied: list[int] = []
-    for version, name, statements in MIGRATIONS:
+    for version, name, action in MIGRATIONS:
         if version in done:
             continue
         conn.execute("BEGIN")
         try:
-            for statement in statements:
-                conn.execute(statement)
+            if callable(action):
+                action(conn)
+            else:
+                for statement in action:
+                    conn.execute(statement)
             conn.execute(
                 "INSERT INTO schema_migrations (version, name, applied_at)"
                 " VALUES (?, ?, ?)",

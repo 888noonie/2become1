@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__, separator
 from .common import UserError
+from .contracts import TERMINAL_JOB_STATES
 from .studio import RenderOptions, StudioService
 
 
@@ -35,6 +36,10 @@ class RenderBody(BaseModel):
 
 class TrackImportBody(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
+
+
+# SSE heartbeat interval (seconds). Keeps proxies from closing idle streams.
+SSE_HEARTBEAT_SEC = 15.0
 
 
 def create_app(data_dir: str | Path | None = None):
@@ -107,6 +112,14 @@ def create_app(data_dir: str | Path | None = None):
     def get_job(job_id: str):
         return service.get_job(job_id)
 
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel_job(job_id: str):
+        return service.cancel_job(job_id)
+
+    @app.post("/api/jobs/{job_id}/retry", status_code=202)
+    def retry_job(job_id: str):
+        return service.retry_job(job_id)
+
     @app.get("/api/jobs/{job_id}/events")
     async def job_events(job_id: str):
         service.get_job(job_id)
@@ -119,9 +132,11 @@ def create_app(data_dir: str | Path | None = None):
                 if snapshot != previous:
                     yield f"event: job\ndata: {snapshot}\n\n"
                     previous = snapshot
-                if job["status"] in {"complete", "failed"}:
+                if job["status"] in {s.value for s in TERMINAL_JOB_STATES}:
                     break
-                await asyncio.sleep(0.35)
+                # Heartbeat keeps the stream alive through idle proxies.
+                await asyncio.sleep(SSE_HEARTBEAT_SEC)
+                yield ": heartbeat\n\n"
 
         return StreamingResponse(
             stream(), media_type="text/event-stream",
