@@ -22,9 +22,11 @@ export function mountEngine({ store, container }) {
 
     const nodes = [];
 
-    // Prominent no-auth warning.
+    // Warn only when the unauthenticated service is reachable beyond this
+    // machine. Loopback-only is the intended safe local configuration.
     const exposure = health.network_exposure || {};
-    if (!exposure.authenticated) {
+    const loopbackOnly = exposure.loopback_only === true;
+    if (!exposure.authenticated && !loopbackOnly) {
       nodes.push(createElement('div', { class: 'engine-warning', role: 'alert', text: exposure.warning || 'This Studio has no authentication.' }));
     }
 
@@ -42,6 +44,8 @@ export function mountEngine({ store, container }) {
     grid.appendChild(card('yt-dlp', health.yt_dlp ? 'Available' : 'Missing'));
     grid.appendChild(card('Demucs', health.demucs_available ? `Available (${health.demucs_version || '?'})` : 'Unavailable'));
     grid.appendChild(card('PyTorch', health.torch_version || '—'));
+    grid.appendChild(card('Network access', loopbackOnly ? 'Local machine only' : 'Network exposed'));
+    grid.appendChild(card('Authentication', exposure.authenticated ? 'Enabled' : 'Not configured'));
 
     const queue = health.queue || {};
     grid.appendChild(card('Active jobs', String(queue.active ?? 0)));
@@ -72,6 +76,9 @@ export function mountEngine({ store, container }) {
   };
 
   const unsubscribe = store.subscribeSlice('health', render);
+  // Paint the boot-time snapshot before refreshing it. An identical refresh
+  // does not emit a slice change, by design.
+  render(store.getState().health);
   load();
 
   return () => {

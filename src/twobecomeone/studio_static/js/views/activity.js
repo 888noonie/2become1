@@ -174,6 +174,9 @@ export function mountActivity({ store, container }) {
     watchers.clear();
   });
 
+  // Paint the snapshot already loaded by app boot. If the refresh returns the
+  // same data, the slice subscription intentionally will not fire again.
+  render(store.getState());
   load();
 
   return () => {

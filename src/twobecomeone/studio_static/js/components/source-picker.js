@@ -71,6 +71,10 @@ export async function openSourcePicker(store, slot = null) {
     }
   };
 
+  // The selected tab must have content on first open; changing tabs will
+  // dispose and replace this panel through the same render path.
+  renderPanel(initialTab);
+
   const result = await openDialog({
     title: slot ? `Choose ${slot === 'anchor' ? 'foundation' : 'lead'} track` : 'Add a track',
     description: 'Pick from your library, upload a file, or import a YouTube video.',
