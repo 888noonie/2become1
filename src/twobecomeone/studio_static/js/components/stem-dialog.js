@@ -283,14 +283,22 @@ export async function openStemDialog({ track, role, store = globalStore, project
   loadAndRenderStems();
 
   // Subscribe to playback changes to update Audition buttons. We only
-  // re-render (from the cached variants, no network) when the selected
-  // playback variant changes — never on every timeupdate tick, and never
+  // Re-render from cached variants when the meaningful playback identity or
+  // playing state changes — never on every timeupdate tick and never by
   // refetching stems.
-  let lastPlaybackVariant = null;
+  let lastPlaybackKey = null;
   const unsubPlayback = store.subscribeSlice('playback', (playback) => {
-    const activeVariant = playback.source?.variant || null;
-    if (activeVariant !== lastPlaybackVariant) {
-      lastPlaybackVariant = activeVariant;
+    // Button state depends on ownership and playing state as well as variant.
+    // A stopped source or another track using the same `full` variant must
+    // still repaint from cache, without causing a network request.
+    const playbackKey = JSON.stringify({
+      playing: Boolean(playback.playing),
+      trackId: playback.source?.trackId || playback.trackId || null,
+      variant: playback.source?.variant || null,
+      url: playback.source?.url || null,
+    });
+    if (playbackKey !== lastPlaybackKey) {
+      lastPlaybackKey = playbackKey;
       if (cachedVariants) renderStems(cachedVariants);
     }
   });

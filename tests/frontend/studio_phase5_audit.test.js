@@ -233,6 +233,49 @@ test('ProjectManager keeps newer edit visible when the queued save fails', async
   assert.ok(secondAttempts >= 1, 'the queued save was attempted');
 });
 
+test('ProjectManager preserves a newer different field when an older PATCH returns', async () => {
+  const { StateStore, registerReducers } = await import(
+    '../../src/twobecomeone/studio_static/js/state.js');
+  const { ProjectManager } = await import(
+    '../../src/twobecomeone/studio_static/js/project.js');
+  const store = registerReducers(new StateStore());
+  store.dispatch({
+    type: 'project/set',
+    project: { id: 'p1', name: 'Old', settings: { duration: 10 }, updated_at: 1 },
+  });
+  const pm = new ProjectManager(store);
+
+  let resolveFirst;
+  stubFetch({
+    'PATCH /api/projects/p1': async ({ options }) => {
+      const body = JSON.parse(options.body);
+      if (body.name === 'First') {
+        await new Promise((r) => { resolveFirst = r; });
+        return jsonResponse({
+          id: 'p1', name: 'First', settings: { duration: 10 }, updated_at: 2,
+        });
+      }
+      return jsonResponse(
+        { error: { code: 'x', message: 'network down', detail: null } },
+        500,
+      );
+    },
+  });
+
+  pm.save({ name: 'First' });
+  pm.flushNow();
+  await new Promise((r) => setTimeout(r, 10));
+  pm.save({ settings: { duration: 20 } });
+  resolveFirst();
+  await new Promise((r) => setTimeout(r, 20));
+
+  // A full project response for the older name PATCH includes stale settings.
+  // The newer settings edit must stay visible even if its queued PATCH fails.
+  await pm.flushNow();
+  assert.equal(store.getState().currentProject.settings.duration, 20);
+  assert.equal(store.getState().save.status, 'error');
+});
+
 test('Deck mount handles undefined deckTracks without throwing', async () => {
   const store = makeStore({
     currentProject: { id: 'p1', anchor_track_id: 't1', anchor_variant: 'full' },
@@ -419,6 +462,20 @@ test('Stem dialog does not refetch stems on playback ticks', async () => {
   await new Promise((r) => setTimeout(r, 50));
 
   assert.equal(stemFetches, 1, 'no refetch on playback ticks');
+  assert.equal(
+    document.querySelector('.stem-row__actions button')?.textContent,
+    'Stop',
+    'active audition is rendered as Stop',
+  );
+
+  store.dispatch({ type: 'playback/set', source: { variant: 'full', trackId: 't1' }, playing: false });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(stemFetches, 1, 'stopping repaints from cache without refetching');
+  assert.equal(
+    document.querySelector('.stem-row__actions button')?.textContent,
+    'Audition',
+    'stopped audition returns to Audition',
+  );
 });
 
 test('Stem dialog renders structured progress_detail warning text', async () => {
@@ -443,12 +500,24 @@ test('Stem dialog renders structured progress_detail warning text', async () => 
   separateBtn.click();
   await new Promise((r) => setTimeout(r, 50));
 
-  // The watchJob callback is internal; we assert the dialog does not render
-  // "[object Object]" by checking the status element is a string. This is a
-  // structural guard: the code path now branches on typeof detail === 'object'.
+  const source = globalThis.EventSource.instances.at(-1);
+  assert.ok(source, 'job EventSource created');
+  const warning = 'GPU Memory Limit Reached - Falling back to CPU (This will take longer).';
+  source.emit('job', JSON.stringify({
+    id: 'job1',
+    status: 'running',
+    progress_phase: 'separating',
+    progress_detail: { stage: 'separating', warning },
+  }));
+  await new Promise((r) => setTimeout(r, 0));
+
   const statusEl = document.querySelector('.stem-dialog__status');
   assert.ok(statusEl, 'status element present');
+  assert.ok(statusEl.textContent.includes(warning), 'exact structured warning is visible');
   assert.ok(!statusEl.textContent.includes('[object Object]'), 'no raw object interpolation');
+
+  // Close the shared monitor so it cannot leak into another test.
+  source.emit('job', JSON.stringify({ id: 'job1', status: 'cancelled' }));
 });
 
 test('Plan source-time uses capped output duration and multiplies by tempo ratio', async () => {

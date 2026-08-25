@@ -1626,7 +1626,9 @@ class StudioService:
         )
         return self.get_job(job["id"])
 
-    def _validated_stem_path(self, rel: str) -> Path | None:
+    def _validated_stem_path(
+        self, rel: Any, expected_name: str | None = None
+    ) -> Path | None:
         """Return the resolved stem file if ``rel`` is playable under stems/.
 
         ``rel`` is a database-stored path relative to the data root (e.g.
@@ -1635,10 +1637,29 @@ class StudioService:
         root — so a corrupt row pointing at ``tracks/...`` cannot be advertised
         as a playable stem.
         """
-        if not rel:
+        if not isinstance(rel, str) or not rel:
             return None
+        relative = Path(rel)
+        # Stem-set paths are stored relative to the data root. Refuse absolute
+        # database values even when they happen to point back inside stems/.
+        if relative.is_absolute():
+            return None
+        if expected_name is not None:
+            # Every advertised URL is keyed by its variant name. Ensure that
+            # the stored filename will pass the exact set/name audio lookup,
+            # and never allow a corrupt row to create a second "full" entry.
+            if expected_name == projects.FULL_VARIANT:
+                return None
+            try:
+                projects.validate_variant(expected_name)
+            except UserError:
+                return None
+            if relative.stem != expected_name:
+                return None
         try:
-            resolved = media.validate_managed_path(self.data_dir / rel, self.stem_dir)
+            resolved = media.validate_managed_path(
+                self.data_dir / relative, self.stem_dir
+            )
         except UserError:
             return None
         if not resolved.is_file():
@@ -1660,7 +1681,7 @@ class StudioService:
             rel = paths.get(variant)
             if rel is None:
                 continue
-            if self._validated_stem_path(rel) is not None:
+            if self._validated_stem_path(rel, variant) is not None:
                 return True
         return False
 
@@ -1679,7 +1700,7 @@ class StudioService:
             rel = paths.get(variant)
             if rel is None:
                 continue
-            if self._validated_stem_path(rel) is not None:
+            if self._validated_stem_path(rel, variant) is not None:
                 return (row["id"], row["method"], row["model_name"], row["device"])
         return None
 
@@ -1720,7 +1741,7 @@ class StudioService:
         for row in rows:
             paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
             for name, rel in paths.items():
-                if self._validated_stem_path(rel) is None:
+                if self._validated_stem_path(rel, name) is None:
                     continue
                 available[name] = True
                 if name in order:
@@ -1758,17 +1779,9 @@ class StudioService:
         rel = paths.get(name)
         if rel is None:
             raise UserError(f"stem '{name}' not found in stem set {stem_set_id}")
-        # Validate the stored path is a bare relative path under stems/ whose
-        # filename matches the requested stem name (plus a known extension).
-        if Path(rel).stem != name:
-            raise UserError(f"corrupt stem path for '{name}'")
-        path = self.data_dir / rel
-        try:
-            resolved = path.resolve(strict=True)
-        except (OSError, RuntimeError):
-            raise UserError(f"stem media is unavailable: {name}")
-        if self.stem_dir.resolve() not in resolved.parents:
-            raise UserError(f"stem path escapes the managed root: {name}")
+        resolved = self._validated_stem_path(rel, name)
+        if resolved is None:
+            raise UserError(f"stem media is unavailable or corrupt: {name}")
         return resolved
 
     def _resolve_stem_variant(self, track_id: str, variant: str | None) -> Path:
@@ -1783,14 +1796,15 @@ class StudioService:
         track_sha256 = self._track_content_hash(track_id)
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'",
+                "SELECT * FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'"
+                " ORDER BY created_at DESC",
                 (track_sha256,),
             ).fetchall()
         for row in rows:
             paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
             rel = paths.get(variant)
             if rel is not None:
-                resolved = self._validated_stem_path(rel)
+                resolved = self._validated_stem_path(rel, variant)
                 if resolved is not None:
                     return resolved
         raise UserError(f"stem variant '{variant}' is not available for this track")

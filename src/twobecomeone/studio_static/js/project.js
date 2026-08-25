@@ -161,11 +161,14 @@ export class ProjectManager {
       // would wrongly accept a stale response.
       const reconciled = { ...saved };
       let keptLocal = false;
-      for (const key of Object.keys(fields)) {
+      // Preserve every field edited while the request was in flight, not only
+      // fields that happened to be part of the older PATCH. PATCH responses
+      // contain the whole project, so an older name-only response can also
+      // carry stale settings (and vice versa).
+      for (const key of Object.keys(this._dirty)) {
         if (
           key !== 'id' &&
-          key !== 'updated_at' &&
-          Object.prototype.hasOwnProperty.call(this._dirty, key)
+          key !== 'updated_at'
         ) {
           reconciled[key] = current[key];
           keptLocal = true;

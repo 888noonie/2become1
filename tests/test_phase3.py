@@ -479,6 +479,73 @@ class TestRenderVariants:
         finally:
             service.close()
 
+    def test_mismatched_stem_name_not_advertised_or_playable(self, tmp_path):
+        """An in-root path must still match its advertised variant name."""
+        service = StudioService(tmp_path / "data")
+        try:
+            track = _ingest(
+                service, synth_track(tmp_path / "l.wav", bpm=120, root=220.0)
+            )
+            sha = service._track_content_hash(track["id"])
+            stem_set_id = "mismatchedset"
+            stem_dir = service.stem_dir / stem_set_id
+            stem_dir.mkdir(parents=True)
+            (stem_dir / "sides.wav").write_bytes(b"stem")
+            with service._connect() as conn:
+                conn.execute(
+                    "INSERT INTO stem_sets (id, track_id, method, model, device,"
+                    " status, paths_json, track_sha256, model_name, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, 'complete', ?, ?, ?, ?)",
+                    (
+                        stem_set_id, track["id"], "ffmpeg", "center-side-v1", "cpu",
+                        json.dumps(
+                            {"center": f"stems/{stem_set_id}/sides.wav"}
+                        ),
+                        sha, "center-side-v1", time.time(),
+                    ),
+                )
+
+            assert service._variant_available(sha, "center") is False
+            names = [v["name"] for v in service.list_stems(track["id"])["variants"]]
+            assert "center" not in names
+            with pytest.raises(UserError, match="unavailable or corrupt"):
+                service.stem_audio_path(stem_set_id, "center")
+        finally:
+            service.close()
+
+    def test_variant_path_and_metadata_select_same_newest_stem_set(self, tmp_path):
+        """Resolved audio and advertised metadata must identify one stem set."""
+        service = StudioService(tmp_path / "data")
+        try:
+            track = _ingest(
+                service, synth_track(tmp_path / "l.wav", bpm=120, root=220.0)
+            )
+            sha = service._track_content_hash(track["id"])
+            with service._connect() as conn:
+                for index, created_at in ((1, 1.0), (2, 2.0)):
+                    stem_set_id = f"set{index}"
+                    stem_dir = service.stem_dir / stem_set_id
+                    stem_dir.mkdir(parents=True)
+                    (stem_dir / "center.wav").write_bytes(f"stem{index}".encode())
+                    conn.execute(
+                        "INSERT INTO stem_sets (id, track_id, method, model, device,"
+                        " status, paths_json, track_sha256, model_name, created_at)"
+                        " VALUES (?, ?, ?, ?, ?, 'complete', ?, ?, ?, ?)",
+                        (
+                            stem_set_id, track["id"], "ffmpeg", f"model{index}",
+                            "cpu", json.dumps(
+                                {"center": f"stems/{stem_set_id}/center.wav"}
+                            ), sha, f"model{index}", created_at,
+                        ),
+                    )
+
+            resolved = service._resolve_stem_variant(track["id"], "center")
+            info = service._stem_set_audio_info(sha, "center")
+            assert resolved.parent.name == "set2"
+            assert info is not None and info[0] == "set2"
+        finally:
+            service.close()
+
     def test_legacy_use_vocals_ensures_before_planning(self, tmp_path, monkeypatch):
         """Audit regression: legacy use_vocals must separate before planning.
 
