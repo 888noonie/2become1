@@ -435,6 +435,9 @@ class TestOOMFallback:
 
     def test_oom_falls_back_to_cpu_exactly_once(self, tmp_path, monkeypatch):
         """A mocked CUDA OOM triggers gc + empty_cache + exactly one CPU retry."""
+        import sys
+        import types
+
         calls = {"device": [], "empty_cache": 0, "gc": 0}
 
         class FakeSeparator:
@@ -456,23 +459,34 @@ class TestOOMFallback:
         monkeypatch.setattr(separator, "_demucs_separator", None)
         monkeypatch.setattr(separator, "_demucs_device", None)
 
-        import demucs.api
-        monkeypatch.setattr(demucs.api, "Separator", FakeSeparator)
+        # Install lightweight fake optional modules so this unit test exercises
+        # the fallback in a bare CI environment without downloading Demucs or
+        # PyTorch. The production code still imports them through its normal
+        # lazy-import path.
+        demucs_module = types.ModuleType("demucs")
+        demucs_module.__path__ = []
+        demucs_api = types.ModuleType("demucs.api")
+        demucs_api.Separator = FakeSeparator
+        demucs_module.api = demucs_api
+        monkeypatch.setitem(sys.modules, "demucs", demucs_module)
+        monkeypatch.setitem(sys.modules, "demucs.api", demucs_api)
 
         # Track empty_cache and gc.collect.
-        import torch
-        real_empty = torch.cuda.empty_cache
-        monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.__setitem__("empty_cache", calls["empty_cache"] + 1))
+        torch_module = types.ModuleType("torch")
+        torch_module.cuda = types.SimpleNamespace(
+            OutOfMemoryError=type("OutOfMemoryError", (RuntimeError,), {}),
+            empty_cache=lambda: calls.__setitem__("empty_cache", calls["empty_cache"] + 1),
+        )
+        monkeypatch.setitem(sys.modules, "torch", torch_module)
 
         import gc
-        real_collect = gc.collect
         monkeypatch.setattr(gc, "collect", lambda: calls.__setitem__("gc", calls["gc"] + 1))
 
         # Stub save_audio to avoid writing real files.
         def fake_save(audio, path, samplerate=None):
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             Path(path).write_bytes(b"x")
-        monkeypatch.setattr(demucs.api, "save_audio", fake_save)
+        demucs_api.save_audio = fake_save
 
         out_dir = tmp_path / "stems"
         result = separator.separate(str(tmp_path / "in.wav"), out_dir, method="demucs")

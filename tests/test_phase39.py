@@ -238,6 +238,9 @@ class TestStemFinalization:
 class TestOOMWarningPropagation:
     def _mock_demucs_oom(self, monkeypatch, oom_on_load: bool):
         """Mock Demucs to OOM either on load or on inference, then succeed on CPU."""
+        import sys
+        import types
+
         calls = {"device": [], "empty_cache": 0, "gc": 0}
 
         class FakeSeparator:
@@ -259,14 +262,20 @@ class TestOOMWarningPropagation:
         monkeypatch.setattr(separator, "_demucs_separator", None)
         monkeypatch.setattr(separator, "_demucs_device", None)
 
-        import demucs.api
-        monkeypatch.setattr(demucs.api, "Separator", FakeSeparator)
+        demucs_module = types.ModuleType("demucs")
+        demucs_module.__path__ = []
+        demucs_api = types.ModuleType("demucs.api")
+        demucs_api.Separator = FakeSeparator
+        demucs_module.api = demucs_api
+        monkeypatch.setitem(sys.modules, "demucs", demucs_module)
+        monkeypatch.setitem(sys.modules, "demucs.api", demucs_api)
 
-        import torch
-        monkeypatch.setattr(
-            torch.cuda, "empty_cache",
-            lambda: calls.__setitem__("empty_cache", calls["empty_cache"] + 1),
+        torch_module = types.ModuleType("torch")
+        torch_module.cuda = types.SimpleNamespace(
+            OutOfMemoryError=type("OutOfMemoryError", (RuntimeError,), {}),
+            empty_cache=lambda: calls.__setitem__("empty_cache", calls["empty_cache"] + 1),
         )
+        monkeypatch.setitem(sys.modules, "torch", torch_module)
         import gc
         monkeypatch.setattr(
             gc, "collect", lambda: calls.__setitem__("gc", calls["gc"] + 1),
@@ -275,7 +284,7 @@ class TestOOMWarningPropagation:
         def fake_save(audio, path, samplerate=None):
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             synth_track(Path(path), bpm=100, root=261.63, duration=1.0)
-        monkeypatch.setattr(demucs.api, "save_audio", fake_save)
+        demucs_api.save_audio = fake_save
         return calls
 
     def test_load_oom_publishes_warning_in_job(self, tmp_path, monkeypatch):
