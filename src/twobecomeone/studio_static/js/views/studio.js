@@ -13,6 +13,7 @@ import { showToast } from '../components/toast.js';
 import { store, projectManager } from '../app-context.js';
 import { mountDeck } from '../components/deck.js';
 import { mountPlan } from '../components/plan.js';
+import { mountRenderActions } from '../components/render-actions.js';
 
 function saveStatusLabel(save) {
   if (save.status === 'saving') return 'Saving…';
@@ -140,6 +141,7 @@ export function mountStudio({ container }) {
   let anchorDisposer = null;
   let leadDisposer = null;
   let planDisposer = null;
+  let renderActionsDisposer = null;
 
   const studioRoot = createElement('div', { class: 'studio' });
   container.replaceChildren(studioRoot);
@@ -159,6 +161,7 @@ export function mountStudio({ container }) {
   const decksContainer = createElement('div', { class: 'studio__decks' });
   const swapBar = createElement('div', { class: 'studio__swap-bar' });
   const planContainer = createElement('div', { class: 'studio__plan-container' });
+  const renderActionsContainer = createElement('div', { class: 'studio__render-actions-container' });
 
   const anchorDeckMount = createElement('div', { class: 'deck-slot deck-slot--anchor' });
   const leadDeckMount = createElement('div', { class: 'deck-slot deck-slot--lead' });
@@ -172,6 +175,7 @@ export function mountStudio({ container }) {
   studioRoot.appendChild(swapBar);
   studioRoot.appendChild(decksContainer);
   studioRoot.appendChild(planContainer);
+  studioRoot.appendChild(renderActionsContainer);
 
   function updateHeader() {
     replaceChildren(headerContainer, [projectHeader()]);
@@ -209,6 +213,10 @@ export function mountStudio({ container }) {
   anchorDisposer = mountDeck({ container: anchorDeckMount, role: 'anchor', onAnnounce, store, projectManager });
   leadDisposer = mountDeck({ container: leadDeckMount, role: 'lead', onAnnounce, store, projectManager });
   planDisposer = mountPlan({ container: planContainer, store, projectManager });
+  renderActionsDisposer = mountRenderActions({
+    container: renderActionsContainer, store, projectManager,
+    health: store.getState().health,
+  });
 
   updateHeader();
 
@@ -221,6 +229,7 @@ export function mountStudio({ container }) {
     if (anchorDisposer) anchorDisposer();
     if (leadDisposer) leadDisposer();
     if (planDisposer) planDisposer();
+    if (renderActionsDisposer) renderActionsDisposer();
     projectManager.flushNow();
   };
 }

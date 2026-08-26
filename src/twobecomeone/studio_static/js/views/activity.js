@@ -1,14 +1,26 @@
 // views/activity.js — Activity view (full) and reusable drawer content.
 //
-// Phase 4.9: active jobs first; imports/separations/previews/renders; truthful
-// measured/stage-only progress; current stage and message; OOM warning; cancel
-// for active jobs; retry/resume for supported terminal jobs; plain-language
-// error with optional technical detail. Each item owns its state by job ID.
+// Phase 4.9 + Phase 6: active jobs first; imports/separations/previews/renders;
+// truthful measured/stage-only progress; current stage and message; OOM
+// warning; cancel for active jobs; retry/resume for supported terminal jobs;
+// plain-language error with optional technical detail. Application-lifetime job
+// monitoring updates the shared store; this route owns only its abortable
+// history load. Preview/render items render full result detail (display name,
+// source names, request fields, output metrics, Play/Download/Rename/Retry,
+// expandable request/result/error, and local reveal instructions).
 
 import { createElement, replaceChildren } from '../dom.js';
 import { showToast } from '../components/toast.js';
-import { listJobs, cancelJob, retryJob, watchJob } from '../api.js';
-import { announceJob } from '../announce.js';
+import { listJobs, cancelJob } from '../api.js';
+import { jobCoordinator as globalJobCoordinator, projectManager as globalProjectManager } from '../app-context.js';
+import {
+  renderResultActions,
+  renderResultDetail,
+  renderResultSummary,
+  renderRevealInstructions,
+  resultDisplayName,
+  STATUS_LABEL,
+} from '../components/render-result.js';
 
 const TERMINAL = new Set(['complete', 'failed', 'cancelled', 'interrupted']);
 const ACTIVE = new Set(['queued', 'running']);
@@ -20,18 +32,14 @@ const KIND_LABEL = {
   render: 'Render',
 };
 
-const STATUS_LABEL = {
-  queued: 'Queued',
-  running: 'Running',
-  complete: 'Complete',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-  interrupted: 'Interrupted',
-};
-
-export function mountActivity({ store, container }) {
+export function mountActivity({
+  store,
+  container,
+  projectManager = globalProjectManager,
+  jobCoordinator = globalJobCoordinator,
+  health = null,
+}) {
   const disposers = [];
-  const watchers = new Map(); // jobId -> unsubscribe
   let abortController = null;
 
   const listEl = createElement('div', { class: 'job-list', role: 'list' });
@@ -46,11 +54,11 @@ export function mountActivity({ store, container }) {
       ]));
       return;
     }
-    const items = jobs.map((job) => renderJobItem(job, store));
+    const items = jobs.map((job) => renderJobItem(job, store, projectManager, jobCoordinator, health));
     replaceChildren(listEl, items);
   };
 
-  const renderJobItem = (job, store) => {
+  const renderJobItem = (job, store, projectManager, jobCoordinator, health) => {
     const statusBadge = createElement('span', {
       class: `badge badge--${statusKind(job.status)}`,
       text: STATUS_LABEL[job.status] || job.status,
@@ -83,23 +91,62 @@ export function mountActivity({ store, container }) {
       nodes.push(createElement('div', { class: 'job-item__error', text: job.error }));
     }
 
-    // Actions.
-    const actions = createElement('div', { class: 'job-item__actions' });
-    if (ACTIVE.has(job.status)) {
-      actions.appendChild(createElement('button', {
-        class: 'button button--danger', type: 'button', text: 'Cancel',
-        onclick: () => cancel(job),
+    // Preview/render items get full result detail.
+    if (job.kind === 'preview' || job.kind === 'render') {
+      if (job.status === 'complete') {
+        nodes.push(createElement('div', { class: 'job-item__result-name', text: resultDisplayName(job) }));
+        nodes.push(renderResultSummary(job));
+        nodes.push(renderRevealInstructions(health));
+      }
+      nodes.push(renderResultActions({
+        job, store, projectManager, jobCoordinator, health,
       }));
+      nodes.push(renderExpandableDetail(job));
+    } else {
+      // Import/separation recovery labels from the server recovery object.
+      const recovery = job.recovery || {};
+      const canRetry = recovery.can_retry === true;
+      const action = recovery.action || 'retry';
+      const actions = createElement('div', { class: 'job-item__actions' });
+      if (ACTIVE.has(job.status)) {
+        actions.appendChild(createElement('button', {
+          class: 'button button--danger', type: 'button', text: 'Cancel',
+          onclick: () => cancel(job),
+        }));
+      }
+      if (TERMINAL.has(job.status) && job.status !== 'complete' && canRetry) {
+        const isResume = action === 'resume';
+        actions.appendChild(createElement('button', {
+          class: 'button', type: 'button', text: isResume ? 'Resume' : 'Retry',
+          onclick: () => retry(job, isResume),
+        }));
+      }
+      nodes.push(actions);
+      nodes.push(renderExpandableDetail(job));
     }
-    if (TERMINAL.has(job.status) && job.status !== 'complete') {
-      actions.appendChild(createElement('button', {
-        class: 'button', type: 'button', text: 'Retry',
-        onclick: () => retry(job),
-      }));
-    }
-    nodes.push(actions);
 
     return createElement('div', { class: 'job-item', role: 'listitem', 'data-job-id': job.id }, nodes);
+  };
+
+  const renderExpandableDetail = (job) => {
+    const wrapper = createElement('div', { class: 'job-item__expand' });
+    const toggle = createElement('button', {
+      class: 'button button--sm', type: 'button',
+      'aria-expanded': 'false',
+      text: 'Show technical details',
+      onclick: () => {
+        const expanded = toggle.getAttribute('aria-expanded') === 'true';
+        toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        toggle.textContent = expanded ? 'Show technical details' : 'Hide technical details';
+        if (expanded) {
+          replaceChildren(wrapper, [toggle]);
+        } else {
+          wrapper.appendChild(renderResultDetail(job));
+        }
+      },
+    });
+    wrapper.appendChild(toggle);
+    return wrapper;
   };
 
   const statusKind = (status) => {
@@ -111,18 +158,21 @@ export function mountActivity({ store, container }) {
 
   const cancel = async (job) => {
     try {
-      await cancelJob(job.id);
+      const updated = await cancelJob(job.id);
+      store.dispatch({ type: 'jobs/upsert', job: updated });
       showToast('Cancellation requested.');
     } catch (err) {
       showToast(err.message, 'danger');
     }
   };
 
-  const retry = async (job) => {
+  const retry = async (job, isResume) => {
     try {
-      await retryJob(job.id);
-      showToast('Retry queued.');
-      load();
+      const { retryJob } = await import('../api.js');
+      const cloned = await retryJob(job.id);
+      store.dispatch({ type: 'jobs/upsert', job: cloned });
+      jobCoordinator.track(cloned);
+      showToast(isResume ? 'Resume queued.' : 'Retry queued.');
     } catch (err) {
       showToast(err.message, 'danger');
     }
@@ -136,42 +186,18 @@ export function mountActivity({ store, container }) {
       const items = data.items || data.jobs || [];
       const activeCount = items.filter((j) => ACTIVE.has(j.status)).length;
       store.dispatch({ type: 'jobs/set', items, total: items.length, activeCount });
-      // Watch active jobs for live updates.
-      watchActive(items);
     } catch (err) {
       if (err.name === 'AbortError') return;
       showToast(err.message, 'danger');
     }
   };
 
-  const watchActive = (jobs) => {
-    const activeIds = new Set(jobs.filter((j) => ACTIVE.has(j.status)).map((j) => j.id));
-    // Close watchers for jobs no longer active.
-    for (const [id, unsubscribe] of watchers) {
-      if (!activeIds.has(id)) {
-        unsubscribe();
-        watchers.delete(id);
-      }
-    }
-    // Open watchers for newly active jobs.
-    for (const id of activeIds) {
-      if (!watchers.has(id)) {
-        const unsubscribe = watchJob(id, (job) => {
-          const previous = store.getState().jobs.items.find((item) => item.id === job.id) || null;
-          store.dispatch({ type: 'jobs/upsert', job });
-          announceJob(job, previous);
-        });
-        watchers.set(id, unsubscribe);
-      }
-    }
-  };
-
   const unsubscribe = store.subscribeSlice('jobs', (jobs) => render({ jobs }));
+  const unsubscribePlayback = store.subscribeSlice('playback', () => render(store.getState()));
   disposers.push(() => {
     unsubscribe();
+    unsubscribePlayback();
     if (abortController) abortController.abort();
-    for (const unsub of watchers.values()) unsub();
-    watchers.clear();
   });
 
   // Paint the snapshot already loaded by app boot. If the refresh returns the

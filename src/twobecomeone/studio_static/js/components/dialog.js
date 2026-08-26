@@ -64,20 +64,25 @@ export function openDialog({ title, description, body = [], actions = [], trigge
       resolve(value);
     };
 
-    dialog.addEventListener('close', () => {
+    const onClose = () => {
       const value = dialog.returnValue || null;
+      dialog.removeEventListener('cancel', onCancel);
       dialog.remove();
       if (activeDialog === dialog) activeDialog = null;
       if (focusTarget && typeof focusTarget.focus === 'function' && focusTarget.isConnected) {
         focusTarget.focus();
       }
       finish(value);
-    });
+    };
 
-    dialog.addEventListener('cancel', () => {
+    const onCancel = (event) => {
       // Escape: dismiss without a value.
-      dialog.close(null);
-    });
+      event.preventDefault();
+      dialog.close();
+    };
+
+    dialog.addEventListener('close', onClose, { once: true });
+    dialog.addEventListener('cancel', onCancel);
 
     dialog.showModal();
   });

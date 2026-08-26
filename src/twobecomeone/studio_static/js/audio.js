@@ -53,7 +53,11 @@ class AudioController {
   /**
    * Load and play an audio source. Stops and resets any previous source first.
    * Accepts either (trackId, url) for backward compatibility or an options
-   * descriptor { trackId, url, kind, stemName, variant }.
+   * descriptor { trackId, url, kind, stemName, variant, jobId, title }.
+   *
+   * `kind` may be 'track', 'stem', 'preview', or 'render'. For render/preview
+   * output, `jobId` identifies the completed job and `title` is the safe
+   * display name used by the now-playing footer.
    *
    * @param {string|object} source - trackId string or source descriptor object
    * @param {string} [url] - URL if source was passed as trackId string
@@ -61,13 +65,15 @@ class AudioController {
   play(source, url) {
     this.stop();
     const descriptor = typeof source === 'string'
-      ? { trackId: source, url, kind: 'track', stemName: null, variant: 'full' }
+      ? { trackId: source, url, kind: 'track', stemName: null, variant: 'full', jobId: null, title: null }
       : {
           trackId: source.trackId || null,
           url: source.url,
           kind: source.kind || (source.stemName ? 'stem' : 'track'),
           stemName: source.stemName || null,
           variant: source.variant || (source.stemName || 'full'),
+          jobId: source.jobId || null,
+          title: source.title || null,
         };
     this._current = descriptor;
     this._audio.src = descriptor.url;

@@ -9,10 +9,9 @@
 import { createElement, replaceChildren } from '../dom.js';
 import { openDialog } from './dialog.js';
 import { showToast } from './toast.js';
-import { announceJob } from '../announce.js';
 import { formatBpm, formatKey, formatTime, sourceLabel } from '../format.js';
 import {
-  submitYouTube, submitUpload, watchJob, getTrack,
+  submitYouTube, submitUpload, getTrack,
 } from '../api.js';
 import { projectManager } from '../app-context.js';
 
@@ -248,10 +247,10 @@ function renderYouTubePanel(panel, store, slot, disposers) {
 
 function followImport(job, store, slot, statusEl) {
   return new Promise((resolve) => {
-    const unsubscribe = watchJob(job.id, (updated) => {
-      const previous = store.getState().jobs.items.find((item) => item.id === updated.id) || null;
-      store.dispatch({ type: 'jobs/upsert', job: updated });
-      announceJob(updated, previous);
+    let settled = false;
+    let unsubscribe = () => {};
+    const handle = (updated) => {
+      if (!updated || updated.id !== job.id || settled) return;
       const detail = updated.progress_detail || {};
       if (detail.percent != null) {
         statusEl.textContent = `${updated.message || 'Downloading'} ${Math.round(detail.percent)}%`;
@@ -259,15 +258,24 @@ function followImport(job, store, slot, statusEl) {
         statusEl.textContent = updated.message || updated.stage || 'Working…';
       }
       if (updated.status === 'complete') {
+        settled = true;
         unsubscribe();
         onComplete(updated, store, slot, statusEl).then(resolve);
       } else if (updated.status === 'failed' || updated.status === 'cancelled' || updated.status === 'interrupted') {
+        settled = true;
         unsubscribe();
         statusEl.textContent = '';
         showToast(updated.error || `Import ${updated.status}.`, 'danger');
         resolve();
       }
+    };
+    // JobCoordinator is the sole API monitor and store updater. The picker
+    // observes shared state only, so it cannot duplicate monitor callbacks or
+    // announcements while still surviving dialog closure until terminal.
+    unsubscribe = store.subscribeSlice('jobs', (jobs) => {
+      handle(jobs.items.find((item) => item.id === job.id));
     });
+    handle(store.getState().jobs.items.find((item) => item.id === job.id));
   });
 }
 

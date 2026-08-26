@@ -109,7 +109,7 @@ body {
 
 @media (max-width: 480px) {
   html {
-    overflow-x: hidden;
+    min-width: 0;
   }
 
   body {

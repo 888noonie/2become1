@@ -6,6 +6,8 @@
 
 import { StateStore, registerReducers } from './state.js';
 import { ProjectManager } from './project.js';
+import { JobCoordinator } from './job-coordinator.js';
 
 export const store = registerReducers(new StateStore());
 export const projectManager = new ProjectManager(store);
+export const jobCoordinator = new JobCoordinator(store);

@@ -5,8 +5,8 @@
 
 import { Router } from './router.js';
 import { audioController } from './audio.js';
-import { getHealth, listJobs, listTracks } from './api.js';
-import { store, projectManager } from './app-context.js';
+import { closeAllMonitors, getHealth, listJobs, listTracks } from './api.js';
+import { jobCoordinator, store, projectManager } from './app-context.js';
 import { mountStudio } from './views/studio.js';
 import { mountLibrary } from './views/library.js';
 import { mountActivity } from './views/activity.js';
@@ -22,6 +22,7 @@ const views = {
 };
 
 const router = new Router({ store, container, views });
+jobCoordinator.start();
 
 // ---- Active-job badge ----
 const badge = document.getElementById('active-badge');
@@ -39,9 +40,16 @@ const nowPlayingTitle = document.getElementById('now-playing-title');
 function updateNowPlaying() {
   const state = store.getState();
   const playback = state.playback;
-  if (playback.trackId) {
-    const track = state.library.items.find((t) => t.id === playback.trackId);
-    nowPlayingTitle.textContent = track ? track.name : 'Playing';
+  if (playback.trackId || playback.source?.jobId) {
+    const source = playback.source;
+    // Render/preview results carry a server-authored safe title; tracks fall
+    // back to the library display name.
+    let title = source?.title || null;
+    if (!title && playback.trackId) {
+      const track = state.library.items.find((t) => t.id === playback.trackId);
+      title = track ? track.name : 'Playing';
+    }
+    nowPlayingTitle.textContent = title || 'Playing';
     nowPlaying.hidden = false;
   } else {
     nowPlaying.hidden = true;
@@ -60,6 +68,8 @@ audioController.on((type, payload) => {
         stemName: payload.stemName || null,
         variant: payload.variant || 'full',
         url: payload.url || null,
+        jobId: payload.jobId || null,
+        title: payload.title || null,
       },
       playing: true,
       error: null,
@@ -101,6 +111,7 @@ async function boot() {
     const items = data.items || data.jobs || [];
     const activeCount = items.filter((j) => j.status === 'queued' || j.status === 'running').length;
     store.dispatch({ type: 'jobs/set', items, total: items.length, activeCount });
+    jobCoordinator.restore(items);
   } catch (err) {
     console.error('jobs load failed', err);
   }
@@ -122,3 +133,12 @@ async function boot() {
 
 router.start();
 boot();
+
+function teardown() {
+  router.stop();
+  jobCoordinator.dispose();
+  closeAllMonitors();
+  audioController.stop();
+}
+
+window.addEventListener('beforeunload', teardown, { once: true });

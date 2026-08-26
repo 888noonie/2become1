@@ -10,7 +10,7 @@
 // 3. Debounces/aborts obsolete POST /api/renders/plan requests. Renders
 //    server-authored tempo ratio, BPM change, semitone shift, selected
 //    variants, expected duration, and actionable warnings.
-// 4. Clearly labeled arrangement-ready state (render/preview are Phase 6).
+// 4. Clearly labeled arrangement-ready state used by Phase 6 actions.
 
 import { createElement, replaceChildren } from '../dom.js';
 import { planRender } from '../api.js';
@@ -30,6 +30,25 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
   let abortController = null;
   let debounceTimer = null;
   let lastPlanKey = '';
+
+  function requestForCurrentProject() {
+    const state = store.getState();
+    const project = state.currentProject || {};
+    if (!project.anchor_track_id || !project.lead_track_id) return null;
+    const s = project.settings || {};
+    return {
+      anchor_id: project.anchor_track_id,
+      lead_id: project.lead_track_id,
+      anchor_start: Number(s.anchor_start ?? 0),
+      lead_start: Number(s.lead_start ?? 0),
+      duration: s.duration != null ? Number(s.duration) : null,
+      anchor_gain: Number(s.anchor_gain ?? 0.8),
+      lead_gain: Number(s.lead_gain ?? 0.8),
+      anchor_variant: project.anchor_variant || 'full',
+      lead_variant: project.lead_variant || 'full',
+      pitch_mode: s.pitch_mode || 'match',
+    };
+  }
 
   function render(state) {
     const project = state.currentProject || {};
@@ -262,7 +281,7 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
 
         const readyBadge = createElement('div', { class: 'plan-ready' }, [
           createElement('span', { class: 'badge badge--success', text: '✓ Arrangement Plan Verified' }),
-          createElement('span', { class: 'plan-hint', text: 'Render & Preview flows will activate in Phase 6.' }),
+          createElement('span', { class: 'plan-hint', text: 'Use the Preview and Render actions below.' }),
         ]);
 
         replaceChildren(planDisplay, [
@@ -287,31 +306,16 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
 
   // Fetch plan from server
   async function fetchPlan() {
-    const state = store.getState();
-    const project = state.currentProject || {};
-    const anchorId = project.anchor_track_id;
-    const leadId = project.lead_track_id;
-
-    if (!anchorId || !leadId) {
-      store.dispatch({ type: 'plan/set', loading: false, data: null, error: null });
+    const body = requestForCurrentProject();
+    if (!body) {
+      store.dispatch({
+        type: 'plan/set', loading: false, data: null, error: null, request: null,
+      });
       return;
     }
 
-    const s = project.settings || {};
-    const body = {
-      anchor_id: anchorId,
-      lead_id: leadId,
-      anchor_start: Number(s.anchor_start ?? 0),
-      lead_start: Number(s.lead_start ?? 0),
-      duration: s.duration != null ? Number(s.duration) : null,
-      anchor_gain: Number(s.anchor_gain ?? 0.8),
-      lead_gain: Number(s.lead_gain ?? 0.8),
-      anchor_variant: project.anchor_variant || 'full',
-      lead_variant: project.lead_variant || 'full',
-      pitch_mode: s.pitch_mode || 'match',
-    };
-
     const planKey = JSON.stringify(body);
+    const state = store.getState();
     if (planKey === lastPlanKey && state.plan?.data) {
       return;
     }
@@ -320,16 +324,24 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
     if (abortController) {
       abortController.abort();
     }
-    abortController = new AbortController();
+    const controller = new AbortController();
+    abortController = controller;
 
-    store.dispatch({ type: 'plan/set', loading: true, error: null });
+    store.dispatch({ type: 'plan/set', loading: true, error: null, request: body });
 
     try {
-      const data = await planRender(body, abortController.signal);
-      store.dispatch({ type: 'plan/set', loading: false, data, error: null });
+      const data = await planRender(body, controller.signal);
+      if (controller.signal.aborted || abortController !== controller) return;
+      store.dispatch({
+        type: 'plan/set', loading: false, data, error: null, request: body,
+      });
     } catch (err) {
       if (err && err.name === 'AbortError') return;
-      store.dispatch({ type: 'plan/set', loading: false, data: null, error: err.message || 'Failed to compute plan' });
+      if (controller.signal.aborted || abortController !== controller) return;
+      store.dispatch({
+        type: 'plan/set', loading: false, data: null,
+        error: err.message || 'Failed to compute plan', request: body,
+      });
     }
   }
 
@@ -340,8 +352,32 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
     }, 250);
   }
 
-  const unsubProject = store.subscribeSlice('currentProject', () => {
+  function invalidateAndQueuePlan() {
+    const body = requestForCurrentProject();
+    const current = store.getState().plan || {};
+    if (!body) {
+      if (current.data || current.loading || current.error || current.request) {
+        store.dispatch({
+          type: 'plan/set', loading: false, data: null, error: null, request: null,
+        });
+      }
+      queueFetchPlan();
+      return;
+    }
+    const changed = JSON.stringify(body) !== JSON.stringify(current.request);
+    if (changed || !current.data) {
+      if (changed && abortController) abortController.abort();
+      // Invalidate synchronously. The 250ms debounce delays only the network
+      // request, never the truthfulness of render-action readiness.
+      store.dispatch({
+        type: 'plan/set', loading: true, data: null, error: null, request: body,
+      });
+    }
     queueFetchPlan();
+  }
+
+  const unsubProject = store.subscribeSlice('currentProject', () => {
+    invalidateAndQueuePlan();
     render(store.getState());
   });
 
@@ -350,7 +386,7 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
   });
 
   render(store.getState());
-  queueFetchPlan();
+  invalidateAndQueuePlan();
 
   return function dispose() {
     if (debounceTimer) clearTimeout(debounceTimer);

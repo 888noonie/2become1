@@ -15,6 +15,7 @@ import {
   listProjects,
   patchProject,
 } from './api.js';
+import { buildRenderBody } from './render.js';
 
 const DEBOUNCE_MS = 500;
 
@@ -26,6 +27,7 @@ export class ProjectManager {
     this._dirty = {};        // coalesced fields awaiting save (not state)
     this._inflight = null;   // { controller } of the active PATCH (not state)
     this._queued = false;    // a save was requested while one was in flight
+    this._needsRetry = false;
     this._trackRequests = new Map(); // trackId -> AbortController
   }
 
@@ -180,6 +182,7 @@ export class ProjectManager {
         reconciled.updated_at = current.updated_at;
       }
       this.store.dispatch({ type: 'project/set', project: reconciled });
+      this._needsRetry = false;
       this.store.dispatch({
         type: 'save/status',
         status: Object.keys(this._dirty).length ? 'saving' : 'saved',
@@ -235,6 +238,13 @@ export class ProjectManager {
       }
       if (Object.keys(this._dirty).length > 0) await this._flush();
     }
+    const save = this.store.getState().save;
+    return (
+      !this._inflight &&
+      Object.keys(this._dirty).length === 0 &&
+      save.status !== 'error' &&
+      save.status !== 'saving'
+    );
   }
 
   /**
@@ -308,6 +318,100 @@ export class ProjectManager {
     await this.resolveDecks(project);
     this.store.dispatch({ type: 'save/status', status: 'idle', pending: [], lastError: null });
     return project;
+  }
+
+  /**
+   * Create a new project from a completed preview/render request.
+   *
+   * Copies only validated project fields from the render request: anchor/lead
+   * track IDs, variants, cues, duration, gains, and pitch mode. UI-only and
+   * job-only metadata (preview, snap, result_display_name, source_names) is
+   * never copied. Both decks are resolved and the project persisted before
+   * this resolves; a missing/trashed track surfaces as an explicit error.
+   *
+   * @param {object} request - the job.request of a completed preview/render.
+   * @returns {Promise<object>} the persisted project.
+   */
+  async newProjectFromRender(request) {
+    const candidate = {
+      anchor_track_id: request?.anchor_id,
+      lead_track_id: request?.lead_id,
+      anchor_variant: request?.anchor_variant || 'full',
+      lead_variant: request?.lead_variant || 'full',
+      settings: {
+        anchor_start: request?.anchor_start,
+        lead_start: request?.lead_start,
+        duration: request?.duration,
+        anchor_gain: request?.anchor_gain,
+        lead_gain: request?.lead_gain,
+        pitch_mode: request?.pitch_mode,
+      },
+    };
+    let validated;
+    try {
+      // Reuse the exact RenderBody validator before creating anything. The
+      // server's atomic ProjectPatch validation remains authoritative for
+      // track status and stem availability.
+      validated = buildRenderBody(candidate, { preview: false });
+    } catch (err) {
+      throw new Error(err.message || 'This result has no usable arrangement to copy.');
+    }
+    if (!await this.flushNow()) {
+      throw new Error('Save the current mix before creating another one.');
+    }
+
+    // Resolve both exact track IDs before creating a project. This prevents a
+    // malformed or stale history record from ever becoming current live state.
+    let resolvedTracks;
+    try {
+      resolvedTracks = await Promise.all([
+        getTrack(validated.anchor_id),
+        getTrack(validated.lead_id),
+      ]);
+    } catch {
+      throw new Error('A source track is missing or trashed and could not be added to the new mix.');
+    }
+    if (resolvedTracks.some((track) => !track || track.status === 'trashed')) {
+      throw new Error('A source track is missing or trashed and could not be added to the new mix.');
+    }
+
+    const sourceNames = request.source_names || {};
+    const baseName = [sourceNames.anchor, sourceNames.lead]
+      .filter((name) => typeof name === 'string' && name.trim())
+      .map((name) => name.trim())
+      .join(' + ') || 'New mix';
+    const project = await createProject(baseName);
+    const fields = {
+      anchor_track_id: validated.anchor_id,
+      lead_track_id: validated.lead_id,
+      anchor_variant: validated.anchor_variant,
+      lead_variant: validated.lead_variant,
+      settings: {
+        anchor_start: validated.anchor_start,
+        lead_start: validated.lead_start,
+        duration: validated.duration,
+        anchor_gain: validated.anchor_gain,
+        lead_gain: validated.lead_gain,
+        pitch_mode: validated.pitch_mode,
+      },
+    };
+    let saved;
+    try {
+      saved = await patchProject(project.id, fields);
+    } catch (err) {
+      // The only project removed here is the empty one this operation just
+      // created. Avoid leaving debris when authoritative server validation
+      // rejects a stale stem or a track changes status during the operation.
+      try { await deleteProject(project.id); } catch { /* best-effort rollback */ }
+      throw err;
+    }
+    await this.refreshList();
+    for (const track of resolvedTracks) {
+      this.store.dispatch({ type: 'deckTrack/set', trackId: track.id, track });
+    }
+    this.store.dispatch({ type: 'project/set', project: saved });
+    this.store.dispatch({ type: 'save/status', status: 'idle', pending: [], lastError: null });
+    return saved;
   }
 
   /** Switch to an existing project by ID. */

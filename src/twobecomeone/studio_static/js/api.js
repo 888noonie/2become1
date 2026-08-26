@@ -383,6 +383,26 @@ export function planRender(fields, signal) {
   return post('/api/renders/plan', fields, signal);
 }
 
+/** Queue a preview or full render through the canonical V0.3 endpoint. */
+export function submitRender(fields, signal) {
+  return post('/api/renders', fields, signal);
+}
+
+/** Rename a completed preview/render result; returns the authoritative job. */
+export function renameRenderResult(jobId, displayName, signal) {
+  return patch(`/api/renders/${jobId}`, { display_name: displayName }, signal);
+}
+
+/** Server-authored playback URL for a completed preview/render job. */
+export function renderAudioUrl(job) {
+  return job?.audio_url || null;
+}
+
+/** Server-authored download URL (attachment disposition) for a result. */
+export function renderDownloadUrl(job) {
+  return job?.download_url || null;
+}
+
 export function patchTrack(trackId, fields, signal) {
   return patch(`/api/tracks/${trackId}`, fields, signal);
 }

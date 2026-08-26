@@ -14,7 +14,7 @@ const INITIAL_STATE = {
   // Per-deck resolved tracks keyed by track ID (null payload = unresolvable).
   deckTracks: {},
   save: { status: 'idle', pending: [], error: null, lastError: null },
-  plan: { data: null, loading: false, error: null },
+  plan: { data: null, loading: false, error: null, request: null },
   // Stem metadata per track; payload cache stays outside the store.
   stems: {},
   library: {
@@ -34,6 +34,8 @@ const INITIAL_STATE = {
     items: [],
     total: 0,
     activeCount: 0,
+    latestPreview: null,
+    latestRender: null,
   },
   sourcePicker: {
     open: false,
@@ -263,6 +265,7 @@ export function registerReducers(store) {
       items: action.items,
       total: action.total,
       activeCount: action.activeCount ?? state.jobs.activeCount,
+      ...selectLatestRenderResults(action.items),
     },
   }));
 
@@ -279,6 +282,7 @@ export function registerReducers(store) {
         items,
         total: exists ? state.jobs.total : state.jobs.total + 1,
         activeCount,
+        ...selectLatestRenderResults(items),
       },
     };
   });
@@ -312,4 +316,29 @@ export function registerReducers(store) {
   }));
 
   return store;
+}
+
+/**
+ * Select completed preview/full results independently. A later preview must
+ * never replace the most recent completed full render (or vice versa).
+ */
+export function selectLatestRenderResults(items) {
+  const latest = (kind) => {
+    let selected = null;
+    let selectedAt = -Infinity;
+    for (const job of items || []) {
+      if (job.kind !== kind || job.status !== 'complete') continue;
+      const timestamp = Number(job.created_at ?? job.updated_at);
+      const comparable = Number.isFinite(timestamp) ? timestamp : 0;
+      if (selected === null || comparable > selectedAt) {
+        selected = job;
+        selectedAt = comparable;
+      }
+    }
+    return selected;
+  };
+  return {
+    latestPreview: latest('preview'),
+    latestRender: latest('render'),
+  };
 }
