@@ -61,11 +61,16 @@ export function createElement(tag, attributes = {}, children = []) {
 
 /**
  * Replace all children of `parent` with `children` (safe list rendering).
+ * Filters out null/undefined/false and stringified placeholders (some DOM
+ * implementations stringify null instead of ignoring it).
  * @param {HTMLElement} parent
  * @param {Array} children
  */
 export function replaceChildren(parent, children) {
-  parent.replaceChildren(...children);
+  const filtered = children.filter(
+    (child) => child !== null && child !== undefined && child !== false,
+  );
+  parent.replaceChildren(...filtered);
 }
 
 /**

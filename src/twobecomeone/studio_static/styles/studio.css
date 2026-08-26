@@ -255,10 +255,11 @@
 }
 
 .render-result__row {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(80px, max-content) 1fr;
   gap: var(--space-3);
   font-size: var(--text-xs);
+  align-items: baseline;
 }
 
 .render-result__row-label {
@@ -281,6 +282,7 @@
 .render-result__actions > * {
   min-width: 0;
   max-width: 100%;
+  min-height: 44px;
   overflow-wrap: anywhere;
 }
 

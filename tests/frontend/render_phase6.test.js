@@ -1021,3 +1021,62 @@ test('route teardown closes monitors and does not duplicate EventSource/announce
   assert.equal(globalThis.EventSource.instances.length, 1, 'no duplicate EventSource created');
   api.closeAllMonitors();
 });
+
+test('replaceChildren helper filters null placeholders instead of stringifying them', async () => {
+  // Some DOM implementations stringify null instead of ignoring it; our helper
+  // must filter so stale ternary fallbacks never render the literal "null".
+  const { replaceChildren, createElement } = await import(
+    '../../src/twobecomeone/studio_static/js/dom.js'
+  );
+  const root = createElement('section', {}, []);
+  const keep1 = createElement('span', { text: 'a' });
+  const keep2 = createElement('span', { text: 'b' });
+  replaceChildren(root, [keep1, null, undefined, false, keep2]);
+  const textNodes = [...root.childNodes].filter((n) => n.nodeType === 3);
+  assert.deepEqual(textNodes.map((n) => n.nodeValue), []);
+  assert.equal([...root.querySelectorAll('span')].length, 2);
+  // And the inline pattern that triggered the bug.
+  const root2 = createElement('div', {}, []);
+  replaceChildren(root2, [
+    createElement('span', { text: 'x' }),
+    false ? createElement('span', { text: 'never' }) : null,
+    createElement('span', { text: 'y' }),
+  ]);
+  assert.equal([...root2.querySelectorAll('span')].length, 2);
+  assert.equal(root2.textContent, 'xy');
+});
+
+test('sticky render-actions card never renders a literal "null" text node', async () => {
+  // Regression for the bug found at 390px where actionFeedback === null and
+  // jsdom/Chromium stringified the value into a text node.
+  const { mountRenderActions } = await import(
+    '../../src/twobecomeone/studio_static/js/components/render-actions.js'
+  );
+  const store = await makeStore();
+  const currentProject = project();
+  store.dispatch({ type: 'project/set', project: currentProject });
+  const { buildRenderBody } = await import(
+    '../../src/twobecomeone/studio_static/js/render.js'
+  );
+  const { preview: _preview, ...planRequest } = buildRenderBody(currentProject);
+  store.dispatch({
+    type: 'plan/set', loading: false, error: null,
+    data: { tempo_ratio: 1 }, request: planRequest,
+  });
+  store.dispatch({
+    type: 'jobs/set', items: [], total: 0, activeCount: 0,
+  });
+  const container = document.getElementById('main');
+  const dispose = mountRenderActions({
+    container, store,
+    projectManager: { flushNow: async () => true },
+    jobCoordinator: { track() {} },
+  });
+  // Walk every text node in the section; none may be "null" or "undefined".
+  const root = container.querySelector('.render-actions');
+  const strays = [...root.querySelectorAll('*')].flatMap((el) =>
+    [...el.childNodes].filter((n) => n.nodeType === 3 && /^(null|undefined|false)$/.test((n.nodeValue || '').trim())),
+  );
+  assert.equal(strays.length, 0, `unexpected placeholder text nodes: ${strays.length}`);
+  dispose();
+});

@@ -107,12 +107,20 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .render-actions__buttons {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .render-actions__buttons--active {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .render-actions__cancel {
     grid-column: 1 / -1;
+  }
+
+  .render-result__row {
+    grid-template-columns: minmax(72px, max-content) 1fr;
   }
 
   .toast {
