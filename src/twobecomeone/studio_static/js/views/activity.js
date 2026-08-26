@@ -47,6 +47,7 @@ export function mountActivity({
 
   const render = (state) => {
     const jobs = state.jobs.items;
+    const currentHealth = health || state.health || null;
     if (jobs.length === 0) {
       listEl.replaceChildren(createElement('div', { class: 'state' }, [
         createElement('p', { class: 'state__title', text: 'No activity yet.' }),
@@ -54,7 +55,7 @@ export function mountActivity({
       ]));
       return;
     }
-    const items = jobs.map((job) => renderJobItem(job, store, projectManager, jobCoordinator, health));
+    const items = jobs.map((job) => renderJobItem(job, store, projectManager, jobCoordinator, currentHealth));
     replaceChildren(listEl, items);
   };
 
@@ -192,11 +193,13 @@ export function mountActivity({
     }
   };
 
-  const unsubscribe = store.subscribeSlice('jobs', (jobs) => render({ jobs }));
+  const unsubscribe = store.subscribeSlice('jobs', () => render(store.getState()));
   const unsubscribePlayback = store.subscribeSlice('playback', () => render(store.getState()));
+  const unsubscribeHealth = store.subscribeSlice('health', () => render(store.getState()));
   disposers.push(() => {
     unsubscribe();
     unsubscribePlayback();
+    unsubscribeHealth();
     if (abortController) abortController.abort();
   });
 

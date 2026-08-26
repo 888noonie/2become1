@@ -973,11 +973,12 @@ test('Activity shows reveal instructions from health.data_dir without inventing 
     total: 1,
     activeCount: 0,
   });
-  const container = document.getElementById('main');
-  const dispose = mountActivity({
-    store, container,
+  store.dispatch({
+    type: 'health/set',
     health: { data_dir: '/home/richardn/.local/share/2become1' },
   });
+  const container = document.getElementById('main');
+  const dispose = mountActivity({ store, container });
   assert.ok(container.textContent.includes('renders'));
   assert.ok(container.textContent.includes('/home/richardn/.local/share/2become1'));
   dispose();

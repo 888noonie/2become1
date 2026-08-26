@@ -131,6 +131,7 @@ export function mountRenderActions({
     const project = state.currentProject;
     const plan = state.plan || {};
     const jobs = state.jobs || { items: [] };
+    const currentHealth = health || state.health || null;
     const ready = planMatchesProject(plan, project);
     const active = jobs.items.find(
       (job) => ACTIVE.has(job.status) && (job.kind === 'preview' || job.kind === 'render'),
@@ -197,8 +198,8 @@ export function mountRenderActions({
         : null,
       buttons,
       createElement('div', { class: 'render-results' }, [
-        compactResult('Preview', jobs.latestPreview, store, projectManager, jobCoordinator, health),
-        compactResult('Full render', jobs.latestRender, store, projectManager, jobCoordinator, health),
+        compactResult('Preview', jobs.latestPreview, store, projectManager, jobCoordinator, currentHealth),
+        compactResult('Full render', jobs.latestRender, store, projectManager, jobCoordinator, currentHealth),
       ]),
     ]);
   }
@@ -208,6 +209,7 @@ export function mountRenderActions({
   const unsubscribeJobs = store.subscribeSlice('jobs', () => render(store.getState()));
   const unsubscribeSave = store.subscribeSlice('save', () => render(store.getState()));
   const unsubscribePlayback = store.subscribeSlice('playback', () => render(store.getState()));
+  const unsubscribeHealth = store.subscribeSlice('health', () => render(store.getState()));
   // The Play/Stop UI must be strictly reactive to the singleton controller's
   // own state emissions, so a render started elsewhere (or a track/stem that
   // supersedes it) repaints immediately without local drift.
@@ -220,6 +222,7 @@ export function mountRenderActions({
     unsubscribeJobs();
     unsubscribeSave();
     unsubscribePlayback();
+    unsubscribeHealth();
     unsubscribeAudio();
   };
 }
