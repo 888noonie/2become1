@@ -73,6 +73,10 @@ class SeparationBody(BaseModel):
     method: Literal["auto", "demucs", "ffmpeg"] = "auto"
 
 
+class RenderResultPatchBody(BaseModel):
+    display_name: str = Field(min_length=1, max_length=200)
+
+
 # SSE heartbeat interval (seconds). Keeps proxies from closing idle streams.
 SSE_HEARTBEAT_SEC = 15.0
 
@@ -280,12 +284,22 @@ def create_app(data_dir: str | Path | None = None):
         """
         return service.plan_render(RenderOptions(**body.model_dump()))
 
+    @app.post("/api/renders", status_code=202)
+    def submit_render(body: RenderBody):
+        """Canonical V0.3 preview/full-render submission endpoint."""
+        return service.submit_render(RenderOptions(**body.model_dump()))
+
+    @app.patch("/api/renders/{job_id}")
+    def rename_render_result(job_id: str, body: RenderResultPatchBody):
+        return service.rename_render_result(job_id, body.display_name)
+
     # ------------------------------------------------------------------
     # Jobs
     # ------------------------------------------------------------------
 
     @app.post("/api/jobs", status_code=202)
     def submit_job(body: RenderBody):
+        """V0.2 compatibility alias for ``POST /api/renders``."""
         return service.submit_render(RenderOptions(**body.model_dump()))
 
     @app.get("/api/jobs")
@@ -338,10 +352,11 @@ def create_app(data_dir: str | Path | None = None):
     @app.get("/api/jobs/{job_id}/audio")
     def job_audio(job_id: str, download: bool = Query(default=False)):
         path = service.job_output_path(job_id)
+        filename = service.job_download_name(job_id)
         return FileResponse(
             path,
             media_type="audio/mpeg",
-            filename=f"2become1-{job_id[:8]}.mp3",
+            filename=filename,
             content_disposition_type="attachment" if download else "inline",
         )
 

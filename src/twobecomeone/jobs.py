@@ -376,8 +376,14 @@ class JobEngine:
     active acquisition subprocesses are terminated rather than left orphaned.
     """
 
-    def __init__(self, store: JobStore):
+    def __init__(
+        self,
+        store: JobStore,
+        *,
+        error_formatter: Callable[[Exception], str] | None = None,
+    ):
         self.store = store
+        self._error_formatter = error_formatter or str
         self._acquisition = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="2become1-acq"
         )
@@ -443,7 +449,7 @@ class JobEngine:
         except Exception as exc:  # noqa: BLE001 - boundary of the worker thread
             self.store.transition(
                 job_id, JobStatus.FAILED, stage="failed", progress=100,
-                message="Job failed", error=str(exc),
+                message="Job failed", error=self._error_formatter(exc),
             )
         else:
             # A cancellation may have been requested while the run function was

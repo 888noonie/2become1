@@ -15,11 +15,13 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import sqlite3
 import time
+import unicodedata
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -40,6 +42,7 @@ ALLOWED_AUDIO_SUFFIXES = {
     ".aac", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav",
 }
 MAX_UPLOAD_BYTES = MAX_MEDIA_BYTES
+MAX_RENDER_DISPLAY_NAME_LEN = 200
 
 # Valid tonic names (matches analyzer._NOTE_NAMES).
 _NOTE_NAMES = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
@@ -142,7 +145,7 @@ class StudioService:
             directory.mkdir(parents=True, exist_ok=True)
         self._init_db()
         self._store = JobStore(self._connect)
-        self._engine = JobEngine(self._store)
+        self._engine = JobEngine(self._store, error_formatter=self._public_job_error)
         self._projects = projects.ProjectStore(self._connect)
         self._closed = False
 
@@ -151,6 +154,15 @@ class StudioService:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
+
+    def _public_job_error(self, exc: Exception) -> str:
+        """Return useful job failure text without exposing managed paths."""
+        message = media.sanitize_text(str(exc), 500) or "The job could not be completed"
+        try:
+            managed_root = str(self.data_dir.resolve())
+        except OSError:
+            managed_root = str(self.data_dir)
+        return message.replace(managed_root, "managed data")
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -732,13 +744,57 @@ class StudioService:
     # ------------------------------------------------------------------
 
     def _job_api_dict(self, job: dict) -> dict:
-        """Add the API-only ``audio_url`` derived from the internal output path.
+        """Add safe result and recovery links to a persisted job snapshot.
 
-        ``output_path`` itself is never exposed; only the route is.
+        ``output_path`` itself is never exposed. Playback/download links are
+        advertised only for a complete preview/render whose opaque output file
+        still resolves beneath ``renders/``.
         """
-        output_path = self._store.get_output_path(job["id"])
-        job["audio_url"] = f"/api/jobs/{job['id']}/audio" if output_path else None
+        playable = False
+        try:
+            self._validated_job_output_path(job)
+            playable = True
+        except UserError:
+            pass
+        audio_url = f"/api/jobs/{job['id']}/audio" if playable else None
+        job["audio_url"] = audio_url
+        job["download_url"] = f"{audio_url}?download=true" if audio_url else None
+        job["download_name"] = self._render_download_name(job) if playable else None
+
+        can_retry = (
+            job["status"] in {"failed", "cancelled", "interrupted"}
+            and job["kind"] in {JobKind.IMPORT.value, JobKind.PREVIEW.value, JobKind.RENDER.value}
+        )
+        action = None
+        if can_retry:
+            action = (
+                "resume"
+                if job["kind"] == JobKind.IMPORT.value
+                and job["status"] == "interrupted"
+                and job.get("request", {}).get("source_kind") == "youtube"
+                else "retry"
+            )
+        job["recovery"] = {"can_retry": can_retry, "action": action}
         return job
+
+    @staticmethod
+    def _render_download_name(job: dict) -> str:
+        """Derive an ASCII attachment name; never use it as a filesystem path."""
+        result = job.get("result") or {}
+        display_name = result.get("display_name") or (
+            "2become1 preview" if job.get("kind") == JobKind.PREVIEW.value
+            else "2become1 mix"
+        )
+        normalized = unicodedata.normalize("NFKD", str(display_name))
+        ascii_name = normalized.encode("ascii", "ignore").decode("ascii")
+        ascii_name = re.sub(r"[\\/]+", "-", ascii_name)
+        ascii_name = re.sub(r"[^A-Za-z0-9._ -]+", "", ascii_name)
+        ascii_name = re.sub(r"\s+", " ", ascii_name).strip(" .-_")
+        if ascii_name.lower().endswith(".mp3"):
+            ascii_name = ascii_name[:-4].rstrip(" .-_")
+        if not ascii_name:
+            ascii_name = "2become1-result"
+        return f"{ascii_name[:120]}.mp3"
 
     def get_job(self, job_id: str) -> dict:
         return self._job_api_dict(self._store.get(job_id))
@@ -852,14 +908,44 @@ class StudioService:
             "storage": self.storage_usage(),
         }
 
-    def job_output_path(self, job_id: str) -> Path:
-        output_path = self._store.get_output_path(job_id)
+    def _validated_job_output_path(self, job: dict) -> Path:
+        if job["kind"] not in {JobKind.PREVIEW.value, JobKind.RENDER.value}:
+            raise ConflictError("this job does not produce a render result")
+        if job["status"] != "complete":
+            raise ConflictError("render is not complete")
+        output_path = self._store.get_output_path(job["id"])
         if output_path is None:
-            raise UserError("render is not complete")
-        path = Path(output_path)
-        if not path.is_file() or self.render_dir.resolve() not in path.resolve().parents:
-            raise UserError("render output is unavailable")
+            raise ConflictError("render output is unavailable")
+        candidate = Path(output_path)
+        if candidate.name != f"{job['id']}.mp3" or candidate.is_symlink():
+            raise ConflictError("render output is unavailable")
+        try:
+            path = media.validate_managed_path(candidate, self.render_dir)
+        except UserError:
+            raise ConflictError("render output is unavailable")
+        if not path.is_file() or path.suffix.lower() != ".mp3":
+            raise ConflictError("render output is unavailable")
         return path
+
+    def job_output_path(self, job_id: str) -> Path:
+        return self._validated_job_output_path(self._store.get(job_id))
+
+    def job_download_name(self, job_id: str) -> str:
+        job = self._store.get(job_id)
+        self._validated_job_output_path(job)
+        return self._render_download_name(job)
+
+    def rename_render_result(self, job_id: str, display_name: str) -> dict:
+        """Rename a durable completed result without renaming its opaque file."""
+        job = self._store.get(job_id)
+        self._validated_job_output_path(job)
+        name = media.sanitize_text(display_name, MAX_RENDER_DISPLAY_NAME_LEN)
+        if not name:
+            raise UserError("render name is required")
+        result = dict(job.get("result") or {})
+        result["display_name"] = name
+        self._store.update(job_id, result=result)
+        return self.get_job(job_id)
 
     # ------------------------------------------------------------------
     # Render orchestration
@@ -1061,6 +1147,7 @@ class StudioService:
         job_id: str,
         token: CancellationToken,
         options: RenderOptions,
+        result_metadata: dict[str, Any] | None = None,
     ) -> dict:
         """Perform a render; returns the engine result payload."""
         self._store.update(
@@ -1113,6 +1200,12 @@ class StudioService:
             "anchor_variant": options.anchor_variant or "full",
             "lead_variant": options.resolved_lead_variant(),
             "pitch_mode": options.pitch_mode,
+            "display_name": (
+                (result_metadata or {}).get("result_display_name")
+                or ("2become1 preview" if options.preview else "2become1 mix")
+            ),
+            "source_names": (result_metadata or {}).get("source_names"),
+            "completed_at": time.time(),
         }
         return {
             "result": result,
@@ -1120,20 +1213,64 @@ class StudioService:
             "message": "Your preview is ready" if options.preview else "Your mashup is ready",
         }
 
-    def _render_run_fn(self, options: RenderOptions):
+    def _render_run_fn(
+        self,
+        options: RenderOptions,
+        result_metadata: dict[str, Any] | None = None,
+    ):
         def run(job_id: str, token: CancellationToken) -> dict:
-            return self._run_render(job_id, token, options)
+            return self._run_render(job_id, token, options, result_metadata)
         return run
+
+    @staticmethod
+    def _render_options_from_request(request: dict[str, Any]) -> RenderOptions:
+        """Read RenderOptions from old or metadata-enriched durable requests."""
+        option_names = {field.name for field in dataclass_fields(RenderOptions)}
+        return RenderOptions(**{
+            key: value for key, value in request.items() if key in option_names
+        })
+
+    @staticmethod
+    def _render_result_metadata(request: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: request[key]
+            for key in ("result_display_name", "source_names")
+            if key in request
+        }
+
+    @staticmethod
+    def _default_render_display_name(
+        anchor_name: str,
+        lead_name: str,
+        *,
+        preview: bool,
+    ) -> str:
+        anchor = media.sanitize_text(anchor_name, 80) or "Foundation"
+        lead = media.sanitize_text(lead_name, 80) or "Lead"
+        suffix = " preview" if preview else ""
+        return media.sanitize_text(
+            f"{anchor} + {lead}{suffix}", MAX_RENDER_DISPLAY_NAME_LEN
+        )
 
     def submit_render(self, options: RenderOptions) -> dict:
         if self._closed:
             raise UserError("studio service is closed")
         options.validate()
-        self.get_track(options.anchor_id)
-        self.get_track(options.lead_id)
+        anchor = self.get_track(options.anchor_id)
+        lead = self.get_track(options.lead_id)
         kind = JobKind.PREVIEW if options.preview else JobKind.RENDER
+        metadata = {
+            "result_display_name": self._default_render_display_name(
+                anchor["name"], lead["name"], preview=options.preview,
+            ),
+            "source_names": {
+                "anchor": media.sanitize_text(anchor["name"], 200),
+                "lead": media.sanitize_text(lead["name"], 200),
+            },
+        }
+        request = {**asdict(options), **metadata}
         job = self._engine.submit(
-            kind, asdict(options), self._render_run_fn(options), executor="audio",
+            kind, request, self._render_run_fn(options, metadata), executor="audio",
         )
         return self.get_job(job["id"])
 
@@ -1150,8 +1287,11 @@ class StudioService:
         if kind == JobKind.IMPORT:
             new_job = self._engine.retry(job_id, self._import_run_fn(job["request"]))
         elif kind in {JobKind.PREVIEW, JobKind.RENDER}:
-            options = RenderOptions(**job["request"])
-            new_job = self._engine.retry(job_id, self._render_run_fn(options))
+            options = self._render_options_from_request(job["request"])
+            metadata = self._render_result_metadata(job["request"])
+            new_job = self._engine.retry(
+                job_id, self._render_run_fn(options, metadata)
+            )
         else:
             raise UserError(f"retry is not yet supported for {kind.value} jobs")
         return self.get_job(new_job["id"])
