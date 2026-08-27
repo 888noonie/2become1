@@ -64,6 +64,16 @@ test('RenderBody is an exact backend allowlist and Preview 12s never exceeds twe
     anchor_variant: 'center',
     lead_variant: 'vocals',
     pitch_mode: 'preserve',
+    tempo_mode: 'foundation',
+    target_bpm: null,
+    arrangement_mode: 'overlay',
+    transition_start: 0,
+    crossfade_duration: 0,
+    crossfade_curve: 'equal_power',
+    anchor_pan: 0,
+    lead_pan: 0,
+    anchor_eq: { low: 0, mid: 0, high: 0 },
+    lead_eq: { low: 0, mid: 0, high: 0 },
   });
   assert.equal(Object.hasOwn(full, 'snap'), false);
   assert.equal(Object.hasOwn(full, 'hostile_ui_only'), false);

@@ -30,6 +30,17 @@ CENTER_SIDE_VARIANTS = ("center", "sides")
 ALL_VARIANTS = (FULL_VARIANT,) + DEMUCS_VARIANTS + CENTER_SIDE_VARIANTS
 
 PITCH_MODES = ("preserve", "match")
+TEMPO_MODES = ("foundation", "lead", "custom")
+ARRANGEMENT_MODES = ("overlay", "transition")
+CROSSFADE_CURVES = ("equal_power", "linear")
+EQ_BANDS = ("low", "mid", "high")
+
+# Supported analysis-override BPM range (shared with the custom tempo target).
+MIN_BPM = 20.0
+MAX_BPM = 400.0
+
+# Fixed musical EQ bands: low shelf ~120 Hz, mid bell 1 kHz, high shelf 8 kHz.
+EQ_BAND_FREQ = {"low": 120.0, "mid": 1000.0, "high": 8000.0}
 
 # Settings keys the project stores, with their validation rules.
 _SETTINGS_KEYS = {
@@ -40,6 +51,16 @@ _SETTINGS_KEYS = {
     "lead_gain": "gain",
     "snap": "bool",
     "pitch_mode": "pitch_mode",
+    "tempo_mode": "tempo_mode",
+    "target_bpm": "target_bpm",
+    "arrangement_mode": "arrangement_mode",
+    "transition_start": "cue",
+    "crossfade_duration": "crossfade_duration",
+    "crossfade_curve": "crossfade_curve",
+    "anchor_pan": "pan",
+    "lead_pan": "pan",
+    "anchor_eq": "eq",
+    "lead_eq": "eq",
 }
 
 MAX_PROJECT_NAME_LEN = 200
@@ -69,12 +90,42 @@ def _finite(value: Any, name: str) -> float:
     return value
 
 
+def _finite_number(value: Any, name: str) -> float:
+    """Strict finite numeric: rejects booleans and string coercions.
+
+    Used for the mixer fields so that ``True`` or ``"3"`` is never silently
+    accepted as a numeric value.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise UserError(f"{name} must be a number")
+    if not math.isfinite(value):
+        raise UserError(f"{name} must be finite")
+    return float(value)
+
+
+def _validate_eq(value: Any, name: str) -> dict[str, float]:
+    if not isinstance(value, dict):
+        raise UserError(f"{name} must be an object with low, mid, and high")
+    if set(value.keys()) != set(EQ_BANDS):
+        raise UserError(f"{name} must contain exactly the keys: low, mid, high")
+    out: dict[str, float] = {}
+    for band in EQ_BANDS:
+        v = _finite_number(value[band], f"{name}.{band}")
+        if not -12 <= v <= 12:
+            raise UserError(f"{name}.{band} must be between -12 and 12 dB")
+        out[band] = v
+    return out
+
+
 def validate_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalize a project settings blob.
 
     Unknown keys are rejected. Cues/duration/gains must be finite and
-    range-safe; ``snap`` must be a boolean; ``pitch_mode`` must be a known
-    enum. Returns a normalized copy.
+    range-safe; ``snap`` must be a boolean; ``pitch_mode``, ``tempo_mode``,
+    ``arrangement_mode``, and ``crossfade_curve`` must be known enums; ``pan``
+    must be in -1..1; EQ must be strict low/mid/high objects within -12..12 dB.
+    ``target_bpm`` is only valid in custom tempo mode and must be in range.
+    Returns a normalized copy.
     """
     if not isinstance(settings, dict):
         raise UserError("settings must be an object")
@@ -110,6 +161,49 @@ def validate_settings(settings: dict[str, Any]) -> dict[str, Any]:
             if value not in PITCH_MODES:
                 raise UserError(f"{key} must be one of: {', '.join(PITCH_MODES)}")
             normalized[key] = value
+        elif kind == "tempo_mode":
+            if value not in TEMPO_MODES:
+                raise UserError(f"{key} must be one of: {', '.join(TEMPO_MODES)}")
+            normalized[key] = value
+        elif kind == "target_bpm":
+            if value is None:
+                normalized[key] = None
+                continue
+            v = _finite_number(value, key)
+            if not MIN_BPM <= v <= MAX_BPM:
+                raise UserError(f"{key} must be between {MIN_BPM} and {MAX_BPM} BPM")
+            normalized[key] = v
+        elif kind == "arrangement_mode":
+            if value not in ARRANGEMENT_MODES:
+                raise UserError(f"{key} must be one of: {', '.join(ARRANGEMENT_MODES)}")
+            normalized[key] = value
+        elif kind == "crossfade_duration":
+            v = _finite_number(value, key)
+            if not 0 <= v <= 30:
+                raise UserError(f"{key} must be between 0 and 30 seconds")
+            normalized[key] = v
+        elif kind == "crossfade_curve":
+            if value not in CROSSFADE_CURVES:
+                raise UserError(f"{key} must be one of: {', '.join(CROSSFADE_CURVES)}")
+            normalized[key] = value
+        elif kind == "pan":
+            v = _finite_number(value, key)
+            if not -1 <= v <= 1:
+                raise UserError(f"{key} must be between -1 and 1")
+            normalized[key] = v
+        elif kind == "eq":
+            normalized[key] = _validate_eq(value, key)
+
+    # Cross-field rule: custom tempo requires a target; a non-custom tempo with
+    # a target is contradictory.
+    tempo_mode = normalized.get("tempo_mode", "foundation")
+    target_bpm = normalized.get("target_bpm")
+    if target_bpm is not None:
+        if tempo_mode != "custom":
+            raise UserError("target_bpm is only valid when tempo_mode is 'custom'")
+    elif tempo_mode == "custom":
+        raise UserError("tempo_mode 'custom' requires a target_bpm")
+
     return normalized
 
 

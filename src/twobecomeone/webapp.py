@@ -19,7 +19,7 @@ from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import __version__
 from .common import UserError
@@ -28,6 +28,8 @@ from .studio import RenderOptions, StudioService
 
 
 class RenderBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     anchor_id: str
     lead_id: str
     anchor_start: float = Field(default=0.0, ge=0)
@@ -41,6 +43,54 @@ class RenderBody(BaseModel):
     anchor_variant: str | None = None
     lead_variant: str | None = None
     pitch_mode: Literal["preserve", "match"] = "match"
+    tempo_mode: Literal["foundation", "lead", "custom"] = "foundation"
+    target_bpm: float | None = Field(default=None, ge=20, le=400)
+    arrangement_mode: Literal["overlay", "transition"] = "overlay"
+    transition_start: float = Field(default=0.0, ge=0)
+    crossfade_duration: float = Field(default=0.0, ge=0, le=30)
+    crossfade_curve: Literal["equal_power", "linear"] = "equal_power"
+    anchor_pan: float = Field(default=0.0, ge=-1, le=1)
+    lead_pan: float = Field(default=0.0, ge=-1, le=1)
+    anchor_eq: dict[str, float] | None = None
+    lead_eq: dict[str, float] | None = None
+
+    @field_validator(
+        "anchor_start", "lead_start", "duration", "anchor_gain", "lead_gain",
+        "target_bpm", "transition_start", "crossfade_duration", "anchor_pan",
+        "lead_pan", mode="before",
+    )
+    @classmethod
+    def reject_coerced_numbers(cls, value, info):
+        if value is None and info.field_name in {"duration", "target_bpm"}:
+            return value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{info.field_name} must be a number")
+        return value
+
+    @field_validator("anchor_eq", "lead_eq", mode="before")
+    @classmethod
+    def validate_eq_shape(cls, value, info):
+        if value is None:
+            return {"low": 0.0, "mid": 0.0, "high": 0.0}
+        if not isinstance(value, dict) or set(value) != {"low", "mid", "high"}:
+            raise ValueError(f"{info.field_name} must contain exactly low, mid, and high")
+        normalized = {}
+        for band in ("low", "mid", "high"):
+            number = value[band]
+            if isinstance(number, bool) or not isinstance(number, (int, float)):
+                raise ValueError(f"{info.field_name}.{band} must be a number")
+            if not -12 <= number <= 12:
+                raise ValueError(f"{info.field_name}.{band} must be between -12 and 12 dB")
+            normalized[band] = float(number)
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_tempo_target(self):
+        if self.tempo_mode == "custom" and self.target_bpm is None:
+            raise ValueError("tempo_mode 'custom' requires target_bpm")
+        if self.tempo_mode != "custom" and self.target_bpm is not None:
+            raise ValueError("target_bpm is only valid when tempo_mode is 'custom'")
+        return self
 
 
 class TrackImportBody(BaseModel):

@@ -116,12 +116,23 @@ test('planRender dispatches verified render plan from server', async () => {
       return jsonResponse({
         tempo_ratio: 1.15,
         bpm_change_percent: 15.0,
+        anchor_tempo_ratio: 1.0,
+        lead_tempo_ratio: 1.15,
+        anchor_bpm_change_percent: 0.0,
+        lead_bpm_change_percent: 15.0,
+        output_bpm: 140.0,
+        tempo_mode: 'foundation',
         semitone_shift: -2,
         anchor_key: 'A min',
         lead_key: 'C min',
         anchor_variant: 'full',
         lead_variant: 'vocals',
         pitch_mode: 'match',
+        arrangement_mode: 'overlay',
+        transition: { start: 0, crossfade_duration: 0, crossfade_curve: 'equal_power' },
+        channel: { anchor: { gain: 0.8, pan: 0, eq: { low: 0, mid: 0, high: 0 } }, lead: { gain: 0.9, pan: 0, eq: { low: 0, mid: 0, high: 0 } } },
+        sources: { anchor: { output_start: 0, source_start: 0, source_consumed: 30 }, lead: { output_start: 0, source_start: 0, source_consumed: 34.5 } },
+        duration: { requested: 30, available: 30, output: 30.0 },
         output_duration: 30.0,
         warnings: ['High tempo shift'],
       });
@@ -143,9 +154,12 @@ test('planRender dispatches verified render plan from server', async () => {
 
   const text = container.textContent;
   assert.ok(text.includes('Exact Render Plan'));
-  assert.ok(text.includes('1.150x (+15.0%)'));
+  assert.ok(text.includes('1.150x') && text.includes('+15.0%'), 'shows lead stretch ratio and percent');
   assert.ok(text.includes('-2 semitones'));
   assert.ok(text.includes('High tempo shift'));
+  assert.ok(text.includes('140.0 BPM'), 'shows output BPM');
+  assert.equal(container.querySelector('.plan-clock__bar--anchor').style.left, '0%');
+  assert.equal(container.querySelector('.plan-clock__bar--lead').style.width, '100%');
 
   dispose();
 });

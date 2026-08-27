@@ -88,9 +88,68 @@ class MashSpec:
     lead_path: Path
     lead_gain: float = 0.8
     anchor_gain: float = 0.8
+    anchor_pan: float = 0.0
+    lead_pan: float = 0.0
+    anchor_eq: dict[str, float] | None = None  # {"low","mid","high"} dB trims
+    lead_eq: dict[str, float] | None = None
     anchor_start: float = 0.0
     lead_start: float = 0.0
     duration: float | None = None  # None = render until shorter input ends
+
+    def __post_init__(self) -> None:
+        if self.anchor_eq is None:
+            self.anchor_eq = {"low": 0.0, "mid": 0.0, "high": 0.0}
+        if self.lead_eq is None:
+            self.lead_eq = {"low": 0.0, "mid": 0.0, "high": 0.0}
+
+
+def _eq_filter(role_eq: dict[str, float]) -> list[str]:
+    """Return allowlisted EQ filter graphs for the fixed musical bands.
+
+    low/high use shelves; mid uses a bell. Values are validated floats in
+    -12..12 dB. Never accepts client-supplied filter expressions.
+    """
+    if not isinstance(role_eq, dict) or set(role_eq) != {"low", "mid", "high"}:
+        raise UserError("EQ must contain exactly low, mid, and high trims")
+    low = float(role_eq["low"])
+    mid = float(role_eq["mid"])
+    high = float(role_eq["high"])
+    for v in (low, mid, high):
+        if not math.isfinite(v) or not -12 <= v <= 12:
+            raise UserError("EQ trims must be finite and between -12 and 12 dB")
+    filters: list[str] = []
+    if low:
+        filters.append(f"bass=g={low:.3f}:f=120")
+    if mid:
+        filters.append(f"equalizer=f=1000:t=q:w=1:g={mid:.3f}")
+    if high:
+        filters.append(f"treble=g={high:.3f}:f=8000")
+    return filters
+
+
+def _pan_filter(pan: float) -> list[str] | None:
+    """Equal-power-ish pan for -1..1 (0 = center, -1 = left, +1 = right)."""
+    if not math.isfinite(pan) or not -1 <= pan <= 1:
+        raise UserError("pan must be finite and between -1 and 1")
+    if abs(pan) < 1e-9:
+        return None
+    left_gain = 1.0 - max(0.0, pan)
+    right_gain = 1.0 + min(0.0, pan)
+    return [f"pan=stereo|c0={left_gain:.6f}*c0|c1={right_gain:.6f}*c1"]
+
+
+def _channel_chain(role_eq: dict[str, float], pan: float, gain: float) -> list[str]:
+    """Deterministic channel order: EQ → pan → gain."""
+    chain: list[str] = []
+    chain.extend(_eq_filter(role_eq))
+    pan_f = _pan_filter(pan)
+    if pan_f:
+        chain.extend(pan_f)
+    if not math.isfinite(gain) or gain < 0 or gain > 2:
+        raise UserError("gain must be finite and between 0 and 2")
+    if abs(gain - 1.0) > 1e-9:
+        chain.append(f"volume={gain:.6f}")
+    return chain
 
 
 def _atempo_chain(ratio: float) -> list[str]:
@@ -158,62 +217,204 @@ def render_aligned(path: str, out: Path, tempo_ratio: float,
     return out
 
 
-def build_mash(spec: MashSpec, tempo_ratio: float, semitone_shift: int,
-               out: str) -> Path:
-    """Align the lead to the anchor's tempo/key and mix them."""
-    out_path = Path(out)
+def build_mash(
+    spec: MashSpec,
+    tempo_ratio: float | None = None,
+    semitone_shift: int = 0,
+    out: str | None = None,
+    *,
+    anchor_tempo_ratio: float | None = None,
+    lead_tempo_ratio: float | None = None,
+    arrangement_mode: str = "overlay",
+    transition_start: float = 0.0,
+    crossfade_duration: float = 0.0,
+    crossfade_curve: str = "equal_power",
+) -> Path:
+    """Align both sources to the output BPM and mix them into ``out``.
+
+    ``tempo_ratio`` (positional) preserves the V0.3 lead-only signature: when
+    the keyword ratios are omitted, the Foundation is not stretched
+    (``anchor_tempo_ratio = 1.0``) and ``tempo_ratio`` is the Lead ratio.
+    In ``transition`` mode the Foundation starts at output time zero and the
+    Lead at ``transition_start``, with a crossfade of ``crossfade_duration``
+    (zero = hard cut). Every source is processed as EQ → pan → gain before
+    mixing, then passed through the shared loudness / true-peak limiter.
+    """
+    if arrangement_mode not in {"overlay", "transition"}:
+        raise UserError(f"unknown arrangement mode: {arrangement_mode}")
+    if crossfade_curve not in {"equal_power", "linear"}:
+        raise UserError(f"unknown crossfade curve: {crossfade_curve}")
+
+    # Resolve ratios: keyword ratios take precedence; otherwise treat the
+    # positional tempo_ratio as the legacy Lead-only ratio.
+    if anchor_tempo_ratio is None:
+        anchor_tempo_ratio = 1.0
+    if lead_tempo_ratio is None:
+        if tempo_ratio is None:
+            raise UserError("a tempo ratio is required")
+        lead_tempo_ratio = tempo_ratio
+    for ratio in (anchor_tempo_ratio, lead_tempo_ratio):
+        if not math.isfinite(ratio) or ratio <= 0:
+            raise UserError(f"invalid tempo ratio: {ratio}")
+
+    out_path = Path(out) if out else Path("mash.mp3")
     anchor_duration = _ffprobe_duration(str(spec.anchor_path))
     lead_duration = _ffprobe_duration(str(spec.lead_path))
 
     if spec.anchor_start < 0 or spec.lead_start < 0:
         raise UserError("start offsets must be non-negative")
+    if transition_start < 0:
+        raise UserError("transition_start must be non-negative")
+    if not 0 <= crossfade_duration <= 30:
+        raise UserError("crossfade_duration must be between 0 and 30 seconds")
+    lead_source_available = lead_duration - spec.lead_start
+    if lead_source_available <= 0:
+        raise UserError("the Lead cue is at or beyond the end of its source")
 
     render_duration = spec.duration
     if render_duration is None:
-        # Render until the shorter available region ends.
-        available = min(anchor_duration - spec.anchor_start,
-                        (lead_duration - spec.lead_start) / tempo_ratio)
-        render_duration = max(0.0, available)
+        # Render until the shorter available aligned region ends.
+        anchor_available = (anchor_duration - spec.anchor_start) / anchor_tempo_ratio
+        if arrangement_mode == "transition":
+            lead_available = transition_start + lead_source_available / lead_tempo_ratio
+        else:
+            lead_available = lead_source_available / lead_tempo_ratio
+        render_duration = max(
+            0.0,
+            lead_available if arrangement_mode == "transition"
+            else min(anchor_available, lead_available),
+        )
     if render_duration <= 0:
         raise UserError("requested mash duration is zero or negative")
 
-    # The lead must be trimmed to render_duration * tempo_ratio before stretching,
-    # so that after time-stretching it fills exactly render_duration.
-    lead_trim_duration = render_duration * tempo_ratio
+    # In transition mode the Foundation must cover the transition crossfade.
+    if arrangement_mode == "transition":
+        anchor_available = (anchor_duration - spec.anchor_start) / anchor_tempo_ratio
+        if anchor_available < transition_start + crossfade_duration - 1e-6:
+            raise UserError(
+                "transition is impossible: the foundation does not have enough "
+                "aligned audio to reach the end of the crossfade"
+            )
+
+    # Each source must be trimmed to `aligned_region * ratio` source-time so
+    # that after time-stretching it fills exactly its aligned output region.
+    anchor_output_duration = render_duration
+    if arrangement_mode == "transition":
+        anchor_output_duration = min(
+            render_duration, transition_start + crossfade_duration,
+        )
+    anchor_trim_duration = anchor_output_duration * anchor_tempo_ratio
+    if arrangement_mode == "transition":
+        lead_region = max(0.0, render_duration - transition_start)
+    else:
+        lead_region = render_duration
+    lead_trim_duration = lead_region * lead_tempo_ratio
+    fade_curve = "qsin" if crossfade_curve == "equal_power" else "tri"
+    lead_only_transition = (
+        arrangement_mode == "transition"
+        and transition_start == 0
+        and crossfade_duration == 0
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
-        lead = render_aligned(spec.lead_path, Path(tmp) / "lead_aligned.wav",
-                              tempo_ratio, semitone_shift,
-                              start=spec.lead_start, duration=lead_trim_duration)
-        anchor_trimmed = Path(tmp) / "anchor_trimmed.wav"
-        cmd_a = [
-            "ffmpeg", "-y", "-v", "error",
-            *_trim_args(spec.anchor_start, render_duration),
-            "-i", str(spec.anchor_path),
-            "-ar", "44100", "-ac", "2", str(anchor_trimmed),
-        ]
-        proc = subprocess.run(cmd_a, capture_output=True)
-        if proc.returncode != 0:
-            raise UserError(f"anchor trim failed: {proc.stderr.decode()[:400]}")
+        # Aligned + channel-processed Foundation.
+        anchor_proc: Path | None = None
+        if not lead_only_transition:
+            anchor = render_aligned(
+                str(spec.anchor_path), Path(tmp) / "anchor_aligned.wav",
+                anchor_tempo_ratio, 0,  # Foundation pitch is never shifted
+                start=spec.anchor_start, duration=anchor_trim_duration,
+            )
+            anchor_eq = spec.anchor_eq or {"low": 0.0, "mid": 0.0, "high": 0.0}
+            anchor_chain = _channel_chain(anchor_eq, spec.anchor_pan, spec.anchor_gain)
+            anchor_proc = Path(tmp) / "anchor_proc.wav"
+            if anchor_chain:
+                _run_simple_filter(anchor, anchor_proc, ",".join(anchor_chain))
+            else:
+                anchor_proc = anchor
 
-        # Mix with headroom, then use loudnorm's true-peak limiting stage.
+        # Aligned + key-shifted + channel-processed Lead.
+        lead_proc: Path | None = None
+        if lead_trim_duration > 0:
+            lead = render_aligned(
+                str(spec.lead_path), Path(tmp) / "lead_aligned.wav",
+                lead_tempo_ratio, semitone_shift,
+                start=spec.lead_start, duration=lead_trim_duration,
+            )
+            lead_eq = spec.lead_eq or {"low": 0.0, "mid": 0.0, "high": 0.0}
+            lead_chain = _channel_chain(lead_eq, spec.lead_pan, spec.lead_gain)
+            lead_proc = Path(tmp) / "lead_proc.wav"
+            if lead_chain:
+                _run_simple_filter(lead, lead_proc, ",".join(lead_chain))
+            else:
+                lead_proc = lead
+
+        # Build the mix. Overlay mixes both from time zero. Transition places
+        # the lead at transition_start and applies the crossfade envelope.
+        pre_mix: list[str] = []
+        if lead_only_transition:
+            pre_mix.append("[0:a]anull[mix]")
+        elif arrangement_mode == "transition" and lead_proc is None:
+            pre_mix.append(
+                f"[0:a]atrim=duration={render_duration:.6f}[mix]"
+            )
+        elif arrangement_mode == "transition":
+            delay_ms = int(round(transition_start * 1000.0))
+            if crossfade_duration > 0:
+                # Foundation fades out / Lead fades in over the crossfade.
+                pre_mix.append(
+                    f"[0:a]afade=t=out:st={transition_start:.6f}:"
+                    f"d={crossfade_duration:.6f}:curve={fade_curve}[a]"
+                )
+                pre_mix.append(
+                    f"[1:a]afade=t=in:st=0:d={crossfade_duration:.6f}:"
+                    f"curve={fade_curve},adelay={delay_ms}:all=1[l]"
+                )
+                pre_mix.append("[a][l]amix=inputs=2:duration=longest:normalize=0[mix]")
+            else:
+                # Hard cut: Foundation ends exactly where the delayed Lead starts.
+                if transition_start > 0:
+                    pre_mix.append(
+                        f"[0:a]atrim=duration={transition_start:.6f}[a]"
+                    )
+                    pre_mix.append(f"[1:a]adelay={delay_ms}:all=1[l]")
+                    pre_mix.append("[a][l]amix=inputs=2:duration=longest:normalize=0[mix]")
+        else:
+            pre_mix.append("[0:a][1:a]amix=inputs=2:duration=first:normalize=0[mix]")
+        complex_graph = ";".join(pre_mix)
+
+        filter_complex = (
+            f"{complex_graph};[mix]atrim=duration={render_duration:.6f},"
+            "loudnorm=I=-16:TP=-1.5:LRA=11[limited]"
+        )
+
         cmd = [
             "ffmpeg", "-y", "-v", "error",
-            "-i", str(anchor_trimmed),
-            "-i", str(lead),
-            "-filter_complex",
-            f"[0:a]volume={spec.anchor_gain}[a];"
-            f"[1:a]volume={spec.lead_gain}[l];"
-            "[a][l]amix=inputs=2:duration=first:normalize=0[mix];"
-            "[mix]loudnorm=I=-16:TP=-1.5:LRA=11[limited]",
+            *( ["-i", str(anchor_proc)] if anchor_proc is not None else [] ),
+            *( ["-i", str(lead_proc)] if lead_proc is not None else [] ),
+            "-filter_complex", filter_complex,
             "-map", "[limited]",
             "-ar", "44100", "-ac", "2",
-            str(out),
+            str(out_path),
         ]
         proc = subprocess.run(cmd, capture_output=True)
         if proc.returncode != 0:
             raise UserError(f"mash failed: {proc.stderr.decode()[:500]}")
     return out_path
+
+
+def _run_simple_filter(src: Path, out: Path, filter_expr: str) -> None:
+    """Apply a validated audio filter chain to ``src`` producing ``out``."""
+    cmd = [
+        "ffmpeg", "-y", "-v", "error",
+        "-i", str(src),
+        "-af", filter_expr,
+        "-ar", "44100", "-ac", "2",
+        str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0:
+        raise UserError(f"channel filter failed: {proc.stderr.decode()[:400]}")
 
 
 def measure_clipping(path: str) -> dict:

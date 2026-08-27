@@ -6,13 +6,41 @@ const VARIANTS = new Set([
   'full', 'vocals', 'drums', 'bass', 'other', 'center', 'sides',
 ]);
 const PITCH_MODES = new Set(['match', 'preserve']);
+const TEMPO_MODES = new Set(['foundation', 'lead', 'custom']);
+const ARRANGEMENT_MODES = new Set(['overlay', 'transition']);
+const CURVES = new Set(['equal_power', 'linear']);
+const EQ_BANDS = ['low', 'mid', 'high'];
 
 function finiteNumber(value, fallback, label, { min = -Infinity, max = Infinity } = {}) {
-  const number = value == null ? fallback : Number(value);
+  const number = value == null ? fallback : value;
+  if (typeof number !== 'number') {
+    throw new Error(`${label} is invalid; save a valid project value before rendering.`);
+  }
   if (!Number.isFinite(number) || number < min || number > max) {
     throw new Error(`${label} is invalid; save a valid project value before rendering.`);
   }
   return number;
+}
+
+function validEq(value) {
+  if (value == null) return { low: 0, mid: 0, high: 0 };
+  if (
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== EQ_BANDS.length ||
+    !EQ_BANDS.every((band) => Object.hasOwn(value, band))
+  ) {
+    throw new Error('EQ settings are invalid; save a valid project value before rendering.');
+  }
+  const out = {};
+  for (const band of EQ_BANDS) {
+    const v = value[band];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < -12 || v > 12) {
+      throw new Error('EQ settings are invalid; save a valid project value before rendering.');
+    }
+    out[band] = v;
+  }
+  return out;
 }
 
 /**
@@ -34,12 +62,28 @@ export function buildRenderBody(project, { preview = false } = {}) {
   const anchorVariant = project.anchor_variant || 'full';
   const leadVariant = project.lead_variant || 'full';
   const pitchMode = settings.pitch_mode || 'match';
+  const tempoMode = settings.tempo_mode || 'foundation';
+  const arrangementMode = settings.arrangement_mode || 'overlay';
+  const curve = settings.crossfade_curve || 'equal_power';
   if (!VARIANTS.has(anchorVariant) || !VARIANTS.has(leadVariant)) {
     throw new Error('The selected source variant is invalid; choose it again.');
   }
   if (!PITCH_MODES.has(pitchMode)) {
     throw new Error('The saved pitch mode is invalid; choose it again.');
   }
+  if (!TEMPO_MODES.has(tempoMode)) {
+    throw new Error('The saved output BPM mode is invalid; choose it again.');
+  }
+  if (!ARRANGEMENT_MODES.has(arrangementMode)) {
+    throw new Error('The saved arrangement mode is invalid; choose it again.');
+  }
+  if (!CURVES.has(curve)) {
+    throw new Error('The saved crossfade curve is invalid; choose it again.');
+  }
+
+  const targetBpm = tempoMode === 'custom'
+    ? finiteNumber(settings.target_bpm, null, 'Target BPM', { min: 20, max: 400 })
+    : null;
 
   return {
     anchor_id: project.anchor_track_id,
@@ -53,6 +97,16 @@ export function buildRenderBody(project, { preview = false } = {}) {
     anchor_variant: anchorVariant,
     lead_variant: leadVariant,
     pitch_mode: pitchMode,
+    tempo_mode: tempoMode,
+    target_bpm: targetBpm,
+    arrangement_mode: arrangementMode,
+    transition_start: finiteNumber(settings.transition_start, 0, 'Transition start', { min: 0 }),
+    crossfade_duration: finiteNumber(settings.crossfade_duration, 0, 'Crossfade duration', { min: 0, max: 30 }),
+    crossfade_curve: curve,
+    anchor_pan: finiteNumber(settings.anchor_pan, 0, 'Foundation pan', { min: -1, max: 1 }),
+    lead_pan: finiteNumber(settings.lead_pan, 0, 'Lead pan', { min: -1, max: 1 }),
+    anchor_eq: validEq(settings.anchor_eq),
+    lead_eq: validEq(settings.lead_eq),
   };
 }
 

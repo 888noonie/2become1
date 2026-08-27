@@ -21,7 +21,7 @@ import sqlite3
 import time
 import unicodedata
 import uuid
-from dataclasses import asdict, dataclass, fields as dataclass_fields
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -87,6 +87,19 @@ class RenderOptions:
     anchor_variant: str | None = None
     lead_variant: str | None = None
     pitch_mode: str = "match"
+    # Phase 6.5 tempo target
+    tempo_mode: str = "foundation"
+    target_bpm: float | None = None
+    # Phase 6.5 arrangement
+    arrangement_mode: str = "overlay"
+    transition_start: float = 0.0
+    crossfade_duration: float = 0.0
+    crossfade_curve: str = "equal_power"
+    # Phase 6.5 channel controls
+    anchor_pan: float = 0.0
+    lead_pan: float = 0.0
+    anchor_eq: dict[str, float] | None = field(default_factory=lambda: {"low": 0.0, "mid": 0.0, "high": 0.0})
+    lead_eq: dict[str, float] | None = field(default_factory=lambda: {"low": 0.0, "mid": 0.0, "high": 0.0})
 
     def validate(self) -> None:
         numeric = {
@@ -94,22 +107,54 @@ class RenderOptions:
             "lead_start": self.lead_start,
             "anchor_gain": self.anchor_gain,
             "lead_gain": self.lead_gain,
+            "anchor_pan": self.anchor_pan,
+            "lead_pan": self.lead_pan,
+            "transition_start": self.transition_start,
+            "crossfade_duration": self.crossfade_duration,
         }
         if self.duration is not None:
             numeric["duration"] = self.duration
+        if self.target_bpm is not None:
+            numeric["target_bpm"] = self.target_bpm
         for name, value in numeric.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise UserError(f"{name} must be a number")
             if not math.isfinite(value):
                 raise UserError(f"{name} must be finite")
         if self.anchor_start < 0 or self.lead_start < 0:
             raise UserError("start offsets must be non-negative")
+        if self.transition_start < 0:
+            raise UserError("transition_start must be non-negative")
+        if not 0 <= self.crossfade_duration <= 30:
+            raise UserError("crossfade_duration must be between 0 and 30 seconds")
         if self.duration is not None and self.duration <= 0:
             raise UserError("duration must be greater than zero")
         if not 0 <= self.anchor_gain <= 2 or not 0 <= self.lead_gain <= 2:
             raise UserError("gains must be between 0 and 2")
+        if not -1 <= self.anchor_pan <= 1 or not -1 <= self.lead_pan <= 1:
+            raise UserError("pan must be between -1 and 1")
         if self.stem_method not in {"auto", "demucs", "ffmpeg"}:
             raise UserError(f"unknown stem method: {self.stem_method}")
         if self.pitch_mode not in {"preserve", "match"}:
             raise UserError(f"unknown pitch mode: {self.pitch_mode}")
+        if self.tempo_mode not in {"foundation", "lead", "custom"}:
+            raise UserError(f"unknown tempo mode: {self.tempo_mode}")
+        if self.arrangement_mode not in {"overlay", "transition"}:
+            raise UserError(f"unknown arrangement mode: {self.arrangement_mode}")
+        if self.crossfade_curve not in {"equal_power", "linear"}:
+            raise UserError(f"unknown crossfade curve: {self.crossfade_curve}")
+        if self.tempo_mode == "custom":
+            if self.target_bpm is None:
+                raise UserError("tempo_mode 'custom' requires a target_bpm")
+            if not projects.MIN_BPM <= self.target_bpm <= projects.MAX_BPM:
+                raise UserError(
+                    f"target_bpm must be between {projects.MIN_BPM} and {projects.MAX_BPM}"
+                )
+        elif self.target_bpm is not None:
+            raise UserError("target_bpm is only valid when tempo_mode is 'custom'")
+        # Validate per-channel EQ objects strictly (never client-supplied filters).
+        self._validated_eq(self.anchor_eq, "anchor_eq")
+        self._validated_eq(self.lead_eq, "lead_eq")
         # Reject contradictory legacy + explicit variant payloads.
         if self.use_vocals and self.lead_variant not in (None, "vocals"):
             raise UserError("use_vocals conflicts with lead_variant; use one or the other")
@@ -118,11 +163,43 @@ class RenderOptions:
         if self.lead_variant is not None:
             projects.validate_variant(self.lead_variant)
 
+    @staticmethod
+    def _validated_eq(value, name: str) -> None:
+        if not isinstance(value, dict) or set(value.keys()) != {"low", "mid", "high"}:
+            raise UserError(f"{name} must be an object with low, mid, and high")
+        for band in ("low", "mid", "high"):
+            v = value[band]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                raise UserError(f"{name}.{band} must be a finite number")
+            if not -12 <= v <= 12:
+                raise UserError(f"{name}.{band} must be between -12 and 12 dB")
+
     def resolved_lead_variant(self) -> str:
         """Map legacy ``use_vocals`` to an explicit lead variant."""
         if self.lead_variant is not None:
             return self.lead_variant
         return "vocals" if self.use_vocals else "full"
+
+    def channel_eq(self, role: str) -> dict[str, float]:
+        """Return a normalized EQ dict for a role with all bands present."""
+        raw = self.anchor_eq if role == "anchor" else self.lead_eq
+        if raw is None:
+            raw = {"low": 0.0, "mid": 0.0, "high": 0.0}
+        return {band: float(raw[band]) for band in ("low", "mid", "high")}
+
+    def channel_pan(self, role: str) -> float:
+        return float(self.anchor_pan if role == "anchor" else self.lead_pan)
+
+    def channel_gain(self, role: str) -> float:
+        return float(self.anchor_gain if role == "anchor" else self.lead_gain)
+
+    def __post_init__(self) -> None:
+        """Normalize omitted EQ blobs without sanitizing malformed payloads."""
+        for role in ("anchor", "lead"):
+            raw = self.anchor_eq if role == "anchor" else self.lead_eq
+            if raw is None:
+                norm = {"low": 0.0, "mid": 0.0, "high": 0.0}
+                object.__setattr__(self, f"{role}_eq", norm)
 
 
 class StudioService:
@@ -965,8 +1042,9 @@ class StudioService:
     def _compute_arrangement(self, options: RenderOptions):
         """Internal shared planning result.
 
-        Returns an ArrangementPlan exposing tempo_ratio, semitone_shift,
-        duration, anchor_path, lead_path, and an API dict. Preview capping is
+        Returns an ArrangementPlan exposing both tempo ratios, semitone shift,
+        output duration, arrangement/transition facts, per-channel controls,
+        the resolved anchor/lead paths, and an API dict. Preview capping is
         applied here so the read-only plan matches the actual render.
         """
         options.validate()
@@ -1000,7 +1078,25 @@ class StudioService:
         if lead_variant != "full" and lead_info is None:
             raise UserError(f"stem variant '{lead_variant}' is not available for this track")
 
-        tempo_ratio = float(anchor["bpm"]) / float(lead["bpm"])
+        anchor_effective_bpm = float(anchor["bpm"])
+        lead_effective_bpm = float(lead["bpm"])
+
+        # Resolve the explicit output BPM target and both per-source ratios.
+        if options.tempo_mode == "custom":
+            if options.target_bpm is None:
+                # validate() rejects this; guard for the type checker.
+                raise UserError("tempo_mode 'custom' requires a target_bpm")
+            output_bpm = options.target_bpm
+        elif options.tempo_mode == "lead":
+            output_bpm = lead_effective_bpm
+        else:  # foundation (default)
+            output_bpm = anchor_effective_bpm
+        output_bpm = float(output_bpm)
+        anchor_tempo_ratio = output_bpm / anchor_effective_bpm
+        lead_tempo_ratio = output_bpm / lead_effective_bpm
+        # Backward-compatible alias: the old "tempo_ratio" was the Lead ratio.
+        tempo_ratio = lead_tempo_ratio
+
         anchor_key = f"{anchor['key']['tonic']} {anchor['key']['mode']}"
         lead_key = f"{lead['key']['tonic']} {lead['key']['mode']}"
         semitone_shift = (
@@ -1008,14 +1104,38 @@ class StudioService:
             else assembler.semitones_to_match(anchor_key, lead_key)
         )
 
-        # Mirror build_mash's duration derivation from stored durations.
-        anchor_available = float(anchor["duration"]) - options.anchor_start
-        lead_available = (float(lead["duration"]) - options.lead_start) / tempo_ratio
-        available = max(0.0, min(anchor_available, lead_available))
+        # Arrangement placement and duration derivation.
+        arrangement = options.arrangement_mode
+        transition_start = options.transition_start
+        crossfade_duration = options.crossfade_duration
+
+        anchor_available_out = (float(anchor["duration"]) - options.anchor_start) / anchor_tempo_ratio
+        lead_available_out = (float(lead["duration"]) - options.lead_start) / lead_tempo_ratio
+        if lead_available_out <= 0:
+            raise UserError("the Lead cue is at or beyond the end of its source")
         requested = options.duration
+
+        if arrangement == "transition":
+            anchor_output_start = 0.0
+            lead_output_start = transition_start
+            # The foundation must have enough aligned material to reach the end
+            # of the crossfade; otherwise the transition is impossible and must
+            # be rejected, never silently moved.
+            if anchor_available_out < transition_start + crossfade_duration - 1e-6:
+                raise UserError(
+                    "transition is impossible: the foundation does not have enough "
+                    "aligned audio to reach the end of the crossfade"
+                )
+            available = max(0.0, transition_start + lead_available_out)
+        else:
+            anchor_output_start = 0.0
+            lead_output_start = 0.0
+            available = max(0.0, min(anchor_available_out, lead_available_out))
+
         output_duration = requested if requested is not None else available
-        # Cap to the available overlap so the plan reports exactly what the
-        # renderer will produce (ffmpeg stops at the shorter source's EOF).
+        # Cap to the arrangement's available material. In transition mode the
+        # Foundation only needs to reach the end of the crossfade; the Lead may
+        # continue after it ends.
         if output_duration > available:
             output_duration = available
         # Preview duration cap is part of the shared plan so the read-only
@@ -1028,39 +1148,66 @@ class StudioService:
         if output_duration <= 0:
             raise UserError("requested mash duration is zero or negative")
 
-        bpm_change_percent = (tempo_ratio - 1.0) * 100.0
+        anchor_bpm_change_percent = (anchor_tempo_ratio - 1.0) * 100.0
+        lead_bpm_change_percent = (lead_tempo_ratio - 1.0) * 100.0
 
         warnings: list[str] = []
 
         def _almost_int(value: float, tolerance: float = 0.05) -> bool:
             return abs(value - round(value)) <= tolerance
 
-        ratio_label: str
-        if _almost_int(tempo_ratio) and round(tempo_ratio) >= 2:
-            n = int(round(tempo_ratio))
-            ratio_label = f"{n}:1"
-            warnings.append(
-                f"The lead is at {ratio_label} tempo ratio to the foundation "
-                "and will be heavily time-stretched; expect audible artifacts."
-            )
-        elif _almost_int(1.0 / tempo_ratio) and round(1.0 / tempo_ratio) >= 2:
-            n = int(round(1.0 / tempo_ratio))
-            ratio_label = f"1:{n}"
-            warnings.append(
-                f"The lead is at a {ratio_label} tempo ratio to the foundation "
-                "and will be heavily time-stretched; expect audible artifacts."
-            )
-        elif not (0.5 <= tempo_ratio <= 2.0):
-            warnings.append(
-                "The tempo ratio is outside ffmpeg's comfortable 0.5–2.0 range; "
-                "a chained stretch will be used."
-            )
+        def _stretch_warning(role: str, ratio: float) -> None:
+            if _almost_int(ratio) and round(ratio) >= 2:
+                n = int(round(ratio))
+                warnings.append(
+                    f"The {role} is at a {n}:1 tempo ratio to the output and "
+                    "will be heavily time-stretched; expect audible artifacts."
+                )
+            elif _almost_int(1.0 / ratio) and round(1.0 / ratio) >= 2:
+                n = int(round(1.0 / ratio))
+                warnings.append(
+                    f"The {role} is at a 1:{n} tempo ratio to the output and "
+                    "will be heavily time-stretched; expect audible artifacts."
+                )
+            elif not (0.5 <= ratio <= 2.0):
+                warnings.append(
+                    f"The {role} tempo ratio ({ratio:.3f}) is outside ffmpeg's "
+                    "comfortable 0.5–2.0 range; a chained stretch will be used."
+                )
+
+        _stretch_warning("foundation", anchor_tempo_ratio)
+        _stretch_warning("lead", lead_tempo_ratio)
 
         if requested is not None and requested > available + 1e-6:
-            warnings.append(
-                "Requested duration exceeds the available overlap; the output "
-                "will end with the shorter source region."
-            )
+            if arrangement == "transition":
+                warnings.append(
+                    "Requested duration exceeds the available transition material; "
+                    "the output will be capped by the shorter source region."
+                )
+            else:
+                warnings.append(
+                    "Requested duration exceeds the available overlap; the output "
+                    "will end with the shorter source region."
+                )
+        if arrangement == "transition":
+            if crossfade_duration <= 0:
+                warnings.append("The A→B transition uses a hard cut (zero crossfade).")
+            elif crossfade_duration < 0.5:
+                warnings.append(
+                    f"The crossfade is very short ({crossfade_duration:.2f}s); "
+                    "expect an abrupt transition."
+                )
+            transition_end = transition_start + crossfade_duration
+            if output_duration <= transition_start + 1e-6:
+                warnings.append(
+                    "The requested output ends before the Lead enters; only the "
+                    "Foundation is audible."
+                )
+            elif output_duration < transition_end - 1e-6:
+                warnings.append(
+                    "The requested output ends during the crossfade; the "
+                    "transition is truncated."
+                )
         if abs(semitone_shift) >= 4:
             warnings.append(
                 f"A {semitone_shift:+d}-semitone shift is large; expect audible "
@@ -1093,11 +1240,57 @@ class StudioService:
                 "stem_set_id": info[0] if info else None,
             }
 
+        def _channel(role: str) -> dict:
+            return {
+                "gain": options.channel_gain(role),
+                "pan": options.channel_pan(role),
+                "eq": options.channel_eq(role),
+            }
+
+        # Per-source output-clock placement and consumed source time.
+        def _source_clock(role: str) -> dict:
+            if role == "anchor":
+                anchor_output_end = output_duration
+                if arrangement == "transition":
+                    anchor_output_end = min(
+                        output_duration, transition_start + crossfade_duration,
+                    )
+                return {
+                    "output_start": anchor_output_start,
+                    "output_end": round(anchor_output_end, 3),
+                    "source_start": options.anchor_start,
+                    "source_consumed": round(
+                        anchor_output_end * anchor_tempo_ratio, 3,
+                    ),
+                }
+            return {
+                "output_start": lead_output_start,
+                "output_end": round(output_duration, 3),
+                "source_start": options.lead_start,
+                # Lead is placed at transition_start, so only the segment that
+                # lands inside the output contributes source time.
+                "source_consumed": round(
+                    max(0.0, output_duration - lead_output_start) * lead_tempo_ratio, 3
+                ),
+            }
+
         api_dict = {
+            "tempo_mode": options.tempo_mode,
+            "target_bpm": options.target_bpm,
+            "output_bpm": round(output_bpm, 4),
+            "anchor_tempo_ratio": round(anchor_tempo_ratio, 4),
+            "lead_tempo_ratio": round(lead_tempo_ratio, 4),
+            "anchor_bpm_change_percent": round(anchor_bpm_change_percent, 2),
+            "lead_bpm_change_percent": round(lead_bpm_change_percent, 2),
+            # Backward-compatible aliases (old Lead-ratio semantics).
             "tempo_ratio": round(tempo_ratio, 4),
-            "bpm_change_percent": round(bpm_change_percent, 2),
+            "bpm_change_percent": round(lead_bpm_change_percent, 2),
             "semitone_shift": semitone_shift,
-            "effective_bpm": {"anchor": anchor["bpm"], "lead": lead["bpm"]},
+            "effective_bpm": {
+                "anchor": anchor_effective_bpm,
+                "lead": lead_effective_bpm,
+            },
+            "output_bpm": round(output_bpm, 4),
             "effective_keys": {"anchor": anchor["key"], "lead": lead["key"]},
             "anchor_variant": anchor_variant,
             "lead_variant": lead_variant,
@@ -1105,6 +1298,20 @@ class StudioService:
             "selected_sources": {
                 "anchor": _source(anchor, anchor_variant, anchor_info),
                 "lead": _source(lead, lead_variant, lead_info),
+            },
+            "arrangement_mode": arrangement,
+            "transition": {
+                "start": round(transition_start, 3),
+                "crossfade_duration": round(crossfade_duration, 3),
+                "crossfade_curve": options.crossfade_curve,
+            },
+            "channel": {
+                "anchor": _channel("anchor"),
+                "lead": _channel("lead"),
+            },
+            "sources": {
+                "anchor": _source_clock("anchor"),
+                "lead": _source_clock("lead"),
             },
             "duration": {
                 "requested": requested,
@@ -1118,13 +1325,20 @@ class StudioService:
 
         class ArrangementPlan:
             __slots__ = (
-                "tempo_ratio", "semitone_shift", "output_duration", "duration",
+                "tempo_ratio", "anchor_tempo_ratio", "lead_tempo_ratio",
+                "semitone_shift", "output_duration", "duration",
                 "anchor_path", "lead_path", "anchor_start", "lead_start",
-                "anchor_gain", "lead_gain", "pitch_mode", "api_dict",
+                "anchor_gain", "lead_gain", "anchor_pan", "lead_pan",
+                "anchor_eq", "lead_eq", "pitch_mode",
+                "arrangement_mode", "transition_start", "crossfade_duration",
+                "crossfade_curve", "anchor_output_start", "lead_output_start",
+                "api_dict",
             )
 
             def __init__(self):
                 self.tempo_ratio = tempo_ratio
+                self.anchor_tempo_ratio = anchor_tempo_ratio
+                self.lead_tempo_ratio = lead_tempo_ratio
                 self.semitone_shift = semitone_shift
                 self.output_duration = output_duration
                 self.duration = output_duration
@@ -1134,7 +1348,17 @@ class StudioService:
                 self.lead_start = options.lead_start
                 self.anchor_gain = options.anchor_gain
                 self.lead_gain = options.lead_gain
+                self.anchor_pan = options.anchor_pan
+                self.lead_pan = options.lead_pan
+                self.anchor_eq = options.channel_eq("anchor")
+                self.lead_eq = options.channel_eq("lead")
                 self.pitch_mode = options.pitch_mode
+                self.arrangement_mode = arrangement
+                self.transition_start = transition_start
+                self.crossfade_duration = crossfade_duration
+                self.crossfade_curve = options.crossfade_curve
+                self.anchor_output_start = anchor_output_start
+                self.lead_output_start = lead_output_start
                 self.api_dict = api_dict
 
             def to_api_dict(self) -> dict:
@@ -1170,7 +1394,6 @@ class StudioService:
 
         anchor_path = plan.anchor_path
         lead_path = plan.lead_path
-        tempo_ratio = plan.tempo_ratio
         semitone_shift = plan.semitone_shift
         duration = plan.output_duration
 
@@ -1186,14 +1409,47 @@ class StudioService:
             lead_path=lead_path,
             anchor_gain=plan.anchor_gain,
             lead_gain=plan.lead_gain,
+            anchor_pan=plan.anchor_pan,
+            lead_pan=plan.lead_pan,
+            anchor_eq=plan.anchor_eq,
+            lead_eq=plan.lead_eq,
             anchor_start=plan.anchor_start,
             lead_start=plan.lead_start,
             duration=duration,
         )
-        assembler.build_mash(spec, tempo_ratio, semitone_shift, str(output_path))
+        assembler.build_mash(
+            spec,
+            anchor_tempo_ratio=plan.anchor_tempo_ratio,
+            lead_tempo_ratio=plan.lead_tempo_ratio,
+            semitone_shift=semitone_shift,
+            arrangement_mode=plan.arrangement_mode,
+            transition_start=plan.transition_start,
+            crossfade_duration=plan.crossfade_duration,
+            crossfade_curve=plan.crossfade_curve,
+            out=str(output_path),
+        )
         peak = assembler.measure_clipping(str(output_path))
         result = {
-            "tempo_ratio": round(tempo_ratio, 4),
+            "tempo_mode": options.tempo_mode,
+            "target_bpm": options.target_bpm,
+            "output_bpm": plan.api_dict.get("output_bpm"),
+            "anchor_tempo_ratio": round(plan.anchor_tempo_ratio, 4),
+            "lead_tempo_ratio": round(plan.lead_tempo_ratio, 4),
+            "anchor_bpm_change_percent": plan.api_dict.get(
+                "anchor_bpm_change_percent"
+            ),
+            "lead_bpm_change_percent": plan.api_dict.get(
+                "lead_bpm_change_percent"
+            ),
+            "tempo_ratio": round(plan.tempo_ratio, 4),
+            "arrangement_mode": plan.arrangement_mode,
+            "transition": plan.api_dict.get("transition"),
+            # Flat aliases keep result consumers simple and compatible.
+            "transition_start": plan.transition_start,
+            "crossfade_duration": plan.crossfade_duration,
+            "crossfade_curve": plan.crossfade_curve,
+            "channel": plan.api_dict.get("channel"),
+            "sources": plan.api_dict.get("sources"),
             "semitone_shift": semitone_shift,
             "duration": assembler._ffprobe_duration(str(output_path)),
             "true_peak_db": peak.get("true_peak_db"),

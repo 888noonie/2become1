@@ -23,6 +23,22 @@ const STATUS = {
   interrupted: 'Interrupted',
 };
 
+/** Deep equality for the nested EQ blobs (fresh objects each build). */
+function valuesEqual(a, b) {
+  if (Object.is(a, b)) return true;
+  if (
+    typeof a === 'object' && a !== null &&
+    typeof b === 'object' && b !== null
+  ) {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    return aKeys.length === bKeys.length && aKeys.every((key) => (
+      Object.hasOwn(b, key) && valuesEqual(a[key], b[key])
+    ));
+  }
+  return false;
+}
+
 /** True only when the plan request exactly represents the current project. */
 export function planMatchesProject(plan, project) {
   if (!plan?.data || plan.loading || plan.error || !plan.request) return false;
@@ -40,7 +56,7 @@ export function planMatchesProject(plan, project) {
     expectedKeys.every((key, index) => (
       requestKeys[index] === key &&
       Object.hasOwn(plan.request, key) &&
-      Object.is(plan.request[key], plannedFields[key])
+      valuesEqual(plan.request[key], plannedFields[key])
     ))
   );
 }

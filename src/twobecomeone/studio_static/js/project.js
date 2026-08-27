@@ -345,6 +345,16 @@ export class ProjectManager {
         anchor_gain: request?.anchor_gain,
         lead_gain: request?.lead_gain,
         pitch_mode: request?.pitch_mode,
+        tempo_mode: request?.tempo_mode,
+        target_bpm: request?.target_bpm,
+        arrangement_mode: request?.arrangement_mode,
+        transition_start: request?.transition_start,
+        crossfade_duration: request?.crossfade_duration,
+        crossfade_curve: request?.crossfade_curve,
+        anchor_pan: request?.anchor_pan,
+        lead_pan: request?.lead_pan,
+        anchor_eq: request?.anchor_eq,
+        lead_eq: request?.lead_eq,
       },
     };
     let validated;
@@ -393,6 +403,16 @@ export class ProjectManager {
         anchor_gain: validated.anchor_gain,
         lead_gain: validated.lead_gain,
         pitch_mode: validated.pitch_mode,
+        tempo_mode: validated.tempo_mode,
+        target_bpm: validated.target_bpm,
+        arrangement_mode: validated.arrangement_mode,
+        transition_start: validated.transition_start,
+        crossfade_duration: validated.crossfade_duration,
+        crossfade_curve: validated.crossfade_curve,
+        anchor_pan: validated.anchor_pan,
+        lead_pan: validated.lead_pan,
+        anchor_eq: validated.anchor_eq,
+        lead_eq: validated.lead_eq,
       },
     };
     let saved;

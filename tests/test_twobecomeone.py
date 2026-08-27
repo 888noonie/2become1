@@ -180,7 +180,10 @@ class TestAssembler:
                              str(out))
         dur = assembler._ffprobe_duration(str(out))
         assert 2.9 <= dur <= 3.1, f"expected ~3s, got {dur}s"
-        assert trim_durations == [pytest.approx(3.0 * 1.4)]
+        # Phase 6.5: both sources pass through render_aligned. The Foundation
+        # (ratio 1.0) is trimmed to the 3s output; the Lead (ratio 1.4) is
+        # trimmed to 3 * 1.4 before stretching.
+        assert trim_durations == [pytest.approx(3.0), pytest.approx(3.0 * 1.4)]
 
 
 class TestSeparator:

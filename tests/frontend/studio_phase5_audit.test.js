@@ -540,6 +540,12 @@ test('Plan source-time uses capped output duration and multiplies by tempo ratio
     'POST /api/renders/plan': async () => jsonResponse({
       tempo_ratio: 2,
       bpm_change_percent: 100,
+      anchor_tempo_ratio: 1.0,
+      lead_tempo_ratio: 2.0,
+      anchor_bpm_change_percent: 0.0,
+      lead_bpm_change_percent: 100.0,
+      output_bpm: 120.0,
+      tempo_mode: 'foundation',
       semitone_shift: 0,
       effective_bpm: { anchor: 120, lead: 60 },
       effective_keys: { anchor: { tonic: 'C', mode: 'major' }, lead: { tonic: 'C', mode: 'major' } },
@@ -547,6 +553,10 @@ test('Plan source-time uses capped output duration and multiplies by tempo ratio
       lead_variant: 'full',
       pitch_mode: 'match',
       selected_sources: { anchor: {}, lead: {} },
+      arrangement_mode: 'overlay',
+      transition: { start: 0, crossfade_duration: 0, crossfade_curve: 'equal_power' },
+      channel: { anchor: { gain: 0.8, pan: 0, eq: { low: 0, mid: 0, high: 0 } }, lead: { gain: 0.8, pan: 0, eq: { low: 0, mid: 0, high: 0 } } },
+      sources: { anchor: { output_start: 0, source_start: 0, source_consumed: 7.669 }, lead: { output_start: 0, source_start: 0, source_consumed: 15.338 } },
       duration: { requested: 30, available: 7.669, output: 7.669 },
       output_duration: 7.669,
       warnings: [],
@@ -561,9 +571,10 @@ test('Plan source-time uses capped output duration and multiplies by tempo ratio
   await new Promise((r) => setTimeout(r, 400));
 
   const text = container.textContent;
-  // Source time = output (7.669) × ratio (2) ≈ 15.3s, NOT 7.669 / 2.
-  assert.ok(text.includes('× 2.000'), 'shows multiplication by tempo ratio');
+  // Lead source time = output (7.669) × ratio (2) ≈ 15.3s, NOT 7.669 / 2.
+  // The server-authored sources.lead.source_consumed carries the multiplied value.
   assert.ok(text.includes('0:15'), `shows multiplied source time, got: ${text}`);
+  assert.ok(text.includes('2.000x'), 'shows the lead stretch ratio (2x)');
   assert.ok(!text.includes('0:03'), 'does not divide by tempo ratio');
   dispose();
 });
