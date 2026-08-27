@@ -274,6 +274,10 @@ async function journeySeparation(page) {
   }, { timeout: 30000, label: 'separation complete' });
 
   // Truthful center/side labels appear; "vocals" must not.
+  await waitFor(async () => {
+    const text = await page.locator('.stem-tray__list').textContent().catch(() => '');
+    return /center/i.test(text) && /sides/i.test(text);
+  }, { label: 'center/side stems rendered' });
   const trayText = await page.locator('.stem-tray__list').textContent();
   record('separation shows center/side (not vocals)', /center/i.test(trayText) && !/vocals/i.test(trayText), trayText.trim().slice(0, 60));
   await auditCurrentPage(page, 'stem dialog');

@@ -150,6 +150,16 @@ left uncommitted for Sol's independent audit.
 - **Regression:** deterministic tests cover both race orderings, including
   proving that a cancelled queued job never invokes its run function.
 
+### Defect 8 — Browser stem assertion raced asynchronous tray refresh
+
+- **Root cause:** the journey waited for the separation job's terminal status,
+  but asserted the tray before the subsequent stem-list request had necessarily
+  rendered on slower CI workers.
+- **Fix:** the journey now waits for the Center and Sides rows themselves—the
+  exact state the assertion is intended to verify.
+- **Regression:** the 30-check desktop journey passes locally after reproducing
+  the CI ordering; the final checkpoint runs both desktop and mobile journeys.
+
 ---
 
 ## 3. Exact commands and pass counts
@@ -242,7 +252,7 @@ testing used temporary data roots.
 ## 9. Sol independent audit
 
 Sol read the actual working tree and applied only the bounded corrections in
-Defects 3–7. Focused regressions, the complete Python/Node suites, expanded
+Defects 3–8. Focused regressions, the complete Python/Node suites, expanded
 desktop/mobile browser gates, JavaScript syntax, lock consistency, frontend
 budget, CLI fail-secure behavior, clean build, and archive inspection pass.
 
