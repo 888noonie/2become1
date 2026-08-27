@@ -22,3 +22,37 @@ jobs:
       - run: .venv/bin/pytest -q
       - run: npm ci
       - run: npm test
+      - run: uv build --wheel --sdist
+      - run: .venv/bin/python tests/verify_release_artifacts.py
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: uv venv .venv --python 3.12
+      - run: uv pip install --python .venv/bin/python -e '.[web,dev]'
+      - run: npm ci
+      # Install a known Chromium runtime for the browser tier. The local
+      # harness reuses the system Chromium; CI caches its own known build via
+      # the full playwright CLI (playwright-core has no install command).
+      - run: npx --yes playwright@1.62.1 install --with-deps chromium
+      - name: Browser E2E (desktop)
+        run: node tests/browser/run.js --viewport 1280x800 --out tests/browser/artifacts
+      - name: Browser E2E (mobile)
+        run: node tests/browser/run.js --viewport 390x844 --out tests/browser/artifacts
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-artifacts
+          path: |
+            tests/browser/artifacts/
+          retention-days: 7

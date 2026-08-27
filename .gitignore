@@ -10,3 +10,4 @@ dist/
 *.egg-info/
 .coverage
 node_modules/
+tests/browser/artifacts/

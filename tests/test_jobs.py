@@ -155,6 +155,7 @@ class TestJobStore:
         new = store.get(new_id)
         assert new["status"] == "queued"
         assert new["request"] == {"anchor_id": "a"}
+        assert new["parent_job_id"] == job_id
 
     def test_clone_rejects_non_retryable(self, tmp_path):
         store = _make_store(tmp_path)

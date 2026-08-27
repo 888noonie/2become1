@@ -2,18 +2,19 @@
 
 A local-first music mashup studio for combining two tracks without uploading
 them to somebody else's cloud. It analyzes tempo and key, suggests a beat-grid
-starting point, optionally isolates a lead vocal with Demucs, aligns the lead,
-and produces a loudness-managed mix.
+starting point, optionally isolates stems with Demucs, aligns both sources to
+an output BPM, and produces a loudness-managed mix.
 
 The name is a deliberately cheesy nod to the Spice Girls. The engine is general
 purpose; bring audio you own or have permission to remix.
 
 ## Launch the Studio
 
-Requirements: Python 3.11+, `uv`, and `ffmpeg`/`ffprobe` on `PATH`.
+Requirements: Python 3.11+, `uv`, and `ffmpeg`/`ffprobe` on `PATH`. On
+CachyOS/Arch, install ffmpeg with `sudo pacman -S ffmpeg`.
 
 ```bash
-cd /home/richardn/2become1
+cd 2become1
 uv venv .venv
 uv pip install --python .venv/bin/python -e '.[web,demucs]'
 .venv/bin/twobecomeone web
@@ -21,16 +22,25 @@ uv pip install --python .venv/bin/python -e '.[web,demucs]'
 
 Open <http://127.0.0.1:8765>. The server binds to the local machine only by
 default, and project media is kept under `~/.local/share/2become1/`.
-Binding to `0.0.0.0` exposes the unauthenticated Studio and its media routes to
-your network; only do that on a network you trust.
+
+Binding to a non-loopback host (e.g. `0.0.0.0`) exposes the unauthenticated
+Studio and its media routes to your network. It now requires an explicit
+`--allow-network` flag:
+
+```bash
+.venv/bin/twobecomeone web --host 0.0.0.0 --allow-network
+```
+
+Only do that on a network you trust.
 
 The Studio provides:
 
 - two audio decks accepting drag-and-drop files or single-track YouTube links;
 - one managed local media library with source provenance, BPM, key, duration, and playback;
 - lightweight first-beat/downbeat suggestions with manual correction;
-- start-offset, render-duration, and gain controls;
-- optional CUDA-accelerated Demucs lead-vocal isolation;
+- explicit output BPM (Foundation/Lead/custom), overlay and A→B transition
+  modes, and per-deck gain/pan/3-band EQ;
+- optional CUDA-accelerated Demucs stem separation with honest center/side fallback;
 - queued 12-second previews and full renders with live stage progress;
 - local playback, downloads, and recent-render history;
 - one same-origin FastAPI application—no public CORS or remote upload path.
@@ -92,13 +102,29 @@ local ceiling.
 
 ```bash
 uv pip install --python .venv/bin/python -e '.[web,dev,demucs]'
-.venv/bin/pytest -q
+.venv/bin/pytest -q          # Python unit + service + HTTP tests
+npm ci && npm test           # frontend unit tests (jsdom)
+npm run test:browser          # browser E2E + accessibility (system Chromium)
 ```
 
 The test suite covers DSP invariants, invalid media, JSON contracts, truthful
 center/side output, Demucs caching and CUDA selection, OOM fallback behavior,
-region timing, true-peak checks, safe ingestion, persistent jobs, and the full
-HTTP upload-to-render vertical slice.
+region timing, true-peak checks, safe ingestion, persistent jobs, the full
+HTTP upload-to-render vertical slice, and browser-level primary journeys with
+an accessibility audit.
+
+The browser tier (`tests/browser/run.js`) drives the real Studio in system
+Chromium via `playwright-core` (which never downloads a browser) against a
+temporary data root with only the external network/GPU boundaries stubbed. CI
+runs it as a distinct `browser-e2e` job.
+
+## Backup and recovery
+
+Project data lives under `~/.local/share/2become1/` (SQLite database plus
+`tracks/`, `stems/`, `renders/`, `artwork/`, and `waveforms/`). Back up that
+directory to preserve your library and projects. On restart, jobs left
+queued/running by a previous process are marked `interrupted` and can be
+retried or resumed from the Activity view.
 
 ## Current boundaries
 

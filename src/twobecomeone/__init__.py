@@ -11,4 +11,4 @@ The package name "2become1" is a nod to the Spice Girls; it is not a
 one-off tool for any specific song pair.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

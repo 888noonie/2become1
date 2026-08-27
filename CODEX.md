@@ -10,7 +10,8 @@ Authoritative plan: `V0.3_IMPLEMENTATION_PLAN.md`
 
 This file is the durable context for a fresh Codex/Hermes conversation. Read it
 before changing the repository. Phase 6 and the bounded Phase 6.5 two-deck
-mixer extension are accepted and closed. Phase 7 owns quality and release work.
+mixer extension are accepted and closed. The approved next work is the Phase 7
+release tri-phase in `PHASE_7_RELEASE_TRI_PHASE_PLAN.md`.
 
 ## Verified checkpoint
 
@@ -26,7 +27,23 @@ mixer extension are accepted and closed. Phase 7 owns quality and release work.
   exceeded the viewport, there were no browser errors, all 38 mixer controls
   were labeled, all enabled targets met the 44px rule, and all 34 enabled
   controls appeared in keyboard tab order.
-- Application version intentionally remains `0.2.0`; bump only in Phase 7.
+- Application version is `0.3.0` in the Phase 7 release candidate; no release
+  tag exists until Sol's final audit and green CI authorize it.
+- Phase 7 is split into 7A automated acceptance, 7B real-system hardening, and
+  7C release-candidate closure. Hermes edits/tests without committing, tagging,
+  or pushing; Gemini Pro is advice-only; Sol owns audit, narrow fixes, commit,
+  push, CI monitoring, and tag authorization.
+- The post-V0.3 Ghost/Action direction is preserved in
+  `docs/V1_GHOST_ARCHITECTURE.md`. It is not authorized implementation scope.
+- **Phase 7 candidate checkpoint (uncommitted):** Hermes completed 7A/7B/7C and
+  left the working tree uncommitted for Sol's audit. Evidence is in
+  `PHASE_7_RELEASE_EVIDENCE.md`. Version is now `0.3.0` (both `pyproject.toml`
+  and all Python/frontend lock declarations). After Sol's corrective audit,
+  289 Python tests, 102 frontend test declarations, and the 30-check browser
+  E2E/accessibility suite at desktop and mobile pass; the frontend is 247,010
+  bytes. The network gate is fail-secure, retry lineage is preserved, browser
+  fixtures are isolated, and release archives exclude private/internal files.
+  No commit, tag, push, or final CI run has been produced yet.
 - The acceptance-only server/browser processes were stopped after QA. Start a
   new loopback server when needed.
 - Persistent data root: `/home/richardn/.local/share/2become1`.

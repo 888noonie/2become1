@@ -131,7 +131,7 @@ class RenderResultPatchBody(BaseModel):
 SSE_HEARTBEAT_SEC = 15.0
 
 
-def create_app(data_dir: str | Path | None = None):
+def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = None):
     service = StudioService(data_dir)
 
     @asynccontextmanager
@@ -147,6 +147,7 @@ def create_app(data_dir: str | Path | None = None):
         lifespan=lifespan,
     )
     app.state.studio = service
+    app.state.bind_host = bind_host or "127.0.0.1"
 
     @app.exception_handler(UserError)
     async def user_error_handler(_request: Request, exc: UserError):
@@ -178,7 +179,7 @@ def create_app(data_dir: str | Path | None = None):
     def health():
         data = service.health()
         # Network exposure: report whether the server is bound beyond loopback.
-        data["network_exposure"] = _network_exposure()
+        data["network_exposure"] = _network_exposure(app.state.bind_host)
         return data
 
     # ------------------------------------------------------------------
@@ -430,17 +431,30 @@ def _placeholder_artwork():
     return Response(content=gif, media_type="image/gif")
 
 
-def _network_exposure() -> dict:
+def _is_loopback_host(host: str) -> bool:
+    """Return whether ``host`` binds only to the local machine.
+
+    ``localhost`` and the IPv4/IPv6 loopback addresses are local-only. Any
+    wildcard (``0.0.0.0``/``::``) or a concrete non-loopback address is not.
+    """
+    normalized = (host or "").strip().lower()
+    if normalized in {"127.0.0.1", "localhost", "::1"}:
+        return True
+    return False
+
+
+def _network_exposure(host: str | None = None) -> dict:
     """Report whether the server is bound beyond loopback.
 
-    The bind host is not directly introspectable from the ASGI app, so we
-    report the conservative fact that the Studio is unauthenticated and must be
-    treated as local-only unless the operator explicitly bound a non-loopback
-    host. The Engine view uses this to show a prominent no-auth warning.
+    ``host`` is the bind address the operator passed to ``uvicorn.run``. When
+    it is a loopback address the Studio is local-only; any other address (or a
+    wildcard) exposes the unauthenticated Studio and its media routes to the
+    network, so the Engine view shows a prominent no-auth warning.
     """
+    loopback_only = _is_loopback_host(host or "127.0.0.1")
     return {
         "authenticated": False,
-        "loopback_only": True,
+        "loopback_only": loopback_only,
         "warning": (
             "2become1 Studio has no authentication. Keep it bound to "
             "127.0.0.1; exposing it beyond loopback shares your library and "

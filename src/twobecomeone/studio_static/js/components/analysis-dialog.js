@@ -152,7 +152,7 @@ export async function openAnalysisDialog({ track, store, onAnnounce, trigger = n
   ]);
 
   const formSection = createElement('div', { class: 'analysis-dialog__form' }, [
-    createElement('h4', { text: 'Overrides (leave blank to use detected)' }),
+    createElement('h3', { text: 'Overrides (leave blank to use detected)' }),
     createElement('label', { class: 'label' }, [
       createElement('span', { text: 'BPM' }),
       bpmInput,

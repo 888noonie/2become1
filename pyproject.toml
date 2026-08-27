@@ -1,6 +1,6 @@
 [project]
 name = "2become1"
-version = "0.2.0"
+version = "0.3.0"
 description = "General-purpose mash-up stack: analyze, separate, align, and recombine any two tracks."
 readme = "README.md"
 license = "MIT"
@@ -31,6 +31,19 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/twobecomeone"]
+
+[tool.hatch.build.targets.sdist]
+# Use an explicit public-source allowlist. Hatch's default broad selection can
+# otherwise pull untracked local conversations and internal planning files into
+# a release archive.
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

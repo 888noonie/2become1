@@ -269,12 +269,12 @@ export async function openStemDialog({ track, role, store = globalStore, project
 
   const bodyEl = createElement('div', { class: 'stem-dialog' }, [
     createElement('div', { class: 'stem-dialog__section' }, [
-      createElement('h4', { text: 'New Separation' }),
+      createElement('h3', { text: 'New Separation' }),
       createElement('div', { class: 'input-group' }, [methodSelect, separateBtn, cancelBtn]),
       jobStatusEl,
     ]),
     createElement('div', { class: 'stem-dialog__section' }, [
-      createElement('h4', { text: 'Available Variants & Stems' }),
+      createElement('h3', { text: 'Available Variants & Stems' }),
       stemListContainer,
     ]),
   ]);

@@ -112,6 +112,22 @@ def cmd_import(args) -> int:
     return 0
 
 
+def _require_allow_network(host: str, *, allow_network: bool) -> None:
+    """Refuse a non-loopback bind unless ``--allow-network`` was passed.
+
+    The Studio is unauthenticated; binding beyond loopback shares the library
+    and jobs with anyone who can reach the port. Loopback binds are always
+    permitted.
+    """
+    from .webapp import _is_loopback_host
+
+    if not _is_loopback_host(host) and not allow_network:
+        raise UserError(
+            "binding to a non-loopback host exposes the unauthenticated Studio "
+            "to your network. Re-run with --allow-network to accept this risk."
+        )
+
+
 def cmd_web(args) -> int:
     """Launch the local-first Studio web application."""
     try:
@@ -123,7 +139,8 @@ def cmd_web(args) -> int:
             "uv pip install --python .venv/bin/python -e '.[web]'"
         ) from exc
 
-    app = create_app(args.data_dir)
+    _require_allow_network(args.host, allow_network=args.allow_network)
+    app = create_app(args.data_dir, bind_host=args.host)
     print(f"2become1 Studio → http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
@@ -268,6 +285,8 @@ def main(argv=None) -> int:
     w.add_argument("--host", default="127.0.0.1",
                    help=("bind address (default: local machine only; 0.0.0.0 exposes the "
                          "unauthenticated Studio to your network)"))
+    w.add_argument("--allow-network", action="store_true",
+                   help="permit binding to a non-loopback host (accepts the no-auth risk)")
     w.add_argument("--port", type=int, default=8765)
     w.add_argument("--data-dir", default=None,
                    help="media/project storage (default: ~/.local/share/2become1)")

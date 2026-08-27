@@ -337,7 +337,7 @@ class JobStore:
                            ?, NULL, NULL, NULL, ?, 0, ?, ?, ?)""",
                 (
                     new_id, row["kind"], row["request_json"],
-                    row["executor"], row["parent_job_id"], now, now,
+                    row["executor"], job_id, now, now,
                 ),
             )
         return new_id
