@@ -5,9 +5,22 @@
 // DOM nodes, EventSource instances, Audio objects, timers, and AbortControllers
 // are kept OUTSIDE state. Subscribers receive a structuredClone of the snapshot
 // so they can never mutate state by reference.
+//
+// V1 (Phase 8A) adds two additive slices — `session` and `proposals` — and
+// registers the V1 reducers in `actions/reducers.js`. The store remains the
+// only mutation path and never holds runtime objects.
+
+import {
+  V1_INITIAL_SESSION,
+  V1_INITIAL_PROPOSALS,
+} from './actions/reducers.js';
 
 const INITIAL_STATE = {
   route: 'studio',
+  // V1 additive slices. Frozen-by-clone on first read; reducers in
+  // actions/reducers.js own these mutations.
+  session: structuredClone(V1_INITIAL_SESSION),
+  proposals: structuredClone(V1_INITIAL_PROPOSALS),
   health: null,
   currentProject: null,
   projects: { items: [], total: 0 },
@@ -128,7 +141,19 @@ export class StateStore extends EventTarget {
 // Reducers
 // ---------------------------------------------------------------------------
 
+import {
+  V1_ACTION_TYPES,
+  reduceV1,
+} from './actions/reducers.js';
+
 export function registerReducers(store) {
+  // V1 (Phase 8A): register each additive v1/* action type individually so
+  // the StateStore's exact-type reducer lookup remains unchanged for V0.3.
+  // The proposals + session slices are managed exclusively through this path.
+  for (const actionType of Object.values(V1_ACTION_TYPES)) {
+    store.register(actionType, (state, action) => reduceV1(state, action));
+  }
+
   store.register('route/set', (state, action) => ({
     ...state,
     route: action.route,

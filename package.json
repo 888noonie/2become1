@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Frontend unit tests for the 2become1 Studio (dev-only; no production runtime dependency).",
   "scripts": {
-    "test": "node --test tests/frontend/*.test.js",
+    "test": "node --test tests/frontend/*.test.js tests/frontend/**/*.test.js",
     "test:browser": "node tests/browser/run.js"
   },
   "devDependencies": {
