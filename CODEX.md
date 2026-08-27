@@ -1,6 +1,6 @@
 # Codex continuity handoff — 2BECOME1 V0.3
 
-Updated: 2026-08-25
+Updated: 2026-08-27
 
 Owner: Richard (`richardn`)
 
@@ -9,33 +9,31 @@ Repository: `/home/richardn/2become1`
 Authoritative plan: `V0.3_IMPLEMENTATION_PLAN.md`
 
 This file is the durable context for a fresh Codex/Hermes conversation. Read it
-before changing the repository. Phase 5 is accepted and closed. The next
-implementation unit is Phase 6: preview, render, history, and recovery. Phase 7
-owns release work.
+before changing the repository. Phase 6 and the bounded Phase 6.5 two-deck
+mixer extension are accepted and closed. Phase 7 owns quality and release work.
 
 ## Verified checkpoint
 
 - Branch: `v0.3-workspace`, tracking `origin/v0.3-workspace`.
-- Accepted implementation HEAD: `d3cc6a6` (`Harden final Phase 5 edge cases`),
-  following `d243353` and checkpoint `b7c0db0`.
-- The working tree was clean and matched `origin/v0.3-workspace` before the
-  final acceptance-checkpoint documentation commit.
-- Final acceptance verification: 176 Python tests passed in 36.85s; all 66
-  frontend test declarations across 12 Node test files passed; both
-  `git diff --check` and `git fsck` passed; the uncompressed frontend is
-  186,130 bytes.
-- Independent Chromium QA used a temporary synthetic data root, not Richard's
-  persistent library. Fully populated views passed at 1440×1100, 1280×800,
-  820×1180, and an exact emulated 390×844 viewport. At 390px,
-  `scrollWidth === clientWidth` and horizontal overflow was false. The live plan
-  displayed capped output × tempo ratio (for example, `0:05 × 2.034 = 0:10`).
+- Accepted Phase 6.5 implementation: `61579e4` (`Complete Phase 6.5 two-deck
+  mixer essentials`), based on accepted Phase 6 HEAD `8a4c14a`.
+- Final acceptance verification: 260 Python tests and all 102 frontend test
+  declarations across 14 Node files pass. All changed/new JavaScript syntax
+  checks and `git diff --check` pass. The uncompressed frontend is 246,951
+  bytes, below the 350 KB budget.
+- Populated Chromium QA passed at 1440×1100, 1280×800, 820×1180, and exact
+  emulated 390×844. At 390px, `scrollWidth === clientWidth === 375`, no element
+  exceeded the viewport, there were no browser errors, all 38 mixer controls
+  were labeled, all enabled targets met the 44px rule, and all 34 enabled
+  controls appeared in keyboard tab order.
 - Application version intentionally remains `0.2.0`; bump only in Phase 7.
-- Current local URL: <http://127.0.0.1:8871/#/studio>.
+- The acceptance-only server/browser processes were stopped after QA. Start a
+  new loopback server when needed.
 - Persistent data root: `/home/richardn/.local/share/2become1`.
 - The server is loopback-only. Preferred audio device is CUDA; Demucs 4.1.0,
   PyTorch 2.13.0, ffmpeg, and yt-dlp are available on this machine.
 
-## Phase 5 status — accepted; Phase 6 authorized
+## Historical Phase 5 acceptance record
 
 The 2026-08-25 final corrective pass resolved all six re-audit blockers:
 
@@ -77,7 +75,8 @@ metadata select the same newest stem set; and cached stem-tray controls repaint
 correctly when playback stops or changes owner without network refetches. The
 structured CUDA warning test now exercises the real SSE callback and exact text.
 
-No Phase 5 exit-gate blocker remains. Phase 6 is authorized to begin fresh.
+No Phase 5 exit-gate blocker remained. Phase 6 and 6.5 have since completed as
+recorded in the verified checkpoint above.
 
 If the old server process is no longer alive, start it from the repository with:
 
@@ -100,6 +99,8 @@ Do not replace, purge, or recreate Richard's persistent data directory.
 | 4 — UI foundation | `564c7da`, `64b33f7` | Backend facts plus framework-free SPA shell, Library, Activity, Engine, source flow |
 | 4 hardening | `51d6aa2`, `c0b8b56`, `b87cec3`, `20ab875` | CI, YouTube `Path` fix/hardening, and first-paint fixes |
 | 5 — Studio & Plan | `823113e`, `4779fd4`, `cd21d23`, `417abdc`, `c3316f8`, `d243353`, `b7c0db0`, `d3cc6a6` | Accepted after corrective passes and final independent adversarial audit |
+| 6 — Preview/render/history | `2b087f8`, `e0a34a1`, `f18be40`, `6f285dd`, `8a4c14a` | Accepted backend/frontend render journey, recovery, result actions, and responsive hardening |
+| 6.5 — Mixer essentials | `61579e4` | Accepted output BPM, two-source alignment, transitions, gain/pan/EQ, strict persistence, and accessible controls |
 
 ## Current product state
 
@@ -149,7 +150,7 @@ callback isolation, and pipe-drain hardening.
   decoding, separation, or other long work.
 - Preserve V0.2 endpoints and existing media. Do not edit an applied migration.
 
-## Phase 5 execution order for Hermes
+## Historical Phase 5 execution order (completed; do not re-execute)
 
 Hermes should implement the following in order, keeping the repository green
 after each narrow commit. Phase 5 may make the small backend additions explicitly
