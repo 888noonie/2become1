@@ -222,12 +222,19 @@ async function journeyAssignAndSwap(page) {
     return a === leadName;
   }, { label: 'swap applied' });
   record('swap exchanges decks', true, `${anchorName} <-> ${leadName}`);
+  await waitFor(async () => /saved locally/i.test(
+    await page.locator('.save-status').textContent().catch(() => ''),
+  ), { label: 'swap autosave' });
 
   // Refresh restores the swapped assignment.
   await page.reload();
-  await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'restore after refresh' });
+  await waitFor(async () => {
+    const restored = await page.locator('.deck-slot--anchor .deck__title').textContent().catch(() => '');
+    const cueReady = await page.locator('input[aria-label="Cue position in seconds (foundation)"]').count();
+    return restored.trim() === leadName && cueReady === 1;
+  }, { label: 'restore after refresh' });
   const restoredAnchor = (await page.locator('.deck-slot--anchor .deck__title').textContent()).trim();
-  record('refresh restores project', restoredAnchor === leadName, `anchor="${restoredAnchor}"`);
+  record('refresh restores project', true, `anchor="${restoredAnchor}"`);
 
   // Persist an exact cue through the accessible numeric control.
   const cue = page.locator('input[aria-label="Cue position in seconds (foundation)"]');

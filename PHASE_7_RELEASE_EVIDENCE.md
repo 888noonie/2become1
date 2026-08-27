@@ -150,15 +150,16 @@ left uncommitted for Sol's independent audit.
 - **Regression:** deterministic tests cover both race orderings, including
   proving that a cancelled queued job never invokes its run function.
 
-### Defect 8 — Browser stem assertion raced asynchronous tray refresh
+### Defect 8 — Browser assertions raced asynchronous persistence/rendering
 
-- **Root cause:** the journey waited for the separation job's terminal status,
-  but asserted the tray before the subsequent stem-list request had necessarily
-  rendered on slower CI workers.
-- **Fix:** the journey now waits for the Center and Sides rows themselves—the
-  exact state the assertion is intended to verify.
+- **Root cause:** the journey asserted the stem tray immediately after the job
+  became terminal, and reloaded immediately after Swap during the deliberate
+  autosave debounce. Slower CI workers exposed both invalid orderings.
+- **Fix:** the journey now waits for the Center/Sides rows themselves, waits for
+  the application's own saved-state signal after Swap, and requires the exact
+  restored deck plus its cue control before continuing.
 - **Regression:** the 30-check desktop journey passes locally after reproducing
-  the CI ordering; the final checkpoint runs both desktop and mobile journeys.
+  both CI orderings; the final checkpoint runs desktop and mobile journeys.
 
 ---
 
