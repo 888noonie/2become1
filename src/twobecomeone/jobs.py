@@ -304,6 +304,33 @@ class JobStore:
                 (time.time(), job_id),
             )
 
+    def cancel_if_queued(self, job_id: str) -> bool:
+        """Atomically cancel ``job_id`` only while it is still queued.
+
+        Returning ``False`` means a worker won the queued-to-running race; the
+        cancellation request and in-memory token will then be observed by that
+        worker instead.
+        """
+        now = time.time()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, stage = ?, progress = ?, message = ?, updated_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    JobStatus.CANCELLED.value,
+                    "cancelled",
+                    100,
+                    "Cancelled",
+                    now,
+                    job_id,
+                    JobStatus.QUEUED.value,
+                ),
+            )
+        return cur.rowcount == 1
+
     def clone_for_retry(self, job_id: str) -> str:
         """Clone a failed/interrupted/cancelled job's request into a fresh job.
 
@@ -436,10 +463,18 @@ class JobEngine:
         token: CancellationToken,
     ) -> None:
         try:
-            self.store.transition(
-                job_id, JobStatus.RUNNING, stage="running", progress=0,
-                message="Started",
-            )
+            try:
+                self.store.transition(
+                    job_id, JobStatus.RUNNING, stage="running", progress=0,
+                    message="Started",
+                )
+            except InvalidTransition:
+                # A queued cancellation may win immediately before this worker
+                # claims the job.  That is a normal terminal outcome, not a
+                # worker failure to rewrite as ``failed``.
+                if self.store.get(job_id)["status"] == JobStatus.CANCELLED:
+                    return
+                raise
             result = run_fn(job_id, token)
         except JobCancelled:
             self.store.transition(
@@ -488,10 +523,7 @@ class JobEngine:
         # A queued job has no running worker to observe the token, so cancel it
         # directly.
         if job["status"] == JobStatus.QUEUED:
-            self.store.transition(
-                job_id, JobStatus.CANCELLED, stage="cancelled", progress=100,
-                message="Cancelled",
-            )
+            self.store.cancel_if_queued(job_id)
         return self.store.get(job_id)
 
     def retry(

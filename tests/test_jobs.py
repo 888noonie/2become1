@@ -246,7 +246,10 @@ class TestJobEngine:
             engine.submit(JobKind.RENDER, {}, blocker)
             started.wait(5)
 
+            second_ran = threading.Event()
+
             def second(job_id, token):
+                second_ran.set()
                 return {"result": {}, "message": "done"}
 
             job = engine.submit(JobKind.RENDER, {}, second)
@@ -254,6 +257,38 @@ class TestJobEngine:
             cancelled = engine.cancel(job["id"])
             assert cancelled["status"] == "cancelled"
             release.set()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and job["id"] in engine._tokens:
+                time.sleep(0.01)
+            assert store.get(job["id"])["status"] == "cancelled"
+            assert not second_ran.is_set()
+        finally:
+            engine.shutdown()
+
+    def test_cancel_tolerates_worker_winning_queued_race(self, tmp_path, monkeypatch):
+        store = _make_store(tmp_path)
+        engine = JobEngine(store)
+        try:
+            job_id = store.create(JobKind.RENDER, {})
+            token = CancellationToken()
+            with engine._lock:
+                engine._tokens[job_id] = token
+
+            original = store.cancel_if_queued
+
+            def worker_wins(job_id):
+                store.transition(job_id, JobStatus.RUNNING, stage="running")
+                return original(job_id)
+
+            monkeypatch.setattr(store, "cancel_if_queued", worker_wins)
+            cancelled = engine.cancel(job_id)
+
+            assert cancelled["status"] == "running"
+            assert cancelled["cancel_requested"] is True
+            assert token.cancelled is True
+            store.transition(job_id, JobStatus.CANCELLED, stage="cancelled")
+            with engine._lock:
+                engine._tokens.pop(job_id, None)
         finally:
             engine.shutdown()
 

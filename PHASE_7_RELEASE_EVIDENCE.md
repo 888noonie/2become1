@@ -138,13 +138,25 @@ left uncommitted for Sol's independent audit.
   transcript, internal plans/evidence, Ghost document, generated artifacts,
   dependency trees, and Git data. CI now builds and verifies both archives.
 
+### Defect 7 — Queued cancellation raced worker startup
+
+- **Root cause:** cancellation read a queued status, then used a second
+  compare-and-swap after the worker could already have claimed the job. That
+  valid ordering raised `InvalidTransition`; the inverse ordering could also
+  make a worker try to start an already-cancelled job.
+- **Fix:** queued cancellation is now one conditional update. A worker that
+  wins observes the persisted request and cancellation token; a cancellation
+  that wins is treated by the later worker as a normal terminal outcome.
+- **Regression:** deterministic tests cover both race orderings, including
+  proving that a cancelled queued job never invokes its run function.
+
 ---
 
 ## 3. Exact commands and pass counts
 
 | Check | Command | Result |
 |---|---|---|
-| Python suite | `.venv/bin/pytest -q` | **289 passed** |
+| Python suite | `.venv/bin/pytest -q` | **290 passed** |
 | Node unit suite | `npm test` | **102 declarations across 14 files passed** |
 | Browser E2E (desktop) | `node tests/browser/run.js --viewport 1280x800` | **30 checks, 0 failures** |
 | Browser E2E (mobile) | `node tests/browser/run.js --viewport 390x844` | **30 checks, 0 failures** |
@@ -230,7 +242,7 @@ testing used temporary data roots.
 ## 9. Sol independent audit
 
 Sol read the actual working tree and applied only the bounded corrections in
-Defects 3–6. Focused regressions, the complete Python/Node suites, expanded
+Defects 3–7. Focused regressions, the complete Python/Node suites, expanded
 desktop/mobile browser gates, JavaScript syntax, lock consistency, frontend
 budget, CLI fail-secure behavior, clean build, and archive inspection pass.
 
