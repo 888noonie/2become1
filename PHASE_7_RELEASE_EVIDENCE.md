@@ -3,7 +3,7 @@
 **Prepared by:** Hermes (implementation and verification owner)
 **Date:** 2026-08-27
 **Baseline:** `v0.3-workspace` at `879defd`
-**Status:** Sol audit complete; corrected release candidate awaiting commit/CI
+**Status:** Accepted and pushed; final checkpoint CI/tag sequence in progress
 
 This document records the evidence for Phases 7A, 7B, and 7C. Hermes did not
 commit, tag, push, purge media, or modify the Ghost scope. The working tree is
@@ -239,5 +239,9 @@ the RTX 4050 and no production Demucs path changed. The one-shot smoke tool now
 allows a one-hour slow-download window and explicitly releases cached CUDA
 memory on teardown. No persistent project/media path was written during audit.
 
-No commit, push, tag, or final CI identifier is recorded yet; those remain the
-next release-gate actions.
+Implementation/audit commit `e2326d6` is pushed to `v0.3-workspace`. GitHub
+Actions run `33116091840` completed successfully: both the 289-test/unit/build/
+archive job and the 30-check desktop/mobile browser job are green. The
+`v0.3.0` tag is authorized only after the documentation checkpoint containing
+this acceptance record passes its own CI; the tag must point exactly to that
+green checkpoint commit.

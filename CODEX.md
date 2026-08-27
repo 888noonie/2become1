@@ -9,9 +9,9 @@ Repository: `/home/richardn/2become1`
 Authoritative plan: `V0.3_IMPLEMENTATION_PLAN.md`
 
 This file is the durable context for a fresh Codex/Hermes conversation. Read it
-before changing the repository. Phase 6 and the bounded Phase 6.5 two-deck
-mixer extension are accepted and closed. The approved next work is the Phase 7
-release tri-phase in `PHASE_7_RELEASE_TRI_PHASE_PLAN.md`.
+before changing the repository. V0.3 implementation and its Phase 7 release
+tri-phase are accepted and closed. The `v0.3.0` tag is the authoritative
+release pointer after this checkpoint's CI is green.
 
 ## Verified checkpoint
 
@@ -35,15 +35,13 @@ release tri-phase in `PHASE_7_RELEASE_TRI_PHASE_PLAN.md`.
   push, CI monitoring, and tag authorization.
 - The post-V0.3 Ghost/Action direction is preserved in
   `docs/V1_GHOST_ARCHITECTURE.md`. It is not authorized implementation scope.
-- **Phase 7 candidate checkpoint (uncommitted):** Hermes completed 7A/7B/7C and
-  left the working tree uncommitted for Sol's audit. Evidence is in
-  `PHASE_7_RELEASE_EVIDENCE.md`. Version is now `0.3.0` (both `pyproject.toml`
-  and all Python/frontend lock declarations). After Sol's corrective audit,
-  289 Python tests, 102 frontend test declarations, and the 30-check browser
-  E2E/accessibility suite at desktop and mobile pass; the frontend is 247,010
-  bytes. The network gate is fail-secure, retry lineage is preserved, browser
-  fixtures are isolated, and release archives exclude private/internal files.
-  No commit, tag, push, or final CI run has been produced yet.
+- **Phase 7 accepted:** implementation/audit commit `e2326d6` is pushed. CI run
+  `33116091840` is green for both the main 289-test/unit/build/archive job and
+  the 30-check desktop/mobile browser job. Evidence is in
+  `PHASE_7_RELEASE_EVIDENCE.md`. Version is `0.3.0` across Python, frontend,
+  and lock declarations; frontend size is 247,010 bytes. The network gate is
+  fail-secure, retry lineage is preserved, browser fixtures are isolated, and
+  release archives exclude private/internal files.
 - The acceptance-only server/browser processes were stopped after QA. Start a
   new loopback server when needed.
 - Persistent data root: `/home/richardn/.local/share/2become1`.
@@ -118,6 +116,7 @@ Do not replace, purge, or recreate Richard's persistent data directory.
 | 5 — Studio & Plan | `823113e`, `4779fd4`, `cd21d23`, `417abdc`, `c3316f8`, `d243353`, `b7c0db0`, `d3cc6a6` | Accepted after corrective passes and final independent adversarial audit |
 | 6 — Preview/render/history | `2b087f8`, `e0a34a1`, `f18be40`, `6f285dd`, `8a4c14a` | Accepted backend/frontend render journey, recovery, result actions, and responsive hardening |
 | 6.5 — Mixer essentials | `61579e4` | Accepted output BPM, two-source alignment, transitions, gain/pan/EQ, strict persistence, and accessible controls |
+| 7 — Quality and release | `e2326d6`, `v0.3.0` | Accepted browser/a11y gate, security and retry hardening, release docs/version, clean artifacts, and green CI |
 
 ## Current product state
 
