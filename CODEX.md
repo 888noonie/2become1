@@ -13,6 +13,16 @@ before changing the repository. V0.3 implementation and its Phase 7 release
 tri-phase are accepted and closed. The `v0.3.0` tag is the authoritative
 release pointer after this checkpoint's CI is green.
 
+## Next authorized implementation boundary
+
+The next Hermes handoff is the deliberately headless V1 Action and
+DeckTransport foundation in `V1_ACTION_TRANSPORT_TRI_PHASE_PLAN.md`: Action and
+proposal contracts, deterministic transport mathematics, then an in-memory
+dispatcher/ledger provenance proof. No Ghost UI, Web Audio/DSP, Producer
+interface, backend route, SQLite migration, or user-facing V0.3 change is
+authorized there. `docs/V1_GHOST_ARCHITECTURE.md` remains the long-term north
+star.
+
 ## Verified checkpoint
 
 - Branch: `v0.3-workspace`, tracking `origin/v0.3-workspace`.
@@ -27,8 +37,8 @@ release pointer after this checkpoint's CI is green.
   exceeded the viewport, there were no browser errors, all 38 mixer controls
   were labeled, all enabled targets met the 44px rule, and all 34 enabled
   controls appeared in keyboard tab order.
-- Application version is `0.3.0` in the Phase 7 release candidate; no release
-  tag exists until Sol's final audit and green CI authorize it.
+- Application version is `0.3.0`; the annotated `v0.3.0` release tag points to
+  `216bc4a` and both branch and tag CI runs are green.
 - Phase 7 is split into 7A automated acceptance, 7B real-system hardening, and
   7C release-candidate closure. Hermes edits/tests without committing, tagging,
   or pushing; Gemini Pro is advice-only; Sol owns audit, narrow fixes, commit,
