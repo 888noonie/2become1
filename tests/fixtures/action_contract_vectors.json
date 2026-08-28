@@ -1,0 +1,490 @@
+{
+  "description": "Shared V1 Action contract vectors. Both Python (actions.validate_action) and Node (validateAction) must accept every case in 'valid' and reject every case in 'invalid' with the exact listed node_code. This file is the deliberate cross-language parity proof for Phase 9A.",
+  "valid": [
+    {
+      "name": "human preview minimal region",
+      "action": {
+        "id": "a-1",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "2026-08-28T00:00:00Z",
+        "idempotencyKey": "k-1",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "chorus_1" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "human preview full region bounds",
+      "action": {
+        "id": "a-2",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "2026-08-28T00:00:01Z",
+        "idempotencyKey": "k-2",
+        "payload": {
+          "source": {
+            "deck": "B",
+            "stem": "vocal",
+            "region": { "id": "verse_2", "label": "second verse", "startBeat": 16, "endBeat": 32, "gridRevision": "grid-a" }
+          },
+          "destination": { "deck": "A" },
+          "timing": { "launch": "next_phrase", "quantize": false },
+          "gainDb": 0
+        }
+      }
+    },
+    {
+      "name": "integer gain accepted as JSON number",
+      "action": {
+        "id": "a-3",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "op" },
+        "requestedAt": "2026-08-28T00:00:02Z",
+        "idempotencyKey": "k-3",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r", "startBeat": 0, "endBeat": 4 } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": false },
+          "gainDb": -6
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown top-level key",
+      "node_code": "V_UNEXPECTED_PAYLOAD_KEY",
+      "action": {
+        "id": "b-1",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "projectId": "forge",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "schemaVersion not 1",
+      "node_code": "V_INVALID_TYPE",
+      "action": {
+        "id": "b-2",
+        "schemaVersion": 2,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "unknown action type",
+      "node_code": "V_UNKNOWN_TYPE",
+      "action": {
+        "id": "b-3",
+        "schemaVersion": 1,
+        "type": "delete_project",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {}
+      }
+    },
+    {
+      "name": "producer actor type invalid",
+      "node_code": "V_INVALID_ACTOR",
+      "action": {
+        "id": "b-4",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "robot", "id": "x" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "same deck preview",
+      "node_code": "V_SAME_DECK",
+      "action": {
+        "id": "b-5",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "B", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "reversed region bounds",
+      "node_code": "V_REGION_INVALID_BOUNDS",
+      "action": {
+        "id": "b-6",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r", "startBeat": 32, "endBeat": 16 } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "equal region bounds",
+      "node_code": "V_REGION_INVALID_BOUNDS",
+      "action": {
+        "id": "b-7",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r", "startBeat": 16, "endBeat": 16 } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "negative startBeat",
+      "node_code": "V_REGION_INVALID_BOUNDS",
+      "action": {
+        "id": "b-7",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r", "startBeat": -1, "endBeat": 8 } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "gain out of range high",
+      "node_code": "V_INVALID_GAIN",
+      "action": {
+        "id": "b-8",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": 13
+        }
+      }
+    },
+    {
+      "name": "gain out of range low",
+      "node_code": "V_INVALID_GAIN",
+      "action": {
+        "id": "b-9",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -25
+        }
+      }
+    },
+    {
+      "name": "gain as string (coercion attempt)",
+      "node_code": "V_INVALID_GAIN",
+      "action": {
+        "id": "b-10",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": "-3"
+        }
+      }
+    },
+    {
+      "name": "gain as boolean (coercion attempt)",
+      "node_code": "V_INVALID_GAIN",
+      "action": {
+        "id": "b-11",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": true
+        }
+      }
+    },
+    {
+      "name": "unknown launch value",
+      "node_code": "V_INVALID_LAUNCH",
+      "action": {
+        "id": "b-11",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "immediately", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "quantize as string",
+      "node_code": "V_INVALID_QUANTIZE",
+      "action": {
+        "id": "b-12",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": "yes" },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "unknown payload key",
+      "node_code": "V_UNEXPECTED_PAYLOAD_KEY",
+      "action": {
+        "id": "b-12",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3,
+          "bypassPermission": true
+        }
+      }
+    },
+    {
+      "name": "producer commit denied at validation layer is lifecycle not contract",
+      "node_code": "V_MISSING_PAYLOAD",
+      "action": {
+        "id": "b-13",
+        "schemaVersion": 1,
+        "type": "commit_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": null
+      }
+    },
+    {
+      "name": "commit missing acceptedAsset",
+      "node_code": "V_MISSING_ACCEPTED_ASSET",
+      "action": {
+        "id": "b-14",
+        "schemaVersion": 1,
+        "type": "commit_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": { "proposalId": "a-1", "acceptedAt": "t2" }
+      }
+    },
+    {
+      "name": "commit asset missing contentHash",
+      "node_code": "V_MISSING_CONTENT_HASH",
+      "action": {
+        "id": "b-15",
+        "schemaVersion": 1,
+        "type": "commit_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "proposalId": "a-1",
+          "acceptedAt": "t2",
+          "acceptedAsset": { "id": "asset-1", "transformSpec": {} }
+        }
+      }
+    },
+    {
+      "name": "reject reason not a string",
+      "node_code": "V_REASON_NOT_STRING",
+      "action": {
+        "id": "b-16",
+        "schemaVersion": 1,
+        "type": "reject_proposal",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": { "proposalId": "a-1", "rejectedAt": "t2", "reason": 42 }
+      }
+    },
+    {
+      "name": "missing idempotencyKey",
+      "node_code": "V_MISSING_IDEMPOTENCY_KEY",
+      "action": {
+        "id": "b-17",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "missing id",
+      "node_code": "V_MISSING_ID",
+      "action": {
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "empty string id",
+      "node_code": "V_MISSING_ID",
+      "action": {
+        "id": "",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "missing stem",
+      "node_code": "V_INVALID_STEM",
+      "action": {
+        "id": "b-18",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "", "region": { "id": "r" } },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "region not an object (null)",
+      "node_code": "V_MISSING_REGION",
+      "action": {
+        "id": "b-19",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": null },
+          "destination": { "deck": "B" },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "destination missing",
+      "node_code": "V_MISSING_DESTINATION",
+      "action": {
+        "id": "b-20",
+        "schemaVersion": 1,
+        "type": "preview_layer",
+        "actor": { "type": "human", "id": "richard" },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
+          "timing": { "launch": "next_phrase", "quantize": true },
+          "gainDb": -3
+        }
+      }
+    }
+  ]
+}

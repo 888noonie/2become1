@@ -19,12 +19,23 @@ from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
 from . import __version__
 from .common import UserError
 from .contracts import TERMINAL_JOB_STATES
 from .studio import RenderOptions, StudioService
+
+
+class ActionBody(RootModel):
+    """Raw V1 Action envelope.
+
+    Deliberately a passthrough: the strict, pure Python contract validator
+    (``actions.validate_action``) owns every rule — unknown keys, finite
+    numbers, ranges, actor policy. Pydantic is not allowed to coerce or
+    weaken the Node contract. (``RootModel`` forbids ``extra='forbid'``;
+    unknown top-level keys are rejected by the contract validator itself.)
+    """
 
 
 class RenderBody(BaseModel):
@@ -320,6 +331,36 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
     def delete_project(project_id: str):
         service.delete_project(project_id)
         return None
+
+    # ------------------------------------------------------------------
+    # V1 durable Action ledger (Phase 9A)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/projects/{project_id}/actions", status_code=201)
+    def post_project_action(project_id: str, body: ActionBody):
+        return service.record_project_action(project_id, body.root)
+
+    @app.get("/api/projects/{project_id}/action-state")
+    def get_project_action_state(project_id: str):
+        return service.project_action_state(project_id)
+
+    @app.get("/api/projects/{project_id}/actions")
+    def get_project_actions(
+        project_id: str,
+        after: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=200),
+    ):
+        return service.project_actions(project_id, after=after, limit=limit)
+
+    @app.get("/api/ghost-assets/{asset_id}/audio")
+    def ghost_asset_audio(asset_id: str):
+        """Serve a managed Ghost preview asset by opaque ID only.
+
+        The route never accepts a path: resolution is by database row and
+        strict managed-root validation. Expired, unpinned assets are not served.
+        """
+        path = service.ghost_asset_audio_path(asset_id)
+        return FileResponse(path, media_type="audio/wav", content_disposition_type="inline")
 
     # ------------------------------------------------------------------
     # Render plan (read-only; shares the renderer's planning logic)

@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import time
 import unicodedata
 import uuid
@@ -25,7 +26,8 @@ from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from . import __version__, analyzer, assembler, beatgrid, media, migrations, projects, separator, sources
+from . import __version__, analyzer, assembler, beatgrid, ghost_assets, media, migrations, projects, separator, sources
+from .action_store import ActionStore
 from .common import (
     MAX_MEDIA_BYTES,
     CapabilityError,
@@ -224,7 +226,45 @@ class StudioService:
         self._store = JobStore(self._connect)
         self._engine = JobEngine(self._store, error_formatter=self._public_job_error)
         self._projects = projects.ProjectStore(self._connect)
+        self._ghost_assets = ghost_assets.GhostAssetStore(
+            self._connect,
+            self.data_dir,
+        )
+        self._actions = ActionStore(
+            self._connect,
+            asset_preparer=self._prepare_preview_asset,
+            asset_registrar=self._ghost_assets.register_prepared,
+            asset_discarder=self._ghost_assets.discard_prepared,
+            asset_verifier=self._verify_and_pin_asset,
+        )
         self._closed = False
+
+    def _prepare_preview_asset(self, project_id: str, validated_action: dict) -> dict:
+        """Prepare managed bytes before the short append transaction begins."""
+        project = self.get_project(project_id)
+        return self._ghost_assets.prepare_for_preview(
+            project,
+            validated_action,
+            resolve_track=lambda deck: self._v1_deck_track(project_id, deck),
+            resolve_stem=lambda track_id, variant: self._v1_vocals_stem_path(project_id, track_id),
+            track_bpm=self._v1_track_bpm,
+            ffmpeg_version=self._ffmpeg_version,
+        )
+
+    def _verify_and_pin_asset(self, project_id: str, proposal_id: str, claimed_asset: dict, conn=None) -> dict:
+        """Phase 9B hook: verify + pin the commit's accepted asset."""
+        return self._ghost_assets.verify_and_pin(project_id, proposal_id, claimed_asset, conn)
+
+    def _ffmpeg_version(self) -> str:
+        """First line of `ffmpeg -version` for provenance (no path)."""
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-version"], capture_output=True, text=True, timeout=10,
+            )
+            first = proc.stdout.splitlines()[0] if proc.returncode == 0 and proc.stdout else ""
+            return first[:200] or "unknown"
+        except (OSError, subprocess.TimeoutExpired, IndexError):
+            return "unknown"
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -2227,6 +2267,91 @@ class StudioService:
         # Run separation inline (reusing the cache path) and wait for it.
         request = {"track_id": track_id, "method": "auto"}
         self._run_separation(job_id, token, request)
+
+    # ------------------------------------------------------------------
+    # V1 durable Action ledger (Phase 9A)
+    # ------------------------------------------------------------------
+
+    def record_project_action(self, project_id: str, action: dict) -> dict:
+        """Validate and durably record one project-scoped V1 Action.
+
+        Validates project existence first, then applies the strict contract,
+        idempotency, permission, and lifecycle pipeline inside one SQLite
+        transaction (append + projection update). For a human preview_layer,
+        expensive preparation completes before that short write transaction;
+        registry + ledger + projection are then committed together.
+        """
+        self.get_project(project_id)  # 404 when the project does not exist
+        return self._actions.append_action(project_id, action)
+
+    def project_action_state(self, project_id: str) -> dict:
+        """Return the finite bootstrap projection for a project."""
+        self.get_project(project_id)
+        return self._actions.action_state(project_id)
+
+    def project_actions(self, project_id: str, after: int = 0, limit: int = 50) -> dict:
+        """Cursor/limit-bounded historical ledger read."""
+        self.get_project(project_id)
+        return self._actions.list_actions(project_id, after=after, limit=limit)
+
+    # ------------------------------------------------------------------
+    # V1 Ghost asset plumbing (Phase 9B)
+    # ------------------------------------------------------------------
+
+    def _v1_deck_track(self, project_id: str, deck: str) -> dict | None:
+        """Resolve a V1 deck letter to the project's real track (A=anchor, B=lead)."""
+        try:
+            project = self.get_project(project_id)
+        except NotFoundError:
+            return None
+        track_id = project.get("anchor_track_id") if deck == "A" else project.get("lead_track_id")
+        if not track_id:
+            return None
+        try:
+            track = self.get_track(track_id)
+            track["content_sha256"] = self._track_content_hash(track_id)
+            return track
+        except NotFoundError:
+            return None
+
+    def _v1_vocals_stem_path(self, project_id: str, track_id: str) -> Path | None:
+        """Resolve the completed Demucs 'vocals' stem for a track, validated."""
+        track_sha256 = self._track_content_hash(track_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT paths_json FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'"
+                " AND method = 'demucs'"
+                " ORDER BY created_at DESC",
+                (track_sha256,),
+            ).fetchall()
+        for row in rows:
+            paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+            rel = paths.get("vocals")
+            if rel is None:
+                continue
+            resolved = self._validated_stem_path(rel, "vocals")
+            if resolved is not None:
+                return resolved
+        return None
+
+    def _v1_track_bpm(self, track_id: str) -> float | None:
+        """Effective BPM for a track; None when the analysis is missing."""
+        try:
+            track = self.get_track(track_id)
+        except NotFoundError:
+            return None
+        bpm = track.get("bpm")
+        if isinstance(bpm, (int, float)) and not isinstance(bpm, bool) and bpm > 0:
+            return float(bpm)
+        return None
+
+    def ghost_asset_audio_path(self, asset_id: str) -> Path:
+        """Resolve a Ghost asset by opaque ID through the managed root only."""
+        return self._ghost_assets.asset_path(asset_id)
+
+    def cleanup_ghost_assets(self) -> int:
+        """Explicit, test-covered GC of expired/unpinned preview assets."""
+        return self._ghost_assets.cleanup_expired()
 
     def close(self) -> None:
         if not self._closed:

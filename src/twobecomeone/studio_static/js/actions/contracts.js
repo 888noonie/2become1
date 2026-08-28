@@ -128,6 +128,9 @@ function validateDeck(value, code) {
 }
 
 function validateRegion(region) {
+  if (region === null || region === undefined) {
+    return buildFailure(ERROR_CODES.V_MISSING_REGION);
+  }
   if (!isPlainObject(region)) {
     return buildFailure(ERROR_CODES.V_REGION_NOT_OBJECT);
   }

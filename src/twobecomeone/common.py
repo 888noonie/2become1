@@ -14,16 +14,19 @@ class UserError(Exception):
 
     Subclasses carry an HTTP status and a stable machine-readable ``code`` so
     the web layer can emit the single error envelope
-    ``{"error": {"code", "message", "detail"}}`` with the correct status.
+    ``{"error": {"code": ..., "message": ..., "detail": ...}}`` with the
+    correct status.
     """
 
     status = 400
     code = "bad_request"
 
-    def __init__(self, message: str, *, detail: str | None = None):
+    def __init__(self, message: str, *, detail: str | None = None, code: str | None = None):
         super().__init__(message)
         self.message = message
         self.detail = detail
+        if code is not None:
+            self.code = code
 
 
 class NotFoundError(UserError):

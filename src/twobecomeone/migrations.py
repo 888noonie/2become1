@@ -147,6 +147,63 @@ MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
         "stem_sets cache identity",
         _migration_7_stem_cache_identity,
     ),
+    (
+        8,
+        "V1 action ledger and projection",
+        [
+            "CREATE TABLE actions ("
+            " sequence INTEGER NOT NULL,"
+            " id TEXT NOT NULL,"
+            " project_id TEXT NOT NULL,"
+            " schema_version INTEGER NOT NULL,"
+            " type TEXT NOT NULL,"
+            " actor_type TEXT NOT NULL,"
+            " actor_id TEXT NOT NULL,"
+            " requested_at TEXT NOT NULL,"
+            " idempotency_key TEXT NOT NULL,"
+            " payload_json TEXT NOT NULL,"
+            " outcome_json TEXT NOT NULL,"
+            " recorded_at REAL NOT NULL,"
+            " PRIMARY KEY (project_id, sequence)"
+            ")",
+            "CREATE UNIQUE INDEX idx_actions_idempotency"
+            " ON actions(project_id, actor_type, actor_id, idempotency_key)",
+            "CREATE INDEX idx_actions_project_sequence ON actions(project_id, sequence)",
+            "CREATE TABLE action_projection ("
+            " project_id TEXT PRIMARY KEY,"
+            " projection_version INTEGER NOT NULL,"
+            " last_sequence INTEGER NOT NULL,"
+            " session_json TEXT NOT NULL,"
+            " proposals_json TEXT NOT NULL,"
+            " updated_at REAL NOT NULL"
+            ")",
+        ],
+    ),
+    (
+        9,
+        "V1 ghost asset registry",
+        [
+            "CREATE TABLE ghost_assets ("
+            " id TEXT PRIMARY KEY,"
+            " project_id TEXT NOT NULL,"
+            " proposal_id TEXT NOT NULL,"
+            " track_id TEXT NOT NULL,"
+            " content_sha256 TEXT NOT NULL,"
+            " relative_path TEXT NOT NULL,"
+            " transform_spec_json TEXT NOT NULL,"
+            " sample_rate INTEGER NOT NULL,"
+            " channels INTEGER NOT NULL,"
+            " duration_seconds REAL NOT NULL,"
+            " file_size_bytes INTEGER NOT NULL,"
+            " pinned INTEGER NOT NULL DEFAULT 0,"
+            " created_at REAL NOT NULL,"
+            " expires_at REAL NOT NULL"
+            ")",
+            "CREATE UNIQUE INDEX idx_ghost_assets_proposal"
+            " ON ghost_assets(project_id, proposal_id)",
+            "CREATE INDEX idx_ghost_assets_expiry ON ghost_assets(expires_at, pinned)",
+        ],
+    ),
 ]
 
 

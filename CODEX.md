@@ -15,13 +15,15 @@ release pointer after this checkpoint's CI is green.
 
 ## Next authorized implementation boundary
 
-The next Hermes handoff is the deliberately headless V1 Action and
-DeckTransport foundation in `V1_ACTION_TRANSPORT_TRI_PHASE_PLAN.md`: Action and
-proposal contracts, deterministic transport mathematics, then an in-memory
-dispatcher/ledger provenance proof. No Ghost UI, Web Audio/DSP, Producer
-interface, backend route, SQLite migration, or user-facing V0.3 change is
-authorized there. `docs/V1_GHOST_ARCHITECTURE.md` remains the long-term north
-star.
+The accepted V1 Action and DeckTransport foundation is `044cb03` (`Audit V1
+action and transport foundation`), including the equal-region-bounds correction
+and green CI run `33125275899`. The next Hermes handoff is
+`V1_DURABLE_ACOUSTIC_TRI_PHASE_PLAN.md`: project-scoped durable Action ledger
+and reload hydration, managed pre-rendered vocal preview assets, then a bounded
+Web Audio scheduling bridge. It still authorizes no Ghost UI/tethers,
+Producer interface, live warping, automatic separation, or rewrite of V0.3's
+single active HTML audio player. `docs/V1_GHOST_ARCHITECTURE.md` remains the
+long-term north star.
 
 ## Verified checkpoint
 

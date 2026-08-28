@@ -14,6 +14,7 @@ import {
   V1_INITIAL_SESSION,
   V1_INITIAL_PROPOSALS,
 } from './actions/reducers.js';
+import { V1_HYDRATE_ACTION } from './actions/hydration.js';
 
 const INITIAL_STATE = {
   route: 'studio',
@@ -153,6 +154,19 @@ export function registerReducers(store) {
   for (const actionType of Object.values(V1_ACTION_TYPES)) {
     store.register(actionType, (state, action) => reduceV1(state, action));
   }
+
+  // V1 (Phase 9A): narrow hydration replacement. Replaces ONLY the two V1
+  // slices with validated, deep-cloned server projection data. Never touches
+  // any other slice, so V0.3 boot behaviour is unchanged.
+  store.register(V1_HYDRATE_ACTION, (state, action) => {
+    const projection = action.projection;
+    if (!projection || typeof projection !== 'object') return state;
+    return {
+      ...state,
+      session: structuredClone(projection.session),
+      proposals: structuredClone(projection.proposals),
+    };
+  });
 
   store.register('route/set', (state, action) => ({
     ...state,
