@@ -1,6 +1,6 @@
 # Codex continuity handoff — 2BECOME1 V0.3
 
-Updated: 2026-08-27
+Updated: 2026-08-28
 
 Owner: Richard (`richardn`)
 
@@ -15,19 +15,36 @@ release pointer after this checkpoint's CI is green.
 
 ## Next authorized implementation boundary
 
-The accepted V1 Action and DeckTransport foundation is `044cb03` (`Audit V1
-action and transport foundation`), including the equal-region-bounds correction
-and green CI run `33125275899`. The next Hermes handoff is
-`V1_DURABLE_ACOUSTIC_TRI_PHASE_PLAN.md`: project-scoped durable Action ledger
-and reload hydration, managed pre-rendered vocal preview assets, then a bounded
-Web Audio scheduling bridge. It still authorizes no Ghost UI/tethers,
-Producer interface, live warping, automatic separation, or rewrite of V0.3's
-single active HTML audio player. `docs/V1_GHOST_ARCHITECTURE.md` remains the
-long-term north star.
+The V1 Action/DeckTransport foundation and Durable/Acoustic plumbing are both
+accepted. Phase 8 is `044cb03` (`Audit V1 action and transport foundation`),
+and the independently audited Phase 9 checkpoint is `f110a2d` (`Audit V1
+durable acoustic plumbing`). Evidence lives in
+`V1_ACTION_TRANSPORT_EVIDENCE.md` and
+`V1_DURABLE_ACOUSTIC_EVIDENCE.md`.
+
+No Phase 10 implementation boundary is authorized yet. The next session must
+begin with a repository-aware, Richard-approved plan. Do not infer permission
+to add visible Ghost controls/tethers, a Producer interface, live warping,
+automatic separation, or a rewrite of V0.3's single active HTML audio player.
+`docs/V1_GHOST_ARCHITECTURE.md` remains the product north star and now records
+which headless foundations exist versus which user-facing work remains.
 
 ## Verified checkpoint
 
 - Branch: `v0.3-workspace`, tracking `origin/v0.3-workspace`.
+- **Phase 8 accepted:** `044cb03` supplies the strict V1 Action/proposal
+  contracts, permission and lifecycle policy, reducers, in-memory provenance
+  proof, and deterministic DeckTransport phrase-boundary mathematics.
+- **Phase 9 accepted:** `f110a2d` supplies migrations 8–9, the project-scoped
+  append-only Action ledger and projection snapshot, reload hydration, managed
+  exact-vocal Ghost assets, guarded asset serving/pinning/GC, and the injected
+  Web Audio scheduler. The audit moved ffmpeg preparation outside SQLite write
+  transactions, strictly validates asset IDs, preserves unexpired auditions,
+  enforces a 250 ms scheduling lead, captures server grid/stem provenance, and
+  proves projection rebuilds without asset I/O.
+- Phase 9 final gates: 356 Python tests, 200 Node test declarations, and 8/8
+  real-Chromium Ghost checks at both 1280×800 and 390×844. Python/JavaScript
+  syntax and `git diff --check` were clean.
 - Accepted Phase 6.5 implementation: `61579e4` (`Complete Phase 6.5 two-deck
   mixer essentials`), based on accepted Phase 6 HEAD `8a4c14a`.
 - Final acceptance verification: 260 Python tests and all 102 frontend test
@@ -46,7 +63,8 @@ long-term north star.
   or pushing; Gemini Pro is advice-only; Sol owns audit, narrow fixes, commit,
   push, CI monitoring, and tag authorization.
 - The post-V0.3 Ghost/Action direction is preserved in
-  `docs/V1_GHOST_ARCHITECTURE.md`. It is not authorized implementation scope.
+  `docs/V1_GHOST_ARCHITECTURE.md`. Only the accepted Phase 8–9 headless scope
+  is implemented; remaining architecture is not authorized implementation.
 - **Phase 7 accepted:** implementation/audit commit `e2326d6` is pushed. CI run
   `33116091840` is green for both the main 289-test/unit/build/archive job and
   the 30-check desktop/mobile browser job. Evidence is in
@@ -129,6 +147,8 @@ Do not replace, purge, or recreate Richard's persistent data directory.
 | 6 — Preview/render/history | `2b087f8`, `e0a34a1`, `f18be40`, `6f285dd`, `8a4c14a` | Accepted backend/frontend render journey, recovery, result actions, and responsive hardening |
 | 6.5 — Mixer essentials | `61579e4` | Accepted output BPM, two-source alignment, transitions, gain/pan/EQ, strict persistence, and accessible controls |
 | 7 — Quality and release | `e2326d6`, `v0.3.0` | Accepted browser/a11y gate, security and retry hardening, release docs/version, clean artifacts, and green CI |
+| 8 — V1 Action/transport foundation | `044cb03` | Strict Action contracts, policy/lifecycle reducers, provenance proof, and deterministic deck transport |
+| 9 — V1 durable/acoustic plumbing | `f110a2d` | Durable ledger/projection, managed vocal assets, hydration, and deterministic Web Audio scheduling bridge |
 
 ## Current product state
 
@@ -144,6 +164,13 @@ The Studio route is the accepted Phase 5 implementation with persisted project
 lifecycle, dual decks, server-authored waveforms, beat-snap cue controls,
 analysis correction, truthful stem separation/playback, grouped arrangement
 controls, serialized autosave, and a renderer-shared exact arrangement plan.
+
+The accepted V1 Phase 8–9 work is deliberately headless. Its Action endpoints,
+durable projection, managed Ghost asset preparation, and scheduler test seam
+exist, but no visible Ghost gesture, tether, audition control, or Producer UI
+is connected to normal Studio boot. Testing the launched product therefore
+exercises the latest V0.3 UI plus its updated backend; the Phase 9 acoustic
+vertical proof remains in the automated browser harness.
 
 Two historical failed import jobs containing `name 'Path' is not defined` may
 remain visible in Activity. They are honest immutable history, not evidence that
@@ -176,6 +203,13 @@ callback isolation, and pipe-drain hardening.
   visible in `progress_detail`.
 - No absolute managed paths in ordinary API payloads. No transactions across
   decoding, separation, or other long work.
+- Ghost asset IDs are strict opaque identifiers. Asset preparation happens
+  before the short SQLite append transaction; registry, ledger, and projection
+  commit together, and failed/racing appends discard unpublished bytes.
+- Unpinned Ghost previews remain available until expiry. GC removes only
+  expired-and-unpinned assets; accepted assets are verified and pinned.
+- Web Audio scheduling keeps at least 250 ms lead and owns all buffers, nodes,
+  requests, timers, and cancellation outside serializable StateStore state.
 - Preserve V0.2 endpoints and existing media. Do not edit an applied migration.
 
 ## Historical Phase 5 execution order (completed; do not re-execute)

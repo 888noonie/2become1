@@ -1,10 +1,18 @@
 # V1 Ghost Action Architecture
 
-- **Status:** Design blueprint; deliberately deferred until after V0.3 release
-- **Captured:** 2026-08-27
+- **Status:** Product blueprint; headless foundations completed through Phase 9
+- **Captured:** 2026-08-27; implementation status updated 2026-08-28
 - **Source:** Richard/Sol design conversation preserved in `Sol to Sol.txt`
 - **First vertical slice:** Borrow a selected vocal phrase from Deck A and
   audition it temporarily over Deck B at the next phrase boundary
+
+Implementation checkpoint: Phase 8 (`044cb03`) delivered the strict Action,
+proposal, permission, reducer, provenance, and DeckTransport contracts. Phase 9
+(`f110a2d`) delivered the durable SQLite ledger/projection, managed
+pre-rendered vocal assets, reload hydration, and deterministic Web Audio
+scheduling proof. No visible Ghost controls/tether or Producer interface are
+wired into the product yet. See `V1_ACTION_TRANSPORT_EVIDENCE.md` and
+`V1_DURABLE_ACOUSTIC_EVIDENCE.md` for exact scope and limitations.
 
 ## 1. Product rule
 
@@ -192,12 +200,14 @@ may remain as a pragmatic V0.3 UI/runtime invariant, but it must not be encoded
 as permanent Action, MusicalObject, or persisted-session semantics. This is a
 future target, not authorization to rebuild V0.3 playback.
 
-## 7. Future implementation sequence
+## 7. Implementation sequence and current status
 
-This is a future V1 sequence, not authorization to begin after Phase 7 without
-a new signed-off plan.
+Completed foundations do not authorize the remaining product work. Every new
+phase still requires a repository-aware, Richard-approved plan.
 
 ### Ghost Phase A — Action and transport contracts
+
+**Foundation complete (Phase 8); production UI integration remains deferred.**
 
 - model actors, requests, proposals, lifecycle events, and committed Actions;
 - define permission, idempotency, provenance, and failure contracts;
@@ -206,12 +216,18 @@ a new signed-off plan.
 
 ### Ghost Phase B — Deterministic human preview
 
+**Acoustic backend/scheduler proof complete (Phase 9); visible human workflow
+not implemented.**
+
 - implement selected-region drag from A to B;
 - schedule one bounded Ghost vocal against the destination transport;
 - add the visual tether and accessible non-drag equivalent;
 - support release and retry without durable project mutation.
 
 ### Ghost Phase C — Acceptance and Producer parity
+
+**Partially founded:** durable human commit verification/pinning exists; undo,
+render parity, visible acceptance UX, and Producer access remain unimplemented.
 
 - commit by emitting a new Action that references the proposal;
 - persist the action ledger and committed layer relationship;

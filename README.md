@@ -45,6 +45,13 @@ The Studio provides:
 - local playback, downloads, and recent-render history;
 - one same-origin FastAPI application—no public CORS or remote upload path.
 
+The `v0.3-workspace` branch also contains the accepted, deliberately headless
+V1 Action/Ghost foundation: a project-scoped append-only Action ledger and
+reload projection, server-managed pre-rendered vocal preview assets, and an
+injected Web Audio phrase scheduler. These components are proven through API,
+unit, and real-browser harnesses; they are not yet exposed as visible Ghost or
+Producer controls in the normal Studio UI.
+
 ## CLI
 
 The underlying engine remains fully scriptable:
@@ -89,6 +96,8 @@ FastAPI routes ──► StudioService ──► SQLite project/job state
                          │
                          ├── analyzer + beat-grid suggestion
                          ├── single-worker Demucs queue (CUDA → CPU fallback)
+                         ├── V1 Action ledger + projection snapshot
+                         ├── managed ephemeral Ghost assets
                          └── ffmpeg align/mix/loudness pipeline
 ```
 
@@ -105,6 +114,7 @@ uv pip install --python .venv/bin/python -e '.[web,dev,demucs]'
 .venv/bin/pytest -q          # Python unit + service + HTTP tests
 npm ci && npm test           # frontend unit tests (jsdom)
 npm run test:browser          # browser E2E + accessibility (system Chromium)
+npm run test:ghost-browser    # headless V1 API → asset → Web Audio proof
 ```
 
 The test suite covers DSP invariants, invalid media, JSON contracts, truthful
@@ -135,6 +145,9 @@ retried or resumed from the Activity view.
 - YouTube importing requires `yt-dlp` on `PATH` and does not bypass access controls;
   use media you own or have permission to download and remix.
 - Torrent acquisition is not part of the launch UI.
+- V1 Ghost plumbing is headless: there is no production drag/tether/audition
+  UI or Producer interface yet, and the existing single-player V0.3 deck
+  runtime remains unchanged.
 
 ## License
 

@@ -3,6 +3,29 @@
 All notable changes to 2become1 are documented here. The project follows a
 local-first, single-user model; versions track the workspace milestones.
 
+## [Unreleased] — V1 Action and durable acoustic foundation
+
+- Added strict cross-language V1 Action contracts, human/Producer permission
+  policy, proposal lifecycle reducers, semantic idempotency, and deterministic
+  DeckTransport phrase-boundary mathematics.
+- Added migrations 8–9 for a project-scoped append-only Action ledger,
+  versioned projection snapshots, and managed Ghost asset registry.
+- Added silent, abortable projection hydration and bounded ledger/state HTTP
+  endpoints without changing the visible V0.3 Studio.
+- Added exact-Demucs-vocal preview preparation with server-resolved beat-grid
+  origins/revisions, bounded tempo stretch, content hashing, atomic publish,
+  strict opaque-ID serving, verify-and-pin commits, and expiry-aware GC.
+- Added an injected, cancellation-safe Web Audio scheduler with a 250 ms
+  minimum lead policy and immutable scheduling receipts.
+- The independent audit moved ffmpeg work outside SQLite write transactions,
+  added strict pre-lookup asset-ID validation, strengthened short-phrase lead
+  handling, and made projection rebuild side-effect free.
+- Current verification: 356 Python tests, 200 Node test declarations, and the
+  real Chromium Ghost harness passing 8/8 at desktop and mobile viewports.
+
+This is headless plumbing. Visible Ghost controls, tethers, Producer UX, live
+warping, and production claims of end-to-end sample accuracy remain deferred.
+
 ## [0.3.0] — V0.3 local creative workspace
 
 The V0.3 release turns the V0.2 vertical slice into a persistent, coherent
