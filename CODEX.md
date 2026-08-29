@@ -16,10 +16,13 @@ release pointer after this checkpoint's CI is green.
 ## Next authorized implementation boundary
 
 Phase 11 Solid Ghost was explicitly authorized by Richard, implemented from
-the Sol-audited tri-phase plan, and independently audited locally on
-2026-08-29. It adds human Commit, immutable accepted-launch provenance,
-project-owned render inclusion, reload durability, and append-only Undo.
-Evidence lives in `PHASE_11_SOLID_GHOST_EVIDENCE.md`.
+the Sol-audited tri-phase plan, independently audited locally on
+2026-08-29, and accepted by green CI on 2026-08-29 (run 33276217128: test
+4m10s, browser-e2e 3m16s, desktop and mobile both green) for push
+`c04f35d` on `v0.3-workspace`. It adds human Commit, immutable accepted-launch
+provenance, project-owned render inclusion, reload durability, and append-only
+Undo. Evidence lives in `PHASE_11_SOLID_GHOST_EVIDENCE.md`, including the
+pre-push render-parity closure (chain parity and placement parity proofs).
 
 No Phase 12 implementation boundary is authorized. Do not infer permission to
 add Producer access, redo, live warping, automatic separation, arbitrary layer
