@@ -2,7 +2,9 @@
 
 import json
 import math
+import re
 import struct
+import subprocess
 import time
 import wave
 from pathlib import Path
@@ -136,6 +138,25 @@ def commit_one(service, project_id, launch_beat=32.0):
     drive_to_auditioning(service, project_id, asset, launch_beat=launch_beat)
     service.record_project_action(project_id, commit_action(asset))
     return asset
+
+
+def wav_rms(path: Path) -> float:
+    """RMS over all interleaved 16-bit samples of a PCM wav file."""
+    with wave.open(str(path), "rb") as audio:
+        frames = audio.readframes(audio.getnframes())
+    samples = struct.unpack(f"<{len(frames) // 2}h", frames)
+    return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+
+
+def wait_for_job(service: StudioService, job_id: str, timeout_s: float = 60.0) -> dict:
+    """Poll a synchronous-engine job until it reaches a terminal status."""
+    deadline = time.monotonic() + timeout_s
+    job = service.get_job(job_id)
+    while job["status"] not in ("complete", "failed", "cancelled", "interrupted"):
+        assert time.monotonic() < deadline, f"job {job_id} did not finish: {job['status']}"
+        time.sleep(0.05)
+        job = service.get_job(job_id)
+    return job
 
 
 def render_options(project_id, anchor_id, lead_id, **overrides):
@@ -313,14 +334,144 @@ class TestCommittedRenderExecution:
         gained = tmp_path / "gain-result.wav"
         assembler._run_simple_filter(source, gained, f"volume={10 ** (-6 / 20):.9f}")
 
-        def rms(path):
-            with wave.open(str(path), "rb") as audio:
-                frames = audio.readframes(audio.getnframes())
-            samples = struct.unpack(f"<{len(frames) // 2}h", frames)
-            return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
-
-        measured_db = 20.0 * math.log10(rms(gained) / rms(source))
+        measured_db = 20.0 * math.log10(wav_rms(gained) / wav_rms(source))
         assert measured_db == pytest.approx(-6.0, abs=0.5)
+
+    def test_committed_chain_matches_planned_gain_pre_limiter(self, prepared_project):
+        """End-to-end pre-limiter parity: the planner's resolved facts, run
+        through the exact committed chain build_mash executes (trim → stretch
+        → gain), deliver the planned linear gain within ±0.5 dB RMS.
+
+        The plan's binding tolerance is measured pre-limiter: the shared
+        loudnorm stage (I=-16 LUFS) is absolute loudness normalization, so
+        an isolated absolute level is unmeasurable after it by design."""
+        service, project_id, anchor, lead = prepared_project
+        commit_one(service, project_id)
+
+        plan = service._compute_arrangement(
+            render_options(project_id, anchor["id"], lead["id"])
+        )
+        resolved = plan.committed_layers
+        assert len(resolved) == 1
+        layer = resolved[0]
+        planned_db = 20.0 * math.log10(layer["gainLinear"])
+        assert planned_db == pytest.approx(-3.0, abs=1e-3)
+
+        # Replay the exact build_mash committed chain on the pinned asset:
+        # trim -> tempo stretch -> gain, exactly as build_mash does.
+        from twobecomeone import assembler
+
+        work = Path(service.temp_dir) / "parity"
+        work.mkdir(parents=True, exist_ok=True)
+        aligned = assembler.render_aligned(
+            str(layer["path"]),
+            work / "aligned.wav",
+            layer["tempoRatio"],
+            0,  # no pitch shift: the asset is already tempo-normalized
+            start=layer["sourceTrimStart"],
+            duration=layer["sourceTrimDuration"],
+        )
+        gained = work / "gained.wav"
+        assembler._run_simple_filter(
+            aligned, gained, f"volume={layer['gainLinear']:.9f}"
+        )
+
+        baseline = assembler.render_aligned(
+            str(layer["path"]),
+            work / "baseline.wav",
+            layer["tempoRatio"],
+            0,
+            start=layer["sourceTrimStart"],
+            duration=layer["sourceTrimDuration"],
+        )
+        measured_db = 20.0 * math.log10(wav_rms(gained) / wav_rms(baseline))
+        assert measured_db == pytest.approx(-3.0, abs=0.5), (
+            f"committed chain gain drifted from planned -3 dB: {measured_db:.3f} dB"
+        )
+
+    def test_committed_layer_isolated_render_places_layer_in_window(self, prepared_project, tmp_path):
+        """Full-pipeline placement proof: a real render with the base tracks
+        silenced (gains 0) contains only the committed layer, positioned at
+        its planned outputStart with the planned visible duration.
+
+        The render window must cover the accepted launch: with the default
+        32-second grid the layer at launch beat 32 lands at ~22.6s, so the
+        lead is cued at 16s to bound the window at 16s with the layer inside
+        (the browser journey cues the window the same way). Level claims are
+        unmeasurable post-loudnorm by design; this proves placement."""
+        service, project_id, anchor, lead = prepared_project
+        commit_one(service, project_id)
+
+        options = render_options(
+            project_id,
+            anchor["id"],
+            lead["id"],
+            anchor_gain=0.0,
+            lead_gain=0.0,
+            lead_start=16.0,  # position the 16s window over the launch
+        )
+        plan = service._compute_arrangement(options)
+        assert len(plan.committed_layers) == 1, (
+            "fixture regression: the render window no longer covers the launch"
+        )
+        layer = plan.committed_layers[0]
+        planned_start = layer["outputStart"]
+        planned_duration = layer["outputDuration"]
+
+        job = service.submit_render(options)
+        job = wait_for_job(service, job["id"])
+        assert job["status"] == "complete", job.get("error")
+
+        # Render outputs live at render_dir/{job_id}.mp3 (the API dict
+        # deliberately excludes output_path; the internal accessor has it).
+        out = Path(service._store.get_output_path(job["id"]))
+        assert out.exists() and out.stat().st_size > 0
+
+        # Decode the real rendered output and measure where audio actually starts.
+        decoded = tmp_path / "isolated.wav"
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(out), str(decoded)],
+            check=True, capture_output=True,
+        )
+        window_rms = wav_rms(decoded)
+
+        # The silenced base tracks contribute digital silence outside the
+        # layer window; the layer window must be non-silent.
+        assert window_rms > 0, "committed layer is missing from the real render output"
+
+        # Placement: audio onset must align with the planned outputStart. Tolerance
+        # covers the mp3 encoder delay (~576 samples) and frame granularity.
+        detect = subprocess.run(
+            [
+                "ffmpeg", "-v", "info",
+                "-i", str(out),
+                "-af", "silencedetect=n=-60dB:d=0.05",
+                "-f", "null", "-",
+            ],
+            capture_output=True, text=True,
+        )
+        report = detect.stderr
+        # silencedetect emits pairs; leading silence begins at t≈0 and ends
+        # where the layer starts (the FIRST silence_end), then trailing
+        # silence begins after the layer ends (the first silence_start that
+        # follows the layer's onset).
+        starts = [float(m) for m in re.findall(r"silence_start: ([0-9.]+)", report)]
+        ends = [float(m) for m in re.findall(r"silence_end: ([0-9.]+)", report)]
+        assert ends, f"no audible boundary found in render: {report!r}"
+        measured_start = ends[0]
+        assert measured_start == pytest.approx(planned_start, abs=0.25), (
+            f"committed layer placed at {measured_start:.3f}s, planned {planned_start:.3f}s"
+        )
+
+        # Duration: the audible layer must span the planned visible duration
+        # (silence resumes after the layer ends, before the window ends).
+        trailing = [t for t in starts if t > measured_start]
+        assert trailing, f"layer does not end before the render window end: {report!r}"
+        measured_end = trailing[0]
+        measured_duration = measured_end - measured_start
+        assert measured_duration == pytest.approx(planned_duration, abs=0.5), (
+            f"audible span {measured_duration:.3f}s vs planned {planned_duration:.3f}s"
+        )
 
     def test_render_with_committed_layer_produces_output(self, prepared_project):
         service, project_id, anchor, lead = prepared_project

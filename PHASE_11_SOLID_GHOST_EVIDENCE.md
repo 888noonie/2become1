@@ -21,7 +21,7 @@ snapshots are loaded.
 
 | Gate | Command | Result |
 |---|---|---|
-| Python | `.venv/bin/pytest -q` | **425 passed, 1 skipped** |
+| Python | `.venv/bin/pytest -q` | **427 passed, 1 skipped** |
 | Frontend | `npm test` | **256 declarations across 29 files, 0 failed** |
 | Solid Ghost desktop | `node tests/browser/ghost_commit_ux.js --viewport 1280x800` | **15 checks, 0 failures** |
 | Solid Ghost mobile | `node tests/browser/ghost_commit_ux.js --viewport 390x844` | **15 checks, 0 failures** |
@@ -51,9 +51,23 @@ No runtime dependency was added.
   The render window is deliberately cued over the immutable accepted launch;
   this avoids falsely claiming inclusion when a layer is genuinely outside a
   bounded preview window.
-- The isolated committed contribution test applies the auditioned `-6 dB`
-  gain before the shared mastering limiter and measures approximately
-  **-6.00 dB RMS**, within the binding **±0.5 dB** tolerance.
+- The committed render-parity coverage is layered and explicit about the
+  loudnorm boundary. The shared mastering stage is absolute loudness
+  normalization (`loudnorm=I=-16`), so an isolated absolute level after it is
+  unmeasurable by design; every level assertion below is therefore pre-limiter,
+  exactly where the tri-phase plan's binding ±0.5 dB tolerance applies:
+  - `volume` primitive: ffmpeg's gain at -6 dB measures within ±0.5 dB RMS.
+  - Chain parity: the planner's real resolved layer facts (path, tempo ratio,
+    source trim, planned gain) replayed through the exact `build_mash`
+    committed chain (trim → stretch → `volume`) measure the auditioned
+    -3 dB within ±0.5 dB RMS against an ungained baseline of the same
+    chain — planner math and chain execution agree.
+  - Placement parity: a real render with the base tracks silenced (gains 0)
+    contains only the committed layer; silencedetect places its audible
+    onset at the planned `outputStart` (6.57 s measured vs 6.565 s planned)
+    and its audible span at the planned `outputDuration` (5.60 s) within
+    the window — the layer demonstrably enters the real mixed output, not
+    just the plan.
 - Planner tests cover tempo ratios below, equal to, and above 1; overlay and
   transition offsets; non-zero Lead cue; head and tail clipping; and complete
   out-of-window exclusion. The corrected ffmpeg clock uses division by the
@@ -67,6 +81,15 @@ No runtime dependency was added.
 The final audit found and fixed issues not covered by Hermes's initial green
 counts:
 
+0. The pre-push closure (post-audit, by Hermes): the shipped
+   `test_isolated_committed_gain_is_within_half_db` only exercised ffmpeg's
+   `volume` primitive, so the original evidence overclaimed "gain before the
+   shared mastering limiter". Two proofs were added — chain parity (planner
+   facts replayed through the exact committed chain, ±0.5 dB RMS pre-limiter)
+   and placement parity (a real isolated render audibly places the layer at
+   its planned outputStart/outputDuration) — and this evidence file was
+   corrected to state exactly what is measured, and where the loudnorm
+   boundary makes level claims unmeasurable by design.
 1. The frontend render body did not send `project_id`, so UI renders omitted
    committed layers. It now sends only project scope—never layer IDs or paths.
 2. Direct render submission originally queued before committed-asset preflight.

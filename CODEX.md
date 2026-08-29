@@ -32,7 +32,7 @@ repository-aware, Richard-approved tri-phase plan.
 - **Phase 11 final local audit:** human Commit is gated by the durable launch
   receipt; accepted assets are verified and pinned; committed layers hydrate
   and enter the shared preview/render planner; human Undo appends exactly one
-  `revert_commit` while retaining history and the asset. Final gates: 425
+  `revert_commit` while retaining history and the asset. Final gates: 427
   Python tests (1 skipped), 256 frontend declarations, Solid Ghost 15/15 at
   desktop and mobile, inherited Ghost UX 18/18 at both viewports, scheduler
   8/8, and V0.3 acceptance 30/30. Static payload is 428,147 bytes under the
