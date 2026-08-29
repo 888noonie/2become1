@@ -420,3 +420,103 @@ export function updateTrackAnalysis(trackId, overrides, signal) {
 export function getTrackWaveform(trackId, signal) {
   return get(`/api/tracks/${trackId}/waveform`, signal);
 }
+
+// ---------------------------------------------------------------------------
+// V1 Action/lifecycle client (Phase 10B)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST one V1 Action (preview_layer / commit_layer / reject_proposal).
+ * The error envelope's stable code (e.g. S_STEM_UNAVAILABLE) is attached as
+ * `err.code` so the Ghost UI can map it to friendly copy.
+ */
+export function postProjectAction(projectId, action, signal) {
+  return post(`/api/projects/${encodeURIComponent(projectId)}/actions`, action, signal).catch(
+    (err) => {
+      if (err && err.body && err.body.error && err.body.error.code) {
+        err.code = err.body.error.code;
+      }
+      throw err;
+    },
+  );
+}
+
+/**
+ * POST one proposal lifecycle fact (scheduled / auditioning bridge).
+ * Envelope errors also expose `err.code`.
+ */
+export function postProposalLifecycle(projectId, proposalId, body, signal) {
+  return post(
+    `/api/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}/lifecycle`,
+    body,
+    signal,
+  ).catch((err) => {
+    if (err && err.body && err.body.error && err.body.error.code) {
+      err.code = err.body.error.code;
+    }
+    throw err;
+  });
+}
+
+/** GET the finite bootstrap projection for a project (used by tests/hydration seam). */
+export function getActionState(projectId, signal) {
+  return get(`/api/projects/${encodeURIComponent(projectId)}/action-state`, signal);
+}
+
+/**
+ * Build the human preview_layer Action envelope with a fresh intent identity.
+ * A network retry of the SAME intent must call this once and reuse the same
+ * envelope (IDs/keys stay stable per intent), never regenerate it.
+ */
+export function buildPreviewAction({ region, gainDb, actorId = 'local-human', timestamp = null }) {
+  return {
+    id: crypto.randomUUID(),
+    schemaVersion: 1,
+    type: 'preview_layer',
+    actor: { type: 'human', id: actorId },
+    requestedAt: timestamp || new Date().toISOString(),
+    idempotencyKey: crypto.randomUUID(),
+    payload: {
+      source: {
+        deck: 'A',
+        stem: 'vocal',
+        region: {
+          id: region.id || crypto.randomUUID(),
+          startBeat: region.startBeat,
+          endBeat: region.endBeat,
+          ...(region.gridRevision ? { gridRevision: region.gridRevision } : {}),
+        },
+      },
+      destination: { deck: 'B' },
+      timing: { launch: 'next_phrase', quantize: true },
+      gainDb,
+    },
+  };
+}
+
+/** Build the human reject_proposal Action envelope for one proposal. */
+export function buildRejectAction(proposalId, reason = null) {
+  return {
+    id: crypto.randomUUID(),
+    schemaVersion: 1,
+    type: 'reject_proposal',
+    actor: { type: 'human', id: 'local-human' },
+    requestedAt: new Date().toISOString(),
+    idempotencyKey: crypto.randomUUID(),
+    payload: {
+      proposalId,
+      rejectedAt: new Date().toISOString(),
+      ...(reason ? { reason } : {}),
+    },
+  };
+}
+
+/** Body for the proposal lifecycle-fact endpoint. */
+export function buildLifecycleBody(to, fact = null) {
+  return {
+    to,
+    actor: { type: 'human', id: 'local-human' },
+    at: new Date().toISOString(),
+    ...(fact && Object.keys(fact).length ? { fact } : {}),
+  };
+}

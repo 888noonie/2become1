@@ -1,6 +1,6 @@
 # Codex continuity handoff — 2BECOME1 V0.3
 
-Updated: 2026-08-28
+Updated: 2026-08-29
 
 Owner: Richard (`richardn`)
 
@@ -15,19 +15,16 @@ release pointer after this checkpoint's CI is green.
 
 ## Next authorized implementation boundary
 
-The V1 Action/DeckTransport foundation and Durable/Acoustic plumbing are both
-accepted. Phase 8 is `044cb03` (`Audit V1 action and transport foundation`),
-and the independently audited Phase 9 checkpoint is `f110a2d` (`Audit V1
-durable acoustic plumbing`). Evidence lives in
-`V1_ACTION_TRANSPORT_EVIDENCE.md` and
-`V1_DURABLE_ACOUSTIC_EVIDENCE.md`.
+Phase 10's First Visible Ghost UX was explicitly authorized by Richard,
+implemented from the Sol-audited tri-phase plan, and independently audited
+locally on 2026-08-29. The pushed checkpoint still requires green CI for final
+acceptance. Evidence lives in `PHASE_10_VISIBLE_GHOST_UX_EVIDENCE.md`.
 
-No Phase 10 implementation boundary is authorized yet. The next session must
-begin with a repository-aware, Richard-approved plan. Do not infer permission
-to add visible Ghost controls/tethers, a Producer interface, live warping,
-automatic separation, or a rewrite of V0.3's single active HTML audio player.
-`docs/V1_GHOST_ARCHITECTURE.md` remains the product north star and now records
-which headless foundations exist versus which user-facing work remains.
+No Phase 11 or Ghost Phase C implementation boundary is authorized. Do not
+infer permission to add commit/acceptance UX, undo, Producer access, live
+warping, automatic separation, render inclusion of committed layers, or a
+rewrite of V0.3's single active HTML audio player. The next implementation
+session must begin with a repository-aware, Richard-approved plan.
 
 ## Verified checkpoint
 
@@ -42,6 +39,14 @@ which headless foundations exist versus which user-facing work remains.
   transactions, strictly validates asset IDs, preserves unexpired auditions,
   enforces a 250 ms scheduling lead, captures server grid/stem provenance, and
   proves projection rebuilds without asset I/O.
+- **Phase 10 final local audit:** migration 10 and durable lifecycle facts,
+  server-bounded Ghost regions, production hydration/transport/controller
+  wiring, visible phrase selection/status/tether/Release/Retry UX, and all 12
+  Sol amendments pass locally: 398 Python tests (1 skipped), 247 frontend test
+  declarations, 18/18 Ghost UX checks at desktop and mobile, 8/8 scheduler
+  checks, and 30/30 inherited browser checks. Shipped static size is 402,590
+  bytes under Richard's 500,000-byte allowance. CI acceptance remains pending
+  until the final checkpoint is pushed.
 - Phase 9 final gates: 356 Python tests, 200 Node test declarations, and 8/8
   real-Chromium Ghost checks at both 1280×800 and 390×844. Python/JavaScript
   syntax and `git diff --check` were clean.
@@ -63,8 +68,9 @@ which headless foundations exist versus which user-facing work remains.
   or pushing; Gemini Pro is advice-only; Sol owns audit, narrow fixes, commit,
   push, CI monitoring, and tag authorization.
 - The post-V0.3 Ghost/Action direction is preserved in
-  `docs/V1_GHOST_ARCHITECTURE.md`. Only the accepted Phase 8–9 headless scope
-  is implemented; remaining architecture is not authorized implementation.
+  `docs/V1_GHOST_ARCHITECTURE.md`. Phase 10 adds the first visible Ghost Phase B
+  workflow to the accepted Phase 8–9 foundations; Ghost Phase C and all later
+  architecture remain unauthorized implementation.
 - **Phase 7 accepted:** implementation/audit commit `e2326d6` is pushed. CI run
   `33116091840` is green for both the main 289-test/unit/build/archive job and
   the 30-check desktop/mobile browser job. Evidence is in
@@ -165,12 +171,11 @@ lifecycle, dual decks, server-authored waveforms, beat-snap cue controls,
 analysis correction, truthful stem separation/playback, grouped arrangement
 controls, serialized autosave, and a renderer-shared exact arrangement plan.
 
-The accepted V1 Phase 8–9 work is deliberately headless. Its Action endpoints,
-durable projection, managed Ghost asset preparation, and scheduler test seam
-exist, but no visible Ghost gesture, tether, audition control, or Producer UI
-is connected to normal Studio boot. Testing the launched product therefore
-exercises the latest V0.3 UI plus its updated backend; the Phase 9 acoustic
-vertical proof remains in the automated browser harness.
+Phase 10 connects the accepted Phase 8–9 foundations to normal Studio boot for
+the first deterministic human Ghost preview: Foundation phrase selection,
+durable ready/scheduled/auditioning facts, Lead-owned scheduling, a decorative
+tether, truthful status, and human Release/Retry. Commit/acceptance, undo,
+render parity, and Producer access remain deferred.
 
 Two historical failed import jobs containing `name 'Path' is not defined` may
 remain visible in Activity. They are honest immutable history, not evidence that
@@ -417,7 +422,8 @@ Then run a system-Chromium smoke test with mocked destructive/expensive work for
 the full keyboard flow, and a careful manual read/use test with Richard's two
 existing tracks. Capture and inspect screenshots at 1440×1100, 1280×800,
 820×1180, and 390×844, including loading, failure, and stem-progress states.
-Report bundle size; it must remain under 350 KB uncompressed excluding media.
+Report bundle size; from Phase 10 onward it must remain under 500 KB
+uncompressed excluding media (Richard raised the allowance on 2026-08-29).
 
 ## Phase 5 exit gate
 

@@ -16,12 +16,28 @@ import {
 } from './actions/reducers.js';
 import { V1_HYDRATE_ACTION } from './actions/hydration.js';
 
+const INITIAL_GHOST_STATUS = Object.freeze({
+  // Semantic, serializable Ghost presentation facts ONLY (Sol amendment 9).
+  // No AudioContext/nodes/buffers/timers/AbortControllers/DOM/canvas geometry
+  // ever enters this slice; the controller owns all runtime machinery.
+  activeProposalId: null,
+  // idle | preparing | armed | auditioning | ended | failed | blocked |
+  // releasing | interrupted
+  phase: 'idle',
+  // Durable semantic facts for display (from the server proposal + receipt):
+  summary: null, // { sourceLabel, destinationLabel, startBeat, endBeat, gainDb }
+  receipt: null, // { launchBeat, phraseIndex, gridRevision } (serializable)
+  error: null, // { code, message } scrubbed, friendly-mapped by the view layer
+  hydrating: false, // once Ghost UI exists, hydration failure is visible (A8)
+});
+
 const INITIAL_STATE = {
   route: 'studio',
   // V1 additive slices. Frozen-by-clone on first read; reducers in
   // actions/reducers.js own these mutations.
   session: structuredClone(V1_INITIAL_SESSION),
   proposals: structuredClone(V1_INITIAL_PROPOSALS),
+  ghostStatus: structuredClone(INITIAL_GHOST_STATUS),
   health: null,
   currentProject: null,
   projects: { items: [], total: 0 },
@@ -165,6 +181,21 @@ export function registerReducers(store) {
       ...state,
       session: structuredClone(projection.session),
       proposals: structuredClone(projection.proposals),
+    };
+  });
+
+  // Phase 10B (A9): narrow ghostStatus presentation updates. Only
+  // serializable semantic facts pass through; the reducer deep-clones and
+  // merges, never touching any other slice.
+  store.register('v1/ghost-status/set', (state, action) => {
+    const patch = action && typeof action.patch === 'object' && action.patch !== null
+      ? action.patch
+      : {};
+    const allowed = new Set(['activeProposalId', 'phase', 'summary', 'receipt', 'error', 'hydrating']);
+    if (Object.keys(patch).some((key) => !allowed.has(key)) || !isPlainJson(patch)) return state;
+    return {
+      ...state,
+      ghostStatus: { ...state.ghostStatus, ...structuredClone(patch) },
     };
   });
 
@@ -355,6 +386,17 @@ export function registerReducers(store) {
   }));
 
   return store;
+}
+
+function isPlainJson(value, seen = new WeakSet()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.every((item) => isPlainJson(item, seen));
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return false;
+  return Object.values(value).every((item) => isPlainJson(item, seen));
 }
 
 /**

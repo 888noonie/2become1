@@ -51,7 +51,9 @@ def make_vocals_stem(service: StudioService, track_id: str) -> None:
     stem_dir.mkdir(parents=True, exist_ok=True)
     stem_file = stem_dir / "vocals.wav"
     if not stem_file.exists():
-        synth_track(stem_file, bpm=120, root=261.63, duration=4.0)
+        # 32s to match the seeded tracks: the deck plays the vocals variant,
+        # and the A7 ownership gate needs playing=true at the transport read.
+        synth_track(stem_file, bpm=120, root=261.63, duration=32.0)
     rel = f"stems/set-{track_sha256[:12]}/vocals.wav"
     with service._connect() as conn:
         conn.execute(
@@ -66,8 +68,11 @@ def seed(data_dir: Path) -> dict:
     """Create a project with anchor+lead tracks and vocals stems."""
     service = StudioService(data_dir)
     try:
-        anchor_wav = synth_track(data_dir / "seed-anchor.wav", bpm=120, root=261.63)
-        lead_wav = synth_track(data_dir / "seed-lead.wav", bpm=140, root=220.0)
+        # 32s tracks: long enough that Lead stays playing through the full
+        # preview→decode→schedule flow (A7 ownership gate needs playing=true
+        # at the transport read; a 4s track would end first).
+        anchor_wav = synth_track(data_dir / "seed-anchor.wav", bpm=120, root=261.63, duration=32.0)
+        lead_wav = synth_track(data_dir / "seed-lead.wav", bpm=140, root=220.0, duration=32.0)
         anchor = service.ingest(anchor_wav.open("rb"), "anchor.wav")
         lead = service.ingest(lead_wav.open("rb"), "lead.wav")
         make_vocals_stem(service, anchor["id"])

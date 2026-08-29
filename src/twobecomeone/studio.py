@@ -2294,6 +2294,11 @@ class StudioService:
         self.get_project(project_id)
         return self._actions.list_actions(project_id, after=after, limit=limit)
 
+    def record_proposal_lifecycle(self, project_id: str, proposal_id: str, body: dict) -> dict:
+        """Validate and durably record one proposal lifecycle transition (Phase 10A)."""
+        self.get_project(project_id)  # standard 404 envelope when absent
+        return self._actions.record_lifecycle_fact(project_id, proposal_id, body)
+
     # ------------------------------------------------------------------
     # V1 Ghost asset plumbing (Phase 9B)
     # ------------------------------------------------------------------

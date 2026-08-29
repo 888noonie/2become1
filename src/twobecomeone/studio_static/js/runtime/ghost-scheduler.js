@@ -178,6 +178,8 @@ export class GhostScheduler {
         this._setState(job, SCHEDULE_STATES.CANCELLED);
         return { ok: false, code: 'ABORTED' };
       }
+      // eslint-disable-next-line no-console
+      console.error('[ghost-scheduler] failed', error?.code, error?.message);
       this._fail(job, 'SCHEDULE_FAILED', error);
       return { ok: false, code: 'SCHEDULE_FAILED' };
     }

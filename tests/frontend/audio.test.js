@@ -47,3 +47,12 @@ test('play() AbortError is caught (no unhandled rejection)', async () => {
   audioController.play('A', '/api/tracks/A/audio');
   audioController._audio.play = originalPlay;
 });
+
+test('seek emits an ownership-changing event for Ghost cancellation', async () => {
+  const { audioController } = await import('../../src/twobecomeone/studio_static/js/audio.js');
+  const events = [];
+  const unsubscribe = audioController.on((type, payload) => events.push({ type, payload }));
+  audioController.seek(12.5);
+  unsubscribe();
+  assert.deepEqual(events.at(-1), { type: 'seek', payload: 12.5 });
+});

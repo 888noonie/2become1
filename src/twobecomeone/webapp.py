@@ -38,6 +38,16 @@ class ActionBody(RootModel):
     """
 
 
+class LifecycleBody(RootModel):
+    """Raw proposal lifecycle request (Phase 10A).
+
+    Passthrough for the same reason as ``ActionBody``: the pure
+    ``proposal_lifecycle.validate_lifecycle_request`` owns every rule
+    (allowed keys, frozen receipt-echo schema, actor policy, bounded sizes).
+    Pydantic must not coerce or weaken it.
+    """
+
+
 class RenderBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -351,6 +361,16 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
         limit: int = Query(default=50, ge=1, le=200),
     ):
         return service.project_actions(project_id, after=after, limit=limit)
+
+    @app.post("/api/projects/{project_id}/proposals/{proposal_id}/lifecycle")
+    def post_proposal_lifecycle(project_id: str, proposal_id: str, body: LifecycleBody):
+        """Durable runtime lifecycle fact for one proposal (Phase 10A).
+
+        Strict schema validation lives in the pure
+        ``proposal_lifecycle.validate_lifecycle_request``; Pydantic is a
+        passthrough exactly like ``ActionBody`` so nothing is coerced.
+        """
+        return service.record_proposal_lifecycle(project_id, proposal_id, body.root)
 
     @app.get("/api/ghost-assets/{asset_id}/audio")
     def ghost_asset_audio(asset_id: str):

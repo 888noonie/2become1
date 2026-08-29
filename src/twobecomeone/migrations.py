@@ -204,6 +204,32 @@ MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
             "CREATE INDEX idx_ghost_assets_expiry ON ghost_assets(expires_at, pinned)",
         ],
     ),
+    (
+        10,
+        "V1 proposal lifecycle facts (Phase 10A)",
+        [
+            "CREATE TABLE proposal_lifecycle_facts ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " project_id TEXT NOT NULL,"
+            " proposal_id TEXT NOT NULL,"
+            " from_state TEXT NOT NULL,"
+            " to_state TEXT NOT NULL,"
+            " actor_type TEXT NOT NULL,"
+            " actor_id TEXT NOT NULL,"
+            " fact_json TEXT,"
+            " recorded_at REAL NOT NULL"
+            ")",
+            # A4: one successful fact per (project, proposal, to_state). Concurrent
+            # identical transitions therefore serialize to one row; the loser
+            # becomes a replay no-op. Competing transitions to different states
+            # are ordered by the write transaction, and the frozen transition
+            # table rejects impossible second hops.
+            "CREATE UNIQUE INDEX idx_lifecycle_facts_one_per_state"
+            " ON proposal_lifecycle_facts(project_id, proposal_id, to_state)",
+            "CREATE INDEX idx_lifecycle_facts_project"
+            " ON proposal_lifecycle_facts(project_id, proposal_id, recorded_at)",
+        ],
+    ),
 ]
 
 

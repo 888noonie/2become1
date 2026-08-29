@@ -130,3 +130,28 @@
     max-width: none;
   }
 }
+
+/* ---- Ghost preview responsive (Phase 10C) ---- */
+@media (max-width: 700px) {
+  /* The tether becomes a static accent edge on the Lead deck — no off-screen
+   * SVG hitbox, no overflow (A11). */
+  .ghost-tether {
+    display: none;
+  }
+  .ghost-card {
+    border-left-width: 2px;
+  }
+  .ghost-dialog__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- Reduced motion (Phase 10C) ---- */
+@media (prefers-reduced-motion: reduce) {
+  .ghost-tether__path {
+    animation: none;
+  }
+  .ghost-tether {
+    transition: none;
+  }
+}

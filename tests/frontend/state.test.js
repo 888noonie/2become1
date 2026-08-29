@@ -141,3 +141,25 @@ test('playback actions do not leak the action type into state', async () => {
   assert.equal(store.getState().playback.trackId, 'track-1');
   assert.equal(Object.hasOwn(store.getState().playback, 'type'), false);
 });
+
+test('ghostStatus accepts only plain semantic JSON', async () => {
+  const { StateStore, registerReducers } = await loadState();
+  const store = registerReducers(new StateStore());
+
+  store.dispatch({
+    type: 'v1/ghost-status/set',
+    patch: { phase: 'armed', receipt: { launchBeat: 32, phraseIndex: 1 } },
+  });
+  assert.equal(store.getState().ghostStatus.phase, 'armed');
+
+  class RuntimeHandle {}
+  const before = store.getState().ghostStatus;
+  store.dispatch({
+    type: 'v1/ghost-status/set',
+    patch: { receipt: { node: new RuntimeHandle() } },
+  });
+  assert.deepEqual(store.getState().ghostStatus, before);
+
+  store.dispatch({ type: 'v1/ghost-status/set', patch: { geometry: { x: 1 } } });
+  assert.deepEqual(store.getState().ghostStatus, before);
+});

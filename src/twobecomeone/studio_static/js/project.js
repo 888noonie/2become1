@@ -15,13 +15,14 @@ import {
   listProjects,
   patchProject,
 } from './api.js';
+import { hydrateActionState } from './actions/hydration.js';
 import { buildRenderBody } from './render.js';
 
 const DEBOUNCE_MS = 500;
 
 export class ProjectManager {
   /** @param {import('./state.js').StateStore} store */
-  constructor(store) {
+  constructor(store, deps = {}) {
     this.store = store;
     this._timer = null;      // debounce timer (not state)
     this._dirty = {};        // coalesced fields awaiting save (not state)
@@ -29,6 +30,15 @@ export class ProjectManager {
     this._queued = false;    // a save was requested while one was in flight
     this._needsRetry = false;
     this._trackRequests = new Map(); // trackId -> AbortController
+    // Phase 10B hooks (La8 hydration/switch boundaries). Both are optional so
+    // existing tests construct ProjectManager(store) unchanged.
+    this._ghost = deps.ghostController || null;
+    this._hydration = null;  // { controller, projectId } (not state)
+  }
+
+  _beforeGhostProjectChange() {
+    // A8: cancel the Ghost runtime BEFORE the current project can change.
+    if (this._ghost) this._ghost.onBeforeProjectChange();
   }
 
   /** Load the most recently updated project, or create `Untitled mix`. */
@@ -56,6 +66,51 @@ export class ProjectManager {
     }
     this.store.dispatch({ type: 'project/set', project });
     await this.resolveDecks(project);
+    this._hydrateActionState(project.id);
+  }
+
+  /**
+   * Phase 10B: silent V1 bootstrap hydration (the Phase 9 adapter finally
+   * connected). Abortable on project switch; silent failure retains the local
+   * projection. Once Ghost UI exists, a hydration failure is surfaced as a
+   * visible retryable status (A8) instead of fabricated empty truth.
+   */
+  _hydrateActionState(projectId) {
+    if (this._hydration) {
+      this._hydration.teardown();
+      this._hydration = null;
+    }
+    if (!projectId) return;
+    if (this._ghost) this._ghost.setHydrating(true);
+    const hydration = hydrateActionState({ store: this.store, projectId });
+    this._hydration = hydration;
+    hydration.promise.then((result) => {
+      if (this._hydration !== hydration) return; // superseded
+      this._hydration = null;
+      if (this._ghost) this._ghost.setHydrating(false);
+      if (result.ok) {
+        // Pass undefined: the controller re-reads the freshly-dispatched
+        // projection from the store (the hydration reducer ran synchronously
+        // inside hydrateActionState).
+        if (this._ghost) this._ghost.handleHydratedProjection(undefined);
+      } else if (this._ghost && this._ghostWantsHydrationSignal()) {
+        // A8: hydration failure must be visible once Ghost UI exists:
+        // retryable status, no fabricated empty truth.
+        this._ghost.handleHydrationFailed();
+      }
+    });
+  }
+
+  _ghostWantsHydrationSignal() {
+    // The controller decides whether to surface this (only meaningful once a
+    // project exists and Ghost UI is mounted).
+    return Boolean(this.store.getState().currentProject?.id);
+  }
+
+  /** Re-run hydration after the Ghost controller... (used by the retry card). */
+  retryHydration() {
+    const project = this.store.getState().currentProject;
+    if (project?.id) this._hydrateActionState(project.id);
   }
 
   /** Fetch and cache the project list for the switcher. */
@@ -312,10 +367,12 @@ export class ProjectManager {
   /** Create a fresh project and switch to it. */
   async newProject(name = 'Untitled mix') {
     await this.flushNow();
+    this._beforeGhostProjectChange(); // A8
     const project = await createProject(name);
     await this.refreshList();
     this.store.dispatch({ type: 'project/set', project });
     await this.resolveDecks(project);
+    this._hydrateActionState(project.id);
     this.store.dispatch({ type: 'save/status', status: 'idle', pending: [], lastError: null });
     return project;
   }
@@ -429,6 +486,7 @@ export class ProjectManager {
     for (const track of resolvedTracks) {
       this.store.dispatch({ type: 'deckTrack/set', trackId: track.id, track });
     }
+    this._beforeGhostProjectChange(); // A8: this path also changes projects
     this.store.dispatch({ type: 'project/set', project: saved });
     this.store.dispatch({ type: 'save/status', status: 'idle', pending: [], lastError: null });
     return saved;
@@ -439,9 +497,11 @@ export class ProjectManager {
     await this.flushNow();
     const current = this.store.getState().currentProject;
     if (current?.id === projectId) return current;
+    this._beforeGhostProjectChange(); // A8: hard cancel BEFORE project/set
     const project = await getProject(projectId);
     this.store.dispatch({ type: 'project/set', project });
     await this.resolveDecks(project);
+    this._hydrateActionState(project.id); // new-project hydration (A8)
     this.store.dispatch({ type: 'save/status', status: 'idle', pending: [], lastError: null });
     return project;
   }
@@ -455,11 +515,13 @@ export class ProjectManager {
     await deleteProject(projectId);
     const state = this.store.getState();
     if (state.currentProject?.id === projectId) {
+      this._beforeGhostProjectChange(); // A8
       const page = await this.refreshList();
       const next = page.find((p) => p.id !== projectId);
       if (next) {
         this.store.dispatch({ type: 'project/set', project: next });
         await this.resolveDecks(next);
+        this._hydrateActionState(next.id);
       } else {
         await this.newProject();
         return;

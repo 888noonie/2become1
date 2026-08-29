@@ -10,10 +10,16 @@
 import { createElement, replaceChildren } from '../dom.js';
 import { confirmDialog, openDialog } from '../components/dialog.js';
 import { showToast } from '../components/toast.js';
-import { store, projectManager } from '../app-context.js';
+import { store, projectManager, ghostController } from '../app-context.js';
 import { mountDeck } from '../components/deck.js';
 import { mountPlan } from '../components/plan.js';
 import { mountRenderActions } from '../components/render-actions.js';
+import { mountGhostCard } from '../components/ghost-card.js';
+import {
+  checkGhostPreconditions,
+  ensureVocalsStemKnown,
+  openGhostPhraseDialog,
+} from '../components/ghost-phrase.js';
 
 function saveStatusLabel(save) {
   if (save.status === 'saving') return 'Saving…';
@@ -142,6 +148,7 @@ export function mountStudio({ container }) {
   let leadDisposer = null;
   let planDisposer = null;
   let renderActionsDisposer = null;
+  let ghostCardDisposer = null;
 
   const studioRoot = createElement('div', { class: 'studio' });
   container.replaceChildren(studioRoot);
@@ -160,6 +167,9 @@ export function mountStudio({ container }) {
   const retryContainer = createElement('div', { class: 'studio__retry-container' });
   const decksContainer = createElement('div', { class: 'studio__decks' });
   const swapBar = createElement('div', { class: 'studio__swap-bar' });
+  // Phase 10C: the Ghost status card sits between decks and plan so the
+  // truthful state is visible in the natural flow.
+  const ghostCardContainer = createElement('div', { class: 'studio__ghost-card-container' });
   const planContainer = createElement('div', { class: 'studio__plan-container' });
   const renderActionsContainer = createElement('div', { class: 'studio__render-actions-container' });
 
@@ -174,6 +184,7 @@ export function mountStudio({ container }) {
   studioRoot.appendChild(retryContainer);
   studioRoot.appendChild(swapBar);
   studioRoot.appendChild(decksContainer);
+  studioRoot.appendChild(ghostCardContainer);
   studioRoot.appendChild(planContainer);
   studioRoot.appendChild(renderActionsContainer);
 
@@ -209,13 +220,83 @@ export function mountStudio({ container }) {
     replaceChildren(swapBar, [swapBtn]);
   }
 
+  // Phase 10C flow: region-armed drag → seconds → beats → dialog → invoke.
+  // The armed flag lives in the Foundation deck's own component state
+  // (deckState.regionArmed); the deck calls onRegionSelected when a drag
+  // completes, which opens the dialog pre-filled with the dragged region.
+  async function openGhostFlow(preselection = null) {
+    const state = store.getState();
+    const project = state.currentProject;
+    const anchorId = project?.anchor_track_id;
+    const leadId = project?.lead_track_id;
+    const anchorTrack = anchorId ? state.deckTracks[anchorId] : null;
+    const leadTrack = leadId ? state.deckTracks[leadId] : null;
+    if (!anchorTrack) {
+      showToast('Choose a Foundation track first.', 'danger');
+      return;
+    }
+    // Honest precondition gate (convenience only; the server revalidates).
+    const precondition = checkGhostPreconditions({
+      project, anchorTrack, leadTrack, playback: state.playback,
+    });
+    if (!precondition.ok) {
+      showToast(precondition.message, 'danger');
+      onAnnounce(precondition.message);
+      return;
+    }
+    // Convenience stems precheck (server stays authoritative).
+    const vocalsKnown = await ensureVocalsStemKnown(anchorTrack.id, store);
+    if (!vocalsKnown) {
+      showToast('Separate vocals on Foundation first.', 'danger');
+      onAnnounce('Separate vocals on Foundation first.');
+      return;
+    }
+    const anchorCard = anchorDeckMount.querySelector('.deck');
+    await openGhostPhraseDialog({
+      anchorTrack,
+      leadTrack,
+      preselected: preselection,
+      onAnnounce,
+      trigger: anchorCard?.querySelector('.deck__select-phrase') || null,
+      onPreview: async (region, gainDb) => ghostController.invoke(region, gainDb),
+    });
+  }
+
   // Mount decks
-  anchorDisposer = mountDeck({ container: anchorDeckMount, role: 'anchor', onAnnounce, store, projectManager });
+  anchorDisposer = mountDeck({
+    container: anchorDeckMount, role: 'anchor', onAnnounce, store, projectManager,
+    onSelectPhrase: () => openGhostFlow(),
+    onRegionSelected: ({ startSeconds, endSeconds }) => openGhostFlow({ startSeconds, endSeconds }),
+  });
   leadDisposer = mountDeck({ container: leadDeckMount, role: 'lead', onAnnounce, store, projectManager });
   planDisposer = mountPlan({ container: planContainer, store, projectManager });
   renderActionsDisposer = mountRenderActions({
     container: renderActionsContainer, store, projectManager,
     health: store.getState().health,
+  });
+  ghostCardDisposer = mountGhostCard({
+    container: ghostCardContainer,
+    store,
+    anchorCardEl: () => anchorDeckMount.querySelector('.deck'),
+    leadCardEl: () => leadDeckMount.querySelector('.deck'),
+    onAction: (action) => {
+      if (action === 'release') {
+        ghostController.release().catch((err) => showToast(err?.message || 'Release failed', 'danger'));
+      } else if (action === 'retry') {
+        const status = store.getState().ghostStatus;
+        if (status.error?.code === 'GHOST_HYDRATION_FAILED') {
+          projectManager.retryHydration();
+        } else if (status.summary) {
+          ghostController.retry({
+            id: `ghost-region-${status.summary.startBeat}-${status.summary.endBeat}`,
+            startBeat: status.summary.startBeat,
+            endBeat: status.summary.endBeat,
+          }, status.summary.gainDb).catch((err) => showToast(err?.message || 'Retry failed', 'danger'));
+        } else {
+          showToast('Release this Ghost before creating another preview.', 'danger');
+        }
+      }
+    },
   });
 
   updateHeader();
@@ -230,6 +311,7 @@ export function mountStudio({ container }) {
     if (leadDisposer) leadDisposer();
     if (planDisposer) planDisposer();
     if (renderActionsDisposer) renderActionsDisposer();
+    if (ghostCardDisposer) ghostCardDisposer();
     projectManager.flushNow();
   };
 }

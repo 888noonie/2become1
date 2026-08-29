@@ -52,7 +52,9 @@ def make_vocals_stem(service: StudioService, track_id: str, wav: Path) -> None:
     stem_dir.mkdir(parents=True, exist_ok=True)
     stem_file = stem_dir / "vocals.wav"
     if not stem_file.exists():
-        synth_wav(stem_file, seconds=4.0)
+        # 32s leaves room for any detected BPM: a 0-8 beat region spans under
+        # 16s even at 30 BPM, so Phase 10A media-bounds validation (A6) holds.
+        synth_wav(stem_file, seconds=32.0)
     rel = f"stems/set-{track_sha256[:12]}/vocals.wav"
     with service._connect() as conn:
         conn.execute(
@@ -68,8 +70,8 @@ def prepared_project(tmp_path):
     """A service + project with an anchor and lead track and real vocals stems."""
     service = make_service(tmp_path)
     try:
-        anchor_wav = synth_wav(tmp_path / "anchor.wav", freq=220.0)
-        lead_wav = synth_wav(tmp_path / "lead.wav", freq=330.0)
+        anchor_wav = synth_wav(tmp_path / "anchor.wav", freq=220.0, seconds=32.0)
+        lead_wav = synth_wav(tmp_path / "lead.wav", freq=330.0, seconds=32.0)
         anchor = service.ingest(anchor_wav.open("rb"), "anchor.wav")
         lead = service.ingest(lead_wav.open("rb"), "lead.wav")
         # Register completed Demucs-style vocals stem sets BEFORE assigning

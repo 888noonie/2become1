@@ -43,6 +43,13 @@ GHOST_CHANNELS = 2
 # but we bound the ratio itself to keep previews sane).
 MIN_TEMPO_RATIO = 0.25
 MAX_TEMPO_RATIO = 4.0
+# Phase 10A: server-side region span bounds (16 bars at 4/4).
+MIN_GHOST_REGION_BEATS = 1.0
+MAX_GHOST_REGION_BEATS = 64.0
+# Phase 10A (Sol amendment 6): the derived source region must land inside the
+# resolved media/stem duration. The tolerance mirrors the server's six-decimal
+# ffmpeg argument serialization (half of the last serialized digit).
+MEDIA_EDGE_TOLERANCE_SECONDS = 5e-7
 ASSET_ID_RE = re.compile(r"\Aga-[0-9a-f]{32}\Z")
 
 
@@ -60,6 +67,8 @@ def _precondition(code: str) -> GhostAssetPreparationError:
         "S_STEM_NOT_VOCAL": "source stem must be exactly 'vocal' and resolve to a completed Demucs 'vocals' stem",
         "S_DECK_NOT_TRACK": "source deck does not map to a real track in this project",
         "S_REGION_INCOMPLETE": "region needs finite startBeat and endBeat with startBeat < endBeat",
+        "S_REGION_OUT_OF_RANGE": "region span must be between 1 and 64 beats",
+        "S_REGION_BEYOND_MEDIA": "region extends beyond the available media duration",
         "S_GRID_MISSING": "source or destination effective BPM/beat-grid metadata is missing; refusing to guess phrase timing",
         "S_STEM_UNAVAILABLE": "the referenced vocal stem file is unavailable",
         "S_DESTINATION_INVALID": "destination deck does not map to a real track with valid BPM facts",
@@ -132,7 +141,7 @@ class GhostAssetStore:
         if stem_path is None:
             raise _precondition("S_STEM_UNAVAILABLE")
 
-        # 3. Region: finite, non-negative, strictly ordered.
+        # 3. Region: finite, non-negative, strictly ordered, span-bounded.
         start_beat = region.get("startBeat")
         end_beat = region.get("endBeat")
         for value in (start_beat, end_beat):
@@ -140,6 +149,9 @@ class GhostAssetStore:
                 raise _precondition("S_REGION_INCOMPLETE")
         if end_beat <= start_beat:
             raise _precondition("S_REGION_INCOMPLETE")
+        span = end_beat - start_beat
+        if span < MIN_GHOST_REGION_BEATS or span > MAX_GHOST_REGION_BEATS:
+            raise _precondition("S_REGION_OUT_OF_RANGE")
 
         # 4. Grid/BPM facts must exist; missing metadata fails honestly.
         source_bpm = track_bpm(track["id"])
@@ -170,6 +182,24 @@ class GhostAssetStore:
         # 5. Server-resolved slice facts. Beats -> seconds on the SOURCE grid.
         source_offset_seconds = source_grid["originSeconds"] + start_beat * 60.0 / source_bpm
         source_duration_seconds = (end_beat - start_beat) * 60.0 / source_bpm
+
+        # 5b. Media bounds (Phase 10A, Sol amendment 6): an untrusted region
+        # must land inside the resolved Foundation stem. One documented
+        # tolerance covers the six-decimal ffmpeg argument serialization.
+        if (
+            not math.isfinite(source_offset_seconds)
+            or source_offset_seconds < 0
+            or not math.isfinite(source_duration_seconds)
+            or source_duration_seconds <= 0
+        ):
+            raise _precondition("S_REGION_BEYOND_MEDIA")
+        stem_duration = self._probe_media_duration(stem_path)
+        if (
+            not math.isfinite(stem_duration)
+            or source_offset_seconds + source_duration_seconds
+            > stem_duration + MEDIA_EDGE_TOLERANCE_SECONDS
+        ):
+            raise _precondition("S_REGION_BEYOND_MEDIA")
 
         # 6. Prepare and publish the opaque file before the short SQLite write
         #    transaction begins. The caller either registers it in the action
@@ -354,6 +384,26 @@ class GhostAssetStore:
             raise GhostAssetPreparationError(
                 "S_PREPARATION_FAILED", "the preview asset failed decode validation"
             )
+
+    def _probe_media_duration(self, path: Path) -> float:
+        """Metadata-only duration probe for media-bounds validation (A6).
+
+        A missing/unreadable duration fails honestly rather than allowing an
+        out-of-bounds slice to reach ffmpeg.
+        """
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "json", str(path),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise _precondition("S_STEM_UNAVAILABLE")
+        try:
+            data = json.loads(proc.stdout)
+            return float(data["format"]["duration"])
+        except (KeyError, ValueError, json.JSONDecodeError):
+            raise _precondition("S_STEM_UNAVAILABLE")
 
     @staticmethod
     def _hash_file(path: Path) -> str:

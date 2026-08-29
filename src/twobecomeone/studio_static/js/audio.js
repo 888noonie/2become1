@@ -103,6 +103,7 @@ class AudioController {
   seek(seconds) {
     if (Number.isFinite(seconds)) {
       this._audio.currentTime = Math.max(0, seconds);
+      this._emit('seek', this._audio.currentTime);
     }
   }
 }

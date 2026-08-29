@@ -19,6 +19,7 @@ import time
 from typing import Any, Callable
 
 from . import actions as action_contract
+from . import proposal_lifecycle as lifecycle_contract
 from .common import ConflictError, NotFoundError, UserError
 
 PROJECTION_VERSION = 1
@@ -259,6 +260,133 @@ class ActionStore:
         }
 
     # ------------------------------------------------------------------
+    # Durable runtime lifecycle facts (Phase 10A)
+    # ------------------------------------------------------------------
+
+    def record_lifecycle_fact(self, project_id: str, proposal_id: str, body: dict) -> dict:
+        """Validate and durably record one proposal lifecycle transition.
+
+        One SQLite transaction covers the fact insert AND the
+        ``action_projection`` lifecycle update (A4: the projection can never
+        diverge from the fact table). Replay-idempotent: if the proposal is
+        already in the target state, returns success with no write (network
+        retries must not fail). Producer is denied; the frozen forward
+        transition table is enforced; terminal proposals never transition.
+        """
+        project_id = str(project_id)
+        proposal_id = str(proposal_id)
+        validated = lifecycle_contract.validate_lifecycle_request(body)
+        target = validated["to"]
+        actor = validated["actor"]
+        fact = validated["fact"]
+
+        conn = self._connect()
+        try:
+            # Serialize concurrent writers on the single projection row first,
+            # so two competing transitions cannot partially mutate or surface
+            # a raw SQLite lock (A4). BEGIN IMMEDIATE takes the write lock.
+            conn.execute("BEGIN IMMEDIATE")
+            projection = self._load_projection_for_update(conn, project_id)
+            proposal = projection["proposals"]["byId"].get(proposal_id)
+            if proposal is None:
+                conn.rollback()
+                raise lifecycle_contract.unknown_proposal(proposal_id)
+
+            # Producer is constitutionally denied (mirrors _apply_to_projection).
+            if actor["type"] != "human":
+                conn.rollback()
+                raise ConflictError(
+                    "only a human may record a proposal lifecycle fact",
+                    code="P_ACTOR_NOT_ALLOWED",
+                )
+
+            current = proposal["lifecycle"]
+
+            # Replay-idempotent no-op: already in the target state. Returns
+            # success with no write exactly once per identical retry.
+            if current == target:
+                conn.rollback()
+                return {
+                    "outcome": "lifecycle_replayed",
+                    "proposalId": proposal_id,
+                    "lifecycle": current,
+                    "idempotentReplay": True,
+                }
+
+            if not lifecycle_contract.valid_runtime_transition(current, target):
+                conn.rollback()
+                raise ConflictError(
+                    "lifecycle transition is not permitted",
+                    code="L_INVALID_TRANSITION",
+                    detail=json.dumps({"from": current, "to": target}, sort_keys=True),
+                )
+
+            # One-transaction fact insert + projection update (A4). The unique
+            # index turns a concurrent identical hop into an integrity error
+            # which we convert into the replay response.
+            recorded_at = time.time()
+            try:
+                conn.execute(
+                    "INSERT INTO proposal_lifecycle_facts ("
+                    " project_id, proposal_id, from_state, to_state,"
+                    " actor_type, actor_id, fact_json, recorded_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        project_id,
+                        proposal_id,
+                        current,
+                        target,
+                        actor["type"],
+                        actor["id"],
+                        lifecycle_contract.canonical_fact_json(fact) if fact else None,
+                        recorded_at,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                # A concurrent identical transition won the race; succeed as a
+                # replay with no second fact row. Re-check the state under the
+                # write lock for an honest response.
+                conn.rollback()
+                return {
+                    "outcome": "lifecycle_replayed",
+                    "proposalId": proposal_id,
+                    "lifecycle": target,
+                    "idempotentReplay": True,
+                }
+
+            proposal["lifecycle"] = target
+            # Zero-partial-mutation failure path: the update targets the same
+            # transaction; if it fails the insert rolls back with it.
+            updated = conn.execute(
+                "UPDATE action_projection SET proposals_json = ?, updated_at = ?"
+                " WHERE project_id = ?",
+                (
+                    action_contract.canonical_json(projection["proposals"]),
+                    recorded_at,
+                    project_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("projection row vanished mid-transaction")
+            conn.commit()
+            return {
+                "outcome": "lifecycle_recorded",
+                "proposalId": proposal_id,
+                "from": current,
+                "lifecycle": target,
+                "recordedAt": recorded_at,
+                "idempotentReplay": False,
+            }
+        except Exception:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise  # preserve the specific public error (404/409/422)
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
     # Projection pipeline (pure helpers operating on plain dicts)
     # ------------------------------------------------------------------
 
@@ -425,4 +553,30 @@ class ActionStore:
             # precondition and server asset verification held at append time;
             # rebuilding must not rerun filesystem/subprocess side effects.
             self._apply_to_projection(action, projection, replaying=True)
+        # A4: the ledger alone no longer rebuilds runtime truth — lifecycle
+        # facts live in their own table. Re-apply them in recorded order; the
+        # frozen transition table is enforced identically here, so terminal
+        # musical Actions remain decisive and an unknown/orphan fact can never
+        # resurrect a terminal proposal.
+        self._reapply_runtime_facts(projection, project_id)
         return projection
+
+    def _reapply_runtime_facts(self, projection: dict, project_id: str) -> None:
+        """Restore scheduled/auditioning facts onto a freshly rebuilt projection."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT proposal_id, from_state, to_state, recorded_at, id"
+                " FROM proposal_lifecycle_facts WHERE project_id = ?"
+                " ORDER BY recorded_at ASC, id ASC",
+                (project_id,),
+            ).fetchall()
+        for row in rows:
+            proposal = projection["proposals"]["byId"].get(row["proposal_id"])
+            if proposal is None:
+                continue
+            current = proposal["lifecycle"]
+            target = row["to_state"]
+            if current == target:
+                continue
+            if lifecycle_contract.valid_runtime_transition(current, target):
+                proposal["lifecycle"] = target

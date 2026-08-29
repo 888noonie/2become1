@@ -6,7 +6,7 @@
 import { Router } from './router.js';
 import { audioController } from './audio.js';
 import { closeAllMonitors, getHealth, listJobs, listTracks } from './api.js';
-import { jobCoordinator, store, projectManager } from './app-context.js';
+import { jobCoordinator, store, projectManager, ghostController } from './app-context.js';
 import { mountStudio } from './views/studio.js';
 import { mountLibrary } from './views/library.js';
 import { mountActivity } from './views/activity.js';
@@ -58,6 +58,9 @@ function updateNowPlaying() {
 
 // ---- Audio events -> store ----
 audioController.on((type, payload) => {
+  // Phase 10B (A7): the Ghost controller re-proves destination ownership on
+  // every play/pause/stop/ended; display state below is unchanged.
+  ghostController.handleAudioEvent(type, payload);
   if (type === 'play') {
     store.dispatch({
       type: 'playback/set',
@@ -80,6 +83,8 @@ audioController.on((type, payload) => {
     store.dispatch({ type: 'playback/set', time: payload });
   } else if (type === 'duration') {
     store.dispatch({ type: 'playback/set', duration: payload });
+  } else if (type === 'ended') {
+    store.dispatch({ type: 'playback/set', playing: false });
   } else if (type === 'error') {
     store.dispatch({ type: 'playback/set', error: payload.message });
   } else if (type === 'stop') {
@@ -139,6 +144,7 @@ function teardown() {
   jobCoordinator.dispose();
   closeAllMonitors();
   audioController.stop();
+  ghostController.shutdown(); // Phase 10B: cancel runtime machinery, close ctx
 }
 
 window.addEventListener('beforeunload', teardown, { once: true });

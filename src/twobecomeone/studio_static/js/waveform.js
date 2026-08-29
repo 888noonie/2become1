@@ -89,6 +89,11 @@ export function clamp(value, min, max) {
  * @param {(seconds: number) => void} opts.onSetCue - persist a new cue.
  * @param {() => boolean} opts.isSnapEnabled - project snap setting.
  * @param {(seconds: number) => void} [opts.onAnnounce] - polite announcements.
+ * @param {{ onRegionSelected?: (times: {startSeconds: number, endSeconds: number}) => void }} [opts.regionHooks]
+ *   OPTIONAL Phase 10C region-selection hooks. When absent, behaviour is
+ *   byte-for-byte identical to V0.3: pointer-down seeks, cue controls work.
+ *   When present, pointer-down instead begins a beat-snapped drag selection;
+ *   Esc or pointer-cancel restores ordinary seek behaviour (Sol amendment 11).
  * @returns {() => void} disposer (aborts fetches, disconnects observers).
  */
 export function mountWaveform({
@@ -102,6 +107,7 @@ export function mountWaveform({
   isSnapEnabled,
   onAnnounce,
   fetchImpl,
+  regionHooks = null,
 }) {
   const doc = container.ownerDocument;
   const root = doc.createElement('div');
@@ -113,12 +119,115 @@ export function mountWaveform({
   canvas.className = 'waveform__canvas';
   canvas.setAttribute('role', 'img');
   canvas.setAttribute('aria-label', `${role === 'anchor' ? 'Foundation' : 'Lead'} waveform for ${track.name}`);
+  // Phase 10C: expose the region-armed state as a data attribute so the
+  // browser harness can deterministically wait for the re-rendered canvas
+  // (no hardcoded sleeps) before issuing pointer events.
+  const regionArmed = Boolean(
+    regionHooks && typeof regionHooks.isArmed === 'function' && regionHooks.isArmed(),
+  );
+  if (regionArmed) canvas.setAttribute('data-region-mode', 'true');
   canvas.addEventListener('pointerdown', (event) => {
     const rect = canvas.getBoundingClientRect();
     if (rect.width === 0) return;
     const fraction = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    // OPTIONAL region mode (Phase 10C, Sol amendment 11): when the hooks are
+    // provided AND region selection is armed, pointer-down starts a
+    // beat-snapped drag selection instead of seeking. Esc/pointer-cancel
+    // restore the ordinary seek path. When hooks are absent this branch is
+    // never taken — V0.3 behaviour is untouched.
+    if (regionHooks && typeof regionHooks.isArmed === 'function' && regionHooks.isArmed()) {
+      startRegionDrag(event, rect);
+      return;
+    }
     onSeek(fraction * track.duration);
   });
+
+  // ------------------------------------------------------------------
+  // OPTIONAL region drag selection (Phase 10C). Derived view geometry only
+  // (Sol amendment 11): computed from DOM bounds locally, never dispatched;
+  // pointer capture released on up/cancel; Esc exits via the armed hook.
+  // ------------------------------------------------------------------
+  let regionOverlay = null;
+  let regionActive = false;
+  let cancelRegionDrag = () => {};
+
+  function ensureRegionOverlay() {
+    if (!regionOverlay) {
+      regionOverlay = doc.createElement('div');
+      regionOverlay.className = 'waveform__region-overlay';
+      root.appendChild(regionOverlay);
+    }
+    return regionOverlay;
+  }
+
+  const startRegionDrag = (event, rect) => {
+    regionActive = true;
+    const overlay = ensureRegionOverlay();
+    const startSeconds = clamp((event.clientX - rect.left) / rect.width, 0, 1) * track.duration;
+
+    const move = (moveEvent) => {
+      if (!regionActive) return;
+      const moveRect = canvas.getBoundingClientRect();
+      const currentSeconds = clamp((moveEvent.clientX - moveRect.left) / moveRect.width, 0, 1) * track.duration;
+      const from = Math.min(startSeconds, currentSeconds);
+      const to = Math.max(startSeconds, currentSeconds);
+      overlay.style.left = `${(from / track.duration) * 100}%`;
+      overlay.style.width = `${((to - from) / track.duration) * 100}%`;
+      overlay.dataset.active = 'true';
+    };
+
+    let finish = null; // assigned below; listeners close over the binding
+
+    const onUp = (upEvent) => {
+      if (upEvent.pointerId !== event.pointerId) return;
+      finish(true);
+    };
+    const onCancelUp = () => finish(false);
+    const onLostCapture = () => finish(false);
+    const onEsc = (keyEvent) => {
+      if (keyEvent.key !== 'Escape') return;
+      finish(false);
+      onAnnounce?.('Region selection cancelled.');
+    };
+
+    finish = (commit, notifyCancel = true) => {
+      if (!regionActive) return;
+      regionActive = false;
+      try { canvas.releasePointerCapture(event.pointerId); } catch { /* not captured */ }
+      const overlays = overlay.style.left ? {
+        start: (parseFloat(overlay.style.left) / 100) * track.duration,
+        width: (parseFloat(overlay.style.width) || 0) * track.duration / 100,
+      } : null;
+      overlay.style.removeProperty('left');
+      overlay.style.removeProperty('width');
+      overlay.dataset.active = 'false';
+      canvas.removeEventListener('pointermove', move);
+      canvas.removeEventListener('pointerup', onUp);
+      canvas.removeEventListener('pointercancel', onCancelUp);
+      canvas.removeEventListener('lostpointercapture', onLostCapture);
+      doc.removeEventListener('keydown', onEsc, true);
+      cancelRegionDrag = () => {};
+      if (commit && overlays && overlays.width > 0 && regionHooks.isArmed()) {
+        regionHooks.onRegionSelected?.({
+          startSeconds: overlays.start,
+          endSeconds: overlays.start + overlays.width,
+        });
+        onAnnounce?.(`Phrase selected: ${overlays.start.toFixed(1)} to ${(overlays.start + overlays.width).toFixed(1)} seconds`);
+      } else if (!commit && notifyCancel) {
+        regionHooks.onRegionCancelled?.();
+      }
+    };
+
+    try { canvas.setPointerCapture(event.pointerId); } catch { /* pointer gone */ }
+    canvas.addEventListener('pointermove', move);
+    canvas.addEventListener('pointerup', onUp);
+    canvas.addEventListener('pointercancel', onCancelUp);
+    canvas.addEventListener('lostpointercapture', onLostCapture);
+    doc.addEventListener('keydown', onEsc, true);
+    cancelRegionDrag = () => finish(false, false);
+    move(event);
+    onAnnounce?.('Region selection started. Drag, then release; Escape cancels.');
+  };
 
   const status = doc.createElement('div');
   status.className = 'waveform__status';
@@ -312,7 +421,9 @@ export function mountWaveform({
 
   return function dispose() {
     disposed = true;
+    cancelRegionDrag();
     abortWaveform(track.id);
     if (observer) observer.disconnect();
+    if (root.parentNode === container) root.remove();
   };
 }

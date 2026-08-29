@@ -1,7 +1,7 @@
 # V1 Ghost Action Architecture
 
-- **Status:** Product blueprint; headless foundations completed through Phase 9
-- **Captured:** 2026-08-27; implementation status updated 2026-08-28
+- **Status:** Product blueprint; first visible Ghost preview completed in Phase 10
+- **Captured:** 2026-08-27; implementation status updated 2026-08-29
 - **Source:** Richard/Sol design conversation preserved in `Sol to Sol.txt`
 - **First vertical slice:** Borrow a selected vocal phrase from Deck A and
   audition it temporarily over Deck B at the next phrase boundary
@@ -10,9 +10,12 @@ Implementation checkpoint: Phase 8 (`044cb03`) delivered the strict Action,
 proposal, permission, reducer, provenance, and DeckTransport contracts. Phase 9
 (`f110a2d`) delivered the durable SQLite ledger/projection, managed
 pre-rendered vocal assets, reload hydration, and deterministic Web Audio
-scheduling proof. No visible Ghost controls/tether or Producer interface are
-wired into the product yet. See `V1_ACTION_TRANSPORT_EVIDENCE.md` and
-`V1_DURABLE_ACOUSTIC_EVIDENCE.md` for exact scope and limitations.
+scheduling proof. Phase 10 delivered the first visible, human-only Ghost Phase
+B workflow: bounded phrase selection, preview scheduling, status/tether, and
+durable Release/Retry. Commit/acceptance, render parity, and Producer access
+remain deferred. See `V1_ACTION_TRANSPORT_EVIDENCE.md`,
+`V1_DURABLE_ACOUSTIC_EVIDENCE.md`, and
+`../PHASE_10_VISIBLE_GHOST_UX_EVIDENCE.md` for exact scope and limitations.
 
 ## 1. Product rule
 
@@ -207,7 +210,8 @@ phase still requires a repository-aware, Richard-approved plan.
 
 ### Ghost Phase A — Action and transport contracts
 
-**Foundation complete (Phase 8); production UI integration remains deferred.**
+**Foundation complete (Phase 8); human preview integration completed in Phase
+10. Producer integration remains deferred.**
 
 - model actors, requests, proposals, lifecycle events, and committed Actions;
 - define permission, idempotency, provenance, and failure contracts;
@@ -216,8 +220,8 @@ phase still requires a repository-aware, Richard-approved plan.
 
 ### Ghost Phase B — Deterministic human preview
 
-**Acoustic backend/scheduler proof complete (Phase 9); visible human workflow
-not implemented.**
+**Completed in Phase 10:** the Phase 9 acoustic backend/scheduler proof is now
+wired into the visible, accessible human workflow.
 
 - implement selected-region drag from A to B;
 - schedule one bounded Ghost vocal against the destination transport;

@@ -405,6 +405,40 @@ test('Waveform controls are keyboard accessible via native range and buttons', a
   assert.equal(seeked, 10, 'slider seeks to 10s');
 });
 
+test('Waveform teardown cancels an active captured drag and removes its DOM', async () => {
+  const { mountWaveform } = await import('../../src/twobecomeone/studio_static/js/waveform.js');
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  let armed = true;
+  const dispose = mountWaveform({
+    container,
+    track: { id: 'drag-track', name: 'Track', duration: 60, beat_grid: { first_beat: 0, interval: 0.5 } },
+    role: 'anchor',
+    getTime: () => 0,
+    onSeek: () => {},
+    getCue: () => 0,
+    onSetCue: () => {},
+    isSnapEnabled: () => true,
+    regionHooks: { isArmed: () => armed, onRegionSelected: () => { armed = false; } },
+  });
+  const canvas = container.querySelector('canvas');
+  canvas.getBoundingClientRect = () => ({ left: 0, width: 100 });
+  let captured = 0;
+  let released = 0;
+  canvas.setPointerCapture = () => { captured += 1; };
+  canvas.releasePointerCapture = () => { released += 1; };
+  const down = new window.Event('pointerdown', { bubbles: true });
+  Object.defineProperties(down, {
+    clientX: { value: 20 },
+    pointerId: { value: 7 },
+  });
+  canvas.dispatchEvent(down);
+  assert.equal(captured, 1);
+  dispose();
+  assert.equal(released, 1);
+  assert.equal(container.children.length, 0);
+});
+
 test('Analysis dialog shows effective, detected, and override layers separately', async () => {
   const store = makeStore({});
   const track = {
