@@ -15,6 +15,7 @@ import { mountDeck } from '../components/deck.js';
 import { mountPlan } from '../components/plan.js';
 import { mountRenderActions } from '../components/render-actions.js';
 import { mountGhostCard } from '../components/ghost-card.js';
+import { mountCommittedLayers } from '../components/committed-layers.js';
 import {
   checkGhostPreconditions,
   ensureVocalsStemKnown,
@@ -149,6 +150,7 @@ export function mountStudio({ container }) {
   let planDisposer = null;
   let renderActionsDisposer = null;
   let ghostCardDisposer = null;
+  let committedLayersDisposer = null;
 
   const studioRoot = createElement('div', { class: 'studio' });
   container.replaceChildren(studioRoot);
@@ -170,6 +172,7 @@ export function mountStudio({ container }) {
   // Phase 10C: the Ghost status card sits between decks and plan so the
   // truthful state is visible in the natural flow.
   const ghostCardContainer = createElement('div', { class: 'studio__ghost-card-container' });
+  const committedLayersContainer = createElement('div', { class: 'studio__committed-layers-container' });
   const planContainer = createElement('div', { class: 'studio__plan-container' });
   const renderActionsContainer = createElement('div', { class: 'studio__render-actions-container' });
 
@@ -185,6 +188,7 @@ export function mountStudio({ container }) {
   studioRoot.appendChild(swapBar);
   studioRoot.appendChild(decksContainer);
   studioRoot.appendChild(ghostCardContainer);
+  studioRoot.appendChild(committedLayersContainer);
   studioRoot.appendChild(planContainer);
   studioRoot.appendChild(renderActionsContainer);
 
@@ -282,6 +286,8 @@ export function mountStudio({ container }) {
     onAction: (action) => {
       if (action === 'release') {
         ghostController.release().catch((err) => showToast(err?.message || 'Release failed', 'danger'));
+      } else if (action === 'commit') {
+        ghostController.commit().catch((err) => showToast(err?.message || 'Commit failed', 'danger'));
       } else if (action === 'retry') {
         const status = store.getState().ghostStatus;
         if (status.error?.code === 'GHOST_HYDRATION_FAILED') {
@@ -298,6 +304,12 @@ export function mountStudio({ container }) {
       }
     },
   });
+  committedLayersDisposer = mountCommittedLayers({
+    container: committedLayersContainer,
+    store,
+    onAnnounce,
+    onUndo: (commitActionId) => ghostController.revert(commitActionId),
+  });
 
   updateHeader();
 
@@ -312,6 +324,7 @@ export function mountStudio({ container }) {
     if (planDisposer) planDisposer();
     if (renderActionsDisposer) renderActionsDisposer();
     if (ghostCardDisposer) ghostCardDisposer();
+    if (committedLayersDisposer) committedLayersDisposer();
     projectManager.flushNow();
   };
 }

@@ -21,6 +21,8 @@ const PHASE_COPY = {
   releasing: 'Releasing Ghost preview…',
   interrupted: 'Ghost preview interrupted.',
   conflict: 'Several Ghost previews need Release.',
+  committing: 'Committing Ghost…',
+  committed: 'Ghost committed — it will be included in the next preview/render.',
 };
 
 function fmt(n, digits = 1) {
@@ -79,13 +81,18 @@ export function mountGhostCard({ container, store, anchorCardEl, leadCardEl, onA
     'aria-label': 'Retry the Ghost preview',
     onclick: () => onAction('retry'),
   });
+  const commitBtn = createElement('button', {
+    class: 'button button--primary', type: 'button', text: 'Commit',
+    'aria-label': 'Commit the Ghost as a durable layer',
+    onclick: () => onAction('commit'),
+  });
 
   const body = createElement('div', { class: 'ghost-card__body' }, [
     phaseEl,
     summaryEl,
     receiptEl,
     errorEl,
-    createElement('div', { class: 'ghost-card__actions' }, [releaseBtn, retryBtn]),
+    createElement('div', { class: 'ghost-card__actions' }, [commitBtn, releaseBtn, retryBtn]),
   ]);
   replaceChildren(root, [body]);
 
@@ -195,6 +202,11 @@ export function mountGhostCard({ container, store, anchorCardEl, leadCardEl, onA
     ].includes(phase) || Boolean(status.error);
     releaseBtn.hidden = !actionable;
     retryBtn.hidden = !actionable;
+    // Commit is only meaningful once the Ghost actually reached the launch
+    // boundary (auditioning) or finished (ended) — the exact Ghost heard.
+    const committable = ['auditioning', 'ended'].includes(phase);
+    commitBtn.hidden = !committable;
+    commitBtn.disabled = phase === 'committing' ? 'true' : null;
     // Tether activity class: armed/auditioning only.
     tether.dataset.active = ['armed', 'auditioning'].includes(phase) ? 'true' : 'false';
     tether.dataset.visible = ['armed', 'auditioning', 'preparing'].includes(phase) ? 'true' : 'false';

@@ -553,6 +553,62 @@ class GhostAssetStore:
             if conn is None:
                 target_conn.close()
 
+    def verify_committed_asset(self, project_id: str, asset_id: str, content_hash: str) -> Path:
+        """Verify a committed layer's pinned asset for render preflight (Phase 11B).
+
+        Sol amendment 2: asset existence, managed-root containment, pinned
+        status, content hash, and decode validity are all verified while
+        constructing the server-authored render plan. A missing/corrupt asset
+        raises a stable, layer-identifying error — never silently omitted.
+
+        Returns the validated managed path on success.
+        """
+        if not isinstance(asset_id, str) or ASSET_ID_RE.fullmatch(asset_id) is None:
+            raise GhostAssetPreparationError(
+                "S_ASSET_UNAVAILABLE", "committed asset identity is invalid"
+            )
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT relative_path, pinned, content_sha256 FROM ghost_assets"
+                " WHERE id = ? AND project_id = ?",
+                (asset_id, project_id),
+            ).fetchone()
+        if row is None:
+            raise GhostAssetPreparationError(
+                "S_ASSET_UNAVAILABLE", "committed asset is missing from the registry"
+            )
+        if not row["pinned"]:
+            raise GhostAssetPreparationError(
+                "S_ASSET_UNAVAILABLE", "committed asset is not pinned"
+            )
+        if row["content_sha256"] != content_hash:
+            raise GhostAssetPreparationError(
+                "S_ASSET_MISMATCH", "committed asset content hash does not match"
+            )
+        from .media import validate_managed_path
+        try:
+            path = validate_managed_path(self.asset_root() / row["relative_path"], self.asset_root())
+        except UserError:
+            raise GhostAssetPreparationError(
+                "S_ASSET_UNAVAILABLE", "committed asset path is outside the managed root"
+            )
+        if not path.is_file():
+            raise GhostAssetPreparationError(
+                "S_ASSET_UNAVAILABLE", "committed asset file is missing"
+            )
+        try:
+            self._probe_audio(path)
+        except GhostAssetPreparationError:
+            raise GhostAssetPreparationError(
+                "S_ASSET_UNAVAILABLE", "committed asset failed decode validation"
+            )
+        actual_hash = self._hash_file(path)
+        if actual_hash != content_hash:
+            raise GhostAssetPreparationError(
+                "S_ASSET_MISMATCH", "committed asset bytes no longer match the recorded hash"
+            )
+        return path
+
     def cleanup_expired(self, now: float | None = None) -> int:
         """Explicit GC: remove only expired, unpinned assets. Returns count."""
         now = now if now is not None else self._clock()

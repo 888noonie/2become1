@@ -141,6 +141,16 @@
   .ghost-card {
     border-left-width: 2px;
   }
+  .committed-layers {
+    border-left-width: 2px;
+  }
+  .committed-layer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .committed-layer .button {
+    width: 100%;
+  }
   .ghost-dialog__grid {
     grid-template-columns: 1fr;
   }

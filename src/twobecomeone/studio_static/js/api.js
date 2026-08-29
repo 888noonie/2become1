@@ -511,6 +511,51 @@ export function buildRejectAction(proposalId, reason = null) {
   };
 }
 
+/**
+ * Build the human commit_layer Action envelope for one proposal (Phase 11A).
+ * The acceptedAsset is echoed VERBATIM from the server's prepared asset — the
+ * client never invents or re-derives the hash/transform.
+ */
+export function buildCommitAction(proposalId, acceptedAsset, acceptedAt = null) {
+  return {
+    id: crypto.randomUUID(),
+    schemaVersion: 1,
+    type: 'commit_layer',
+    actor: { type: 'human', id: 'local-human' },
+    requestedAt: new Date().toISOString(),
+    idempotencyKey: crypto.randomUUID(),
+    payload: {
+      proposalId,
+      acceptedAt: acceptedAt || new Date().toISOString(),
+      acceptedAsset: {
+        id: acceptedAsset.id,
+        contentHash: acceptedAsset.contentHash,
+        transformSpec: acceptedAsset.transformSpec,
+      },
+    },
+  };
+}
+
+/**
+ * Build the human revert_commit Action envelope for one committed layer
+ * (Phase 11C). Append-only reversal; never deletes the commit row or asset.
+ */
+export function buildRevertAction(commitActionId, reason = null) {
+  return {
+    id: crypto.randomUUID(),
+    schemaVersion: 1,
+    type: 'revert_commit',
+    actor: { type: 'human', id: 'local-human' },
+    requestedAt: new Date().toISOString(),
+    idempotencyKey: crypto.randomUUID(),
+    payload: {
+      commitActionId,
+      revertedAt: new Date().toISOString(),
+      ...(reason ? { reason } : {}),
+    },
+  };
+}
+
 /** Body for the proposal lifecycle-fact endpoint. */
 export function buildLifecycleBody(to, fact = null) {
   return {

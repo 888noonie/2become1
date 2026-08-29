@@ -12,8 +12,11 @@ import { audioController } from './audio.js';
 import {
   postProjectAction,
   postProposalLifecycle,
+  getActionState,
   buildPreviewAction,
   buildRejectAction,
+  buildCommitAction,
+  buildRevertAction,
   buildLifecycleBody,
 } from './api.js';
 
@@ -28,8 +31,11 @@ export const ghostController = new GhostController({
   api: {
     postProjectAction,
     postProposalLifecycle,
+    getActionState,
     buildPreviewAction,
     buildRejectAction,
+    buildCommitAction,
+    buildRevertAction,
     buildLifecycleBody,
   },
   // A7 ownership proof: the controller reads the REAL singleton player so it

@@ -31,12 +31,14 @@ export const V1_ACTION_TYPES = Object.freeze({
   V1_PROPOSAL_SUPERSEDED: 'v1/proposal/superseded',
   V1_PROPOSAL_REJECTED: 'v1/proposal/rejected',
   V1_PROPOSAL_COMMIT_RECORDED: 'v1/proposal/commit-recorded',
+  V1_COMMIT_REVERTED: 'v1/commit/reverted',
   V1_SESSION_ASSIGN_DECK: 'v1/session/assign-deck',
 });
 
 export const V1_INITIAL_SESSION = Object.freeze({
   deckAssignments: Object.freeze({ A: null, B: null }),
   committedLayers: Object.freeze([]),
+  revertedLayers: Object.freeze([]),
   acceptedActionIds: Object.freeze([]),
 });
 
@@ -62,12 +64,14 @@ function ensureSessionSlots(session) {
     return {
       deckAssignments: { A: null, B: null },
       committedLayers: [],
+      revertedLayers: [],
       acceptedActionIds: [],
     };
   }
   return {
     deckAssignments: session.deckAssignments || { A: null, B: null },
     committedLayers: session.committedLayers || [],
+    revertedLayers: session.revertedLayers || [],
     acceptedActionIds: session.acceptedActionIds || [],
   };
 }
@@ -188,6 +192,28 @@ export function reduceV1(state, action) {
         ...state,
         proposals: { ...proposals, byId, activeIds },
         session: { ...session, committedLayers, acceptedActionIds },
+      };
+    }
+
+    case V1_ACTION_TYPES.V1_COMMIT_REVERTED: {
+      const { commitActionId, revertActionId } = action;
+      if (!commitActionId || !revertActionId) return state;
+      const session = ensureSessionSlots(state.session);
+      const index = session.committedLayers.findIndex(
+        (layer) => layer.actionId === commitActionId,
+      );
+      if (index === -1) return state; // already reverted or unknown
+      const layer = session.committedLayers[index];
+      const committedLayers = session.committedLayers.filter(
+        (l) => l.actionId !== commitActionId,
+      );
+      const revertedLayers = [
+        ...session.revertedLayers,
+        freezeDeep({ ...layer, revertedBy: revertActionId }),
+      ];
+      return {
+        ...state,
+        session: { ...session, committedLayers, revertedLayers },
       };
     }
 

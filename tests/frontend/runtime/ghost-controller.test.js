@@ -99,7 +99,7 @@ function fakeReceipt() {
     assetId: 'ga-1',
     assetContentHash: 'sha256:abc',
     gridRevision: 'grid-v1:' + 'a'.repeat(64),
-    launchBeat: 8,
+    resolvedBeat: 8,
     phraseIndex: 0,
     launchAudioTime: 10.0,
   };

@@ -288,23 +288,27 @@ class TestAssetServing:
 
 class TestCommitPinning:
     def _auditioning_commit(self, service, project_id, asset):
-        # Drive the lifecycle to auditioning via direct projection mutation
-        # would break durability guarantees; instead the runtime/test seam in
-        # this tri-phase advances lifecycle through the ledger. Use the
-        # documented test seam: a scheduled + auditioning fact is not a public
-        # Action type, so the service exposes the internal transition helper.
-        store = service._actions
-        with store._connect() as conn:
-            row = conn.execute(
-                "SELECT proposals_json FROM action_projection WHERE project_id = ?",
-                (project_id,),
-            ).fetchone()
-            proposals = json.loads(row["proposals_json"])
-            proposals["byId"]["a-1"]["lifecycle"] = "auditioning"
-            conn.execute(
-                "UPDATE action_projection SET proposals_json = ? WHERE project_id = ?",
-                (json.dumps(proposals), project_id),
-            )
+        # Phase 11 (Sol amendment 6): drive the proposal to auditioning through
+        # the durable lifecycle-fact endpoint (the real path), so the commit
+        # can load the canonical launch receipt.
+        service.record_proposal_lifecycle(
+            project_id, "a-1",
+            {"to": "scheduled", "actor": {"type": "human", "id": "richard"}, "at": "t"},
+        )
+        service.record_proposal_lifecycle(
+            project_id, "a-1",
+            {
+                "to": "auditioning",
+                "actor": {"type": "human", "id": "richard"},
+                "at": "t",
+                "fact": {
+                    "assetId": asset["id"],
+                    "contentHash": asset["contentHash"],
+                    "gridRevision": asset["transformSpec"]["destinationGridRevision"],
+                    "launchBeat": 32.0,
+                },
+            },
+        )
         commit = {
             "id": "c-1",
             "schemaVersion": 1,
@@ -345,7 +349,7 @@ class TestCommitPinning:
         service, project_id, anchor, lead = prepared_project
         result = service.record_project_action(project_id, preview_action())
         asset = result["outcome"]["asset"]
-        self._auditioning_commit_setup_only(service, project_id)
+        self._auditioning_commit_setup_only(service, project_id, asset)
         commit = {
             "id": "c-2",
             "schemaVersion": 1,
@@ -371,19 +375,28 @@ class TestCommitPinning:
         assert state["proposals"]["byId"]["a-1"]["lifecycle"] == "auditioning"
         assert state["session"]["committedLayers"] == []
 
-    def _auditioning_commit_setup_only(self, service, project_id):
-        store = service._actions
-        with store._connect() as conn:
-            row = conn.execute(
-                "SELECT proposals_json FROM action_projection WHERE project_id = ?",
-                (project_id,),
-            ).fetchone()
-            proposals = json.loads(row["proposals_json"])
-            proposals["byId"]["a-1"]["lifecycle"] = "auditioning"
-            conn.execute(
-                "UPDATE action_projection SET proposals_json = ? WHERE project_id = ?",
-                (json.dumps(proposals), project_id),
-            )
+    def _auditioning_commit_setup_only(self, service, project_id, asset):
+        # Phase 11 (Sol amendment 6): drive the proposal to auditioning through
+        # the durable lifecycle-fact endpoint (the real path), so the commit
+        # can load the canonical launch receipt.
+        service.record_proposal_lifecycle(
+            project_id, "a-1",
+            {"to": "scheduled", "actor": {"type": "human", "id": "richard"}, "at": "t"},
+        )
+        service.record_proposal_lifecycle(
+            project_id, "a-1",
+            {
+                "to": "auditioning",
+                "actor": {"type": "human", "id": "richard"},
+                "at": "t",
+                "fact": {
+                    "assetId": asset["id"],
+                    "contentHash": asset["contentHash"],
+                    "gridRevision": asset["transformSpec"]["destinationGridRevision"],
+                    "launchBeat": 32.0,
+                },
+            },
+        )
 
     def test_commit_retry_returns_original_result(self, prepared_project):
         service, project_id, anchor, lead = prepared_project
@@ -406,7 +419,7 @@ class TestCommitPinning:
                 },
             },
         }
-        self._auditioning_commit_setup_only(service, project_id)
+        self._auditioning_commit_setup_only(service, project_id, asset)
         first = service.record_project_action(project_id, commit)
         retry = service.record_project_action(project_id, commit)
         assert retry["idempotentReplay"] is True
@@ -417,7 +430,7 @@ class TestCommitPinning:
         service, project_id, anchor, lead = prepared_project
         result = service.record_project_action(project_id, preview_action())
         asset = result["outcome"]["asset"]
-        self._auditioning_commit_setup_only(service, project_id)
+        self._auditioning_commit_setup_only(service, project_id, asset)
         commit = {
             "id": "c-1",
             "schemaVersion": 1,

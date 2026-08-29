@@ -53,6 +53,7 @@ test('RenderBody is an exact backend allowlist and Preview 12s never exceeds twe
   );
   const full = buildRenderBody(project(), { preview: false });
   assert.deepEqual(full, {
+    project_id: 'project-1',
     anchor_id: 'anchor-1',
     lead_id: 'lead-1',
     anchor_start: 1.25,

@@ -53,6 +53,9 @@ class RenderBody(BaseModel):
 
     anchor_id: str
     lead_id: str
+    # Phase 11B: optional project scope so the server reads committed layers
+    # from the durable Action projection (Sol judgment call 1).
+    project_id: str | None = None
     anchor_start: float = Field(default=0.0, ge=0)
     lead_start: float = Field(default=0.0, ge=0)
     duration: float | None = Field(default=None, gt=0, le=3600)

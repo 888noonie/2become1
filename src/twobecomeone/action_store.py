@@ -54,6 +54,20 @@ class ActionStore:
     # Reads
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_projection(projection: dict) -> dict:
+        """Additive compatibility for snapshots written by earlier phases."""
+        session = projection.setdefault("session", {})
+        session.setdefault("deckAssignments", {"A": None, "B": None})
+        session.setdefault("committedLayers", [])
+        session.setdefault("revertedLayers", [])
+        session.setdefault("acceptedActionIds", [])
+        proposals = projection.setdefault("proposals", {})
+        proposals.setdefault("byId", {})
+        proposals.setdefault("order", [])
+        proposals.setdefault("activeIds", [])
+        return projection
+
     def _get_projection_row(self, conn: sqlite3.Connection, project_id: str) -> sqlite3.Row | None:
         return conn.execute(
             "SELECT * FROM action_projection WHERE project_id = ?",
@@ -73,11 +87,14 @@ class ActionStore:
                 "last_sequence": 0,
                 **action_contract.initial_projection(),
             }
+        projection = self._normalize_projection({
+            "session": json.loads(row["session_json"]),
+            "proposals": json.loads(row["proposals_json"]),
+        })
         return {
             "projection_version": row["projection_version"],
             "last_sequence": row["last_sequence"],
-            "session": json.loads(row["session_json"]),
-            "proposals": json.loads(row["proposals_json"]),
+            **projection,
         }
 
     def list_actions(self, project_id: str, after: int = 0, limit: int = 50) -> dict:
@@ -397,10 +414,10 @@ class ActionStore:
         ).fetchone()
         if row is None:
             return action_contract.initial_projection()
-        return {
+        return self._normalize_projection({
             "session": json.loads(row["session_json"]),
             "proposals": json.loads(row["proposals_json"]),
-        }
+        })
 
     def _next_sequence(self, conn: sqlite3.Connection, project_id: str) -> int:
         row = conn.execute(
@@ -443,6 +460,11 @@ class ActionStore:
                     "Producer is not permitted to reject proposals",
                     code="P_ACTOR_NOT_ALLOWED",
                 )
+            if action_type == "revert_commit":
+                raise ConflictError(
+                    "Producer is not permitted to revert commits",
+                    code="P_ACTOR_NOT_ALLOWED",
+                )
             # producer preview_layer is allowed only with explicit permission,
             # which this tri-phase does not grant through the public API.
             raise ConflictError(
@@ -469,6 +491,45 @@ class ActionStore:
                 "result": "proposal_created",
                 "proposal": record,
                 "asset": asset_descriptor,
+            }
+
+        if action_type == "revert_commit":
+            # Append-only reversal. Moves the committed layer from
+            # committedLayers to revertedLayers, retaining full provenance. The
+            # proposal stays terminal `accepted` with its committedActionId
+            # intact (reversal is session projection state, not a retroactive
+            # proposal lifecycle transition — Sol amendment 8).
+            commit_action_id = action["payload"]["commitActionId"]
+            committed = session.setdefault("committedLayers", [])
+            reverted = session.setdefault("revertedLayers", [])
+            # Rebuild may encounter the already-projected layer while replaying
+            # a legacy duplicate, but a live distinct second revert is a
+            # conflict and must not reach the ledger (Sol amendment 1).
+            if any(layer.get("actionId") == commit_action_id for layer in reverted):
+                if not replaying:
+                    raise ConflictError(
+                        "the committed layer has already been reverted",
+                        code="L_ALREADY_REVERTED",
+                    )
+                return {
+                    "result": "commit_already_reverted",
+                    "commitActionId": commit_action_id,
+                }
+            index = next(
+                (i for i, layer in enumerate(committed) if layer.get("actionId") == commit_action_id),
+                None,
+            )
+            if index is None:
+                raise NotFoundError(
+                    "commitActionId does not reference a committed layer in this project",
+                    code="L_UNKNOWN_COMMIT",
+                )
+            layer = dict(committed.pop(index))
+            layer["revertedBy"] = action["id"]
+            reverted.append(layer)
+            return {
+                "result": "commit_reverted",
+                "commitActionId": commit_action_id,
             }
 
         proposal_id = action["payload"].get("proposalId")
@@ -519,7 +580,18 @@ class ActionStore:
                 conn,
             )
         accepted_at = action["payload"].get("acceptedAt")
-        commit_layer = action_contract.make_committed_layer(action, proposal)
+        # Phase 11 (Sol amendment 6): load the durable auditioning fact and
+        # derive the canonical launch receipt. A live commit requires it (the
+        # exact Ghost Richard heard); a rebuild replay tolerates a legacy row
+        # lacking the receipt (it will fail render planning clearly, not
+        # silently default to beat zero).
+        launch_receipt = self._load_launch_receipt(project_id, proposal_id, verified, conn)
+        if launch_receipt is None and not replaying:
+            raise ConflictError(
+                "commit_layer requires a recorded auditioning launch fact",
+                code="L_NOT_AUDITIONING",
+            )
+        commit_layer = action_contract.make_committed_layer(action, proposal, launch_receipt)
         commit_layer["asset"] = {
             "id": verified["id"],
             "contentHash": verified["contentHash"],
@@ -552,7 +624,10 @@ class ActionStore:
             # successful commit row itself proves that the runtime auditioning
             # precondition and server asset verification held at append time;
             # rebuilding must not rerun filesystem/subprocess side effects.
-            self._apply_to_projection(action, projection, replaying=True)
+            # project_id is passed so the commit branch can re-derive the
+            # canonical launch receipt from the durable auditioning fact
+            # (Sol amendment 6) without filesystem work.
+            self._apply_to_projection(action, projection, project_id, replaying=True)
         # A4: the ledger alone no longer rebuilds runtime truth — lifecycle
         # facts live in their own table. Re-apply them in recorded order; the
         # frozen transition table is enforced identically here, so terminal
@@ -580,3 +655,71 @@ class ActionStore:
                 continue
             if lifecycle_contract.valid_runtime_transition(current, target):
                 proposal["lifecycle"] = target
+
+    def _load_launch_receipt(
+        self,
+        project_id: str,
+        proposal_id: str,
+        verified: dict,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict | None:
+        """Load the durable auditioning fact and derive the canonical launch receipt.
+
+        Phase 11 (Sol amendment 6). The receipt is render authority: launchBeat,
+        destination grid revision/origin/BPM, and asset identity. launchAudioTime
+        is deliberately excluded (a Web Audio clock value, not render truth).
+
+        Returns None when no auditioning fact exists (a legacy committed row
+        predating Phase 11). The caller decides whether that is a hard failure
+        (live commit) or a tolerated legacy row (rebuild replay).
+        """
+        target_conn = conn if conn is not None else self._connect()
+        try:
+            row = target_conn.execute(
+                "SELECT fact_json FROM proposal_lifecycle_facts"
+                " WHERE project_id = ? AND proposal_id = ? AND to_state = 'auditioning'"
+                " ORDER BY recorded_at ASC, id ASC LIMIT 1",
+                (project_id, proposal_id),
+            ).fetchone()
+        finally:
+            if conn is None:
+                target_conn.close()
+        if row is None or not row["fact_json"]:
+            return None
+        fact = json.loads(row["fact_json"])
+        transform_spec = verified.get("transformSpec") or {}
+        destination_grid = transform_spec.get("destinationGrid") or {}
+        # These three fields form the durable proof of what actually reached
+        # the launch boundary. Optional lifecycle schema fields are not enough
+        # for Commit: all identities are mandatory here (Sol amendment 6).
+        if fact.get("assetId") != verified.get("id"):
+            raise ConflictError(
+                "auditioning fact assetId does not match the prepared asset",
+                code="S_ASSET_MISMATCH",
+            )
+        if fact.get("contentHash") != verified.get("contentHash"):
+            raise ConflictError(
+                "auditioning fact contentHash does not match the prepared asset",
+                code="S_ASSET_MISMATCH",
+            )
+        if (
+            fact.get("gridRevision") != transform_spec.get("destinationGridRevision")
+        ):
+            raise ConflictError(
+                "auditioning fact gridRevision does not match the destination grid",
+                code="S_ASSET_MISMATCH",
+            )
+        launch_beat = fact.get("launchBeat")
+        if not isinstance(launch_beat, (int, float)) or isinstance(launch_beat, bool):
+            raise ConflictError(
+                "auditioning fact is missing a valid launchBeat",
+                code="S_ASSET_MISMATCH",
+            )
+        return {
+            "launchBeat": float(launch_beat),
+            "destinationGridRevision": transform_spec.get("destinationGridRevision"),
+            "destinationOriginSeconds": destination_grid.get("originSeconds"),
+            "targetBpm": transform_spec.get("targetBpm"),
+            "assetId": verified.get("id"),
+            "contentHash": verified.get("contentHash"),
+        }

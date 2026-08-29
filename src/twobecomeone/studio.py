@@ -78,6 +78,10 @@ def default_data_dir() -> Path:
 class RenderOptions:
     anchor_id: str
     lead_id: str
+    # Phase 11B: optional project scope so the server can read committed layers
+    # from the durable Action projection (Sol judgment call 1). None = legacy
+    # render with no committed layers.
+    project_id: str | None = None
     anchor_start: float = 0.0
     lead_start: float = 0.0
     duration: float | None = None
@@ -1188,6 +1192,27 @@ class StudioService:
         if output_duration <= 0:
             raise UserError("requested mash duration is zero or negative")
 
+        # Phase 11B: resolve committed layers (from the durable projection) to
+        # concrete render facts. This runs during planning so the read-only
+        # plan endpoint and the real render share the exact same resolution and
+        # preflight (Sol amendment 2: a missing/corrupt asset fails here, before
+        # any job is queued).
+        committed_layers = self._committed_layers_for_render(
+            options.project_id, options.anchor_id, options.lead_id,
+        )
+        resolved_committed = []
+        for layer in committed_layers:
+            resolved = self._resolve_committed_layer(
+                options.project_id,
+                layer,
+                output_bpm,
+                options.lead_start,
+                lead_output_start,
+                output_duration,
+            )
+            if resolved is not None:
+                resolved_committed.append(resolved)
+
         anchor_bpm_change_percent = (anchor_tempo_ratio - 1.0) * 100.0
         lead_bpm_change_percent = (lead_tempo_ratio - 1.0) * 100.0
 
@@ -1360,6 +1385,17 @@ class StudioService:
             },
             # Backward-compatible alias used by older frontends.
             "output_duration": round(output_duration, 3),
+            "committed_layers": [
+                {
+                    "assetId": r["assetId"],
+                    "contentHash": r["contentHash"],
+                    "tempoRatio": round(r["tempoRatio"], 4),
+                    "outputStart": round(r["outputStart"], 3),
+                    "outputDuration": round(r["outputDuration"], 3),
+                    "gainLinear": round(r["gainLinear"], 6),
+                }
+                for r in resolved_committed
+            ],
             "warnings": warnings,
         }
 
@@ -1372,7 +1408,7 @@ class StudioService:
                 "anchor_eq", "lead_eq", "pitch_mode",
                 "arrangement_mode", "transition_start", "crossfade_duration",
                 "crossfade_curve", "anchor_output_start", "lead_output_start",
-                "api_dict",
+                "api_dict", "committed_layers",
             )
 
             def __init__(self):
@@ -1400,6 +1436,7 @@ class StudioService:
                 self.anchor_output_start = anchor_output_start
                 self.lead_output_start = lead_output_start
                 self.api_dict = api_dict
+                self.committed_layers = resolved_committed
 
             def to_api_dict(self) -> dict:
                 return self.api_dict
@@ -1466,6 +1503,7 @@ class StudioService:
             transition_start=plan.transition_start,
             crossfade_duration=plan.crossfade_duration,
             crossfade_curve=plan.crossfade_curve,
+            committed_sources=plan.committed_layers,
             out=str(output_path),
         )
         peak = assembler.measure_clipping(str(output_path))
@@ -1490,6 +1528,7 @@ class StudioService:
             "crossfade_curve": plan.crossfade_curve,
             "channel": plan.api_dict.get("channel"),
             "sources": plan.api_dict.get("sources"),
+            "committed_layer_count": len(plan.committed_layers),
             "semitone_shift": semitone_shift,
             "duration": assembler._ffprobe_duration(str(output_path)),
             "true_peak_db": peak.get("true_peak_db"),
@@ -1554,6 +1593,15 @@ class StudioService:
         options.validate()
         anchor = self.get_track(options.anchor_id)
         lead = self.get_track(options.lead_id)
+        # Sol amendment 2: when this project has committed Ghost inputs, the
+        # direct endpoint runs the same planner before a job row is created.
+        # Legacy renders without committed inputs retain their established
+        # asynchronous validation semantics. The worker intentionally plans
+        # again so a file changed after enqueue is caught before ffmpeg.
+        if options.project_id and self._committed_layers_for_render(
+            options.project_id, options.anchor_id, options.lead_id,
+        ):
+            self._compute_arrangement(options)
         kind = JobKind.PREVIEW if options.preview else JobKind.RENDER
         metadata = {
             "result_display_name": self._default_render_display_name(
@@ -1585,6 +1633,12 @@ class StudioService:
         elif kind in {JobKind.PREVIEW, JobKind.RENDER}:
             options = self._render_options_from_request(job["request"])
             metadata = self._render_result_metadata(job["request"])
+            # A retry with committed inputs is another enqueue path and must
+            # satisfy the same preflight before a new job row is created.
+            if options.project_id and self._committed_layers_for_render(
+                options.project_id, options.anchor_id, options.lead_id,
+            ):
+                self._compute_arrangement(options)
             new_job = self._engine.retry(
                 job_id, self._render_run_fn(options, metadata)
             )
@@ -2357,6 +2411,158 @@ class StudioService:
     def cleanup_ghost_assets(self) -> int:
         """Explicit, test-covered GC of expired/unpinned preview assets."""
         return self._ghost_assets.cleanup_expired()
+
+    # ------------------------------------------------------------------
+    # Phase 11B: committed-layer render resolution
+    # ------------------------------------------------------------------
+
+    def _committed_layers_for_render(
+        self,
+        project_id: str | None,
+        anchor_id: str,
+        lead_id: str,
+    ) -> list[dict]:
+        """Return the non-reverted committed layers for a project's render.
+
+        Sol judgment call 1: the server reads committed layers directly from
+        the durable Action projection; the client never supplies a layer list.
+        """
+        if not project_id:
+            return []
+        state = self._actions.action_state(project_id)
+        layers = list(state.get("session", {}).get("committedLayers", []))
+        if not layers:
+            # Preserve ordinary V0.3 plan/autosave behavior. Track identity is
+            # a Ghost provenance constraint only when Ghost inputs exist.
+            return []
+        project = self.get_project(project_id)
+        if (
+            project.get("anchor_track_id") != anchor_id
+            or project.get("lead_track_id") != lead_id
+        ):
+            raise UserError(
+                "render tracks must match the authoritative project when project_id is supplied"
+            )
+        return layers
+
+    def _resolve_committed_layer(
+        self,
+        project_id: str | None,
+        layer: dict,
+        output_bpm: float,
+        lead_start: float,
+        lead_output_start: float,
+        output_duration: float,
+    ) -> dict | None:
+        """Resolve one committed layer to concrete render facts (Sol amendment 5).
+
+        The committed asset is already normalized to the accepted destination
+        tempo (targetBpm). It is stretched by ``committed_tempo_ratio =
+        output_bpm / targetBpm`` to land on the output grid, placed at the
+        launch beat's destination time, and trimmed to the render window.
+
+        Returns a dict with the verified asset path, output placement, source
+        trim, and linear gain — or raises a stable layer-identifying error.
+        """
+        receipt = layer.get("launchReceipt")
+        if not receipt:
+            raise UserError(
+                "committed layer is missing its launch receipt and cannot be rendered",
+            )
+        target_bpm = receipt.get("targetBpm")
+        destination_origin = receipt.get("destinationOriginSeconds")
+        launch_beat = receipt.get("launchBeat")
+        if (
+            not isinstance(target_bpm, (int, float))
+            or isinstance(target_bpm, bool)
+            or target_bpm <= 0
+            or not isinstance(destination_origin, (int, float))
+            or isinstance(destination_origin, bool)
+            or not isinstance(launch_beat, (int, float))
+            or isinstance(launch_beat, bool)
+        ):
+            raise UserError("committed layer launch receipt is incomplete")
+        asset = layer.get("acceptedAsset") or {}
+        asset_id = asset.get("id")
+        content_hash = asset.get("contentHash")
+        if not asset_id or not content_hash:
+            raise UserError("committed layer is missing its accepted asset identity")
+        transform_spec = layer.get("transformSpec") or {}
+        if (
+            receipt.get("assetId") != asset_id
+            or receipt.get("contentHash") != content_hash
+            or receipt.get("destinationGridRevision")
+            != transform_spec.get("destinationGridRevision")
+            or receipt.get("targetBpm") != transform_spec.get("targetBpm")
+            or receipt.get("destinationOriginSeconds")
+            != (transform_spec.get("destinationGrid") or {}).get("originSeconds")
+        ):
+            raise UserError("committed layer launch receipt does not match its accepted transform")
+        # Amendment 2: verify existence/pin/hash/decode before any render.
+        if not project_id:
+            raise UserError("committed layer requires a project scope to render")
+        try:
+            asset_path = self._ghost_assets.verify_committed_asset(
+                project_id, asset_id, content_hash
+            )
+        except ghost_assets.GhostAssetPreparationError as exc:
+            layer_id = layer.get("layerId") or layer.get("actionId") or "unknown"
+            raise ghost_assets.GhostAssetPreparationError(
+                exc.code or "S_ASSET_UNAVAILABLE",
+                f"committed layer {layer_id}: {exc}",
+            ) from exc
+
+        region = transform_spec.get("semanticRegion") or {}
+        start_beat = region.get("startBeat")
+        end_beat = region.get("endBeat")
+        if (
+            not isinstance(start_beat, (int, float))
+            or isinstance(start_beat, bool)
+            or not isinstance(end_beat, (int, float))
+            or isinstance(end_beat, bool)
+            or end_beat <= start_beat
+        ):
+            raise UserError("committed layer region is incomplete")
+        span = float(end_beat) - float(start_beat)
+
+        gain_db = (layer.get("placement") or {}).get("gainDb")
+        if not isinstance(gain_db, (int, float)) or isinstance(gain_db, bool):
+            raise UserError("committed layer gain is missing")
+        gain_linear = 10 ** (float(gain_db) / 20.0)
+
+        # Amendment 5 (corrected output-clock math): ffmpeg atempo=r makes
+        # output duration = source duration / r, so placement divides by the
+        # ratio (not multiplies).
+        committed_tempo_ratio = output_bpm / float(target_bpm)
+        accepted_destination_time = float(destination_origin) + float(launch_beat) * 60.0 / float(target_bpm)
+        committed_output_start = lead_output_start + (accepted_destination_time - lead_start) / committed_tempo_ratio
+        committed_output_duration = span * 60.0 / float(target_bpm) / committed_tempo_ratio
+
+        # Deterministic interval intersection with the render window. Head
+        # clipping advances the source offset AND shortens the phrase; tail
+        # clipping shortens it. A wholly out-of-window phrase is excluded.
+        original_start = committed_output_start
+        original_end = original_start + committed_output_duration
+        visible_start = max(0.0, original_start)
+        visible_end = min(output_duration, original_end)
+        if visible_end <= visible_start:
+            # Entirely out of window: excluded deterministically.
+            return None
+        source_trim_start = (visible_start - original_start) * committed_tempo_ratio
+        committed_output_start = visible_start
+        committed_output_duration = visible_end - visible_start
+
+        return {
+            "path": asset_path,
+            "tempoRatio": committed_tempo_ratio,
+            "outputStart": committed_output_start,
+            "outputDuration": committed_output_duration,
+            "sourceTrimStart": source_trim_start,
+            "sourceTrimDuration": committed_output_duration * committed_tempo_ratio,
+            "gainLinear": gain_linear,
+            "assetId": asset_id,
+            "contentHash": content_hash,
+        }
 
     def close(self) -> None:
         if not self._closed:

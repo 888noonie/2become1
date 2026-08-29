@@ -8,7 +8,8 @@
     "test": "node --test tests/frontend/*.test.js tests/frontend/**/*.test.js",
     "test:browser": "node tests/browser/run.js",
     "test:ghost-browser": "node tests/browser/ghost_scheduler.js",
-    "test:ghost-ux": "node tests/browser/ghost_ux.js"
+    "test:ghost-ux": "node tests/browser/ghost_ux.js",
+    "test:ghost-commit": "node tests/browser/ghost_commit_ux.js"
   },
   "devDependencies": {
     "jsdom": "^24.0.0",

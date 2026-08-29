@@ -28,7 +28,7 @@ from .common import UserError
 
 SCHEMA_VERSION = 1
 
-ACTION_TYPES = ("preview_layer", "commit_layer", "reject_proposal")
+ACTION_TYPES = ("preview_layer", "commit_layer", "reject_proposal", "revert_commit")
 
 ACTOR_TYPES = ("human", "producer")
 
@@ -41,6 +41,7 @@ ALLOWED_PREVIEW_TIMING_KEYS = ("launch", "quantize")
 ALLOWED_COMMIT_KEYS = ("proposalId", "acceptedAsset", "acceptedAt")
 ALLOWED_ACCEPTED_ASSET_KEYS = ("id", "contentHash", "transformSpec")
 ALLOWED_REJECT_KEYS = ("proposalId", "rejectedAt", "reason")
+ALLOWED_REVERT_KEYS = ("commitActionId", "revertedAt", "reason")
 ALLOWED_REGION_KEYS = ("id", "label", "startBeat", "endBeat", "gridRevision")
 
 GAIN_MIN_DB = -24.0
@@ -210,6 +211,21 @@ def _validate_reject_payload(payload: Any) -> None:
         _fail("V_REASON_NOT_STRING", "payload.reason must be a non-empty string when present")
 
 
+def _validate_revert_payload(payload: Any) -> None:
+    if not _plain_object(payload):
+        _fail("V_MISSING_PAYLOAD", "revert_commit payload must be an object")
+    for key in payload:
+        if key not in ALLOWED_REVERT_KEYS:
+            _fail("V_UNEXPECTED_PAYLOAD_KEY", f"unknown payload key '{key}'", unexpectedKey=key)
+    if not _non_empty_string(payload.get("commitActionId")):
+        _fail("V_MISSING_COMMIT_ACTION_ID", "payload.commitActionId is required")
+    if not _non_empty_string(payload.get("revertedAt")):
+        _fail("V_MISSING_REQUESTED_AT", "payload.revertedAt is required")
+    reason = payload.get("reason")
+    if "reason" in payload and reason is not None and not _non_empty_string(reason):
+        _fail("V_REASON_NOT_STRING", "payload.reason must be a non-empty string when present")
+
+
 def _ensure_json_serializable(value: Any, node_code: str, message: str) -> None:
     try:
         json.dumps(value, allow_nan=False)
@@ -261,6 +277,8 @@ def validate_action(raw: Any) -> dict:
         _validate_preview_payload(payload)
     elif raw["type"] == "commit_layer":
         _validate_commit_payload(payload)
+    elif raw["type"] == "revert_commit":
+        _validate_revert_payload(payload)
     else:
         _validate_reject_payload(payload)
 
@@ -321,10 +339,10 @@ def make_projection_record(action: dict, lifecycle: str) -> dict:
     }
 
 
-def make_committed_layer(commit_action: dict, proposal: dict) -> dict:
+def make_committed_layer(commit_action: dict, proposal: dict, launch_receipt: dict | None = None) -> dict:
     payload = commit_action["payload"]
     proposal_payload = proposal["payload"]
-    return {
+    layer = {
         "layerId": f"layer-{commit_action['id']}",
         "actionId": commit_action["id"],
         "actionType": commit_action["type"],
@@ -346,10 +364,21 @@ def make_committed_layer(commit_action: dict, proposal: dict) -> dict:
         "acceptedAt": payload.get("acceptedAt"),
         "acceptedBy": {"type": commit_action["actor"]["type"], "id": commit_action["actor"]["id"]},
     }
+    # Phase 11 (Sol amendment 6): retain the render-relevant launch receipt so
+    # the committed layer's placement is immutable and rebuildable without
+    # mutable analysis. launchAudioTime is NOT render authority and is omitted.
+    if launch_receipt:
+        layer["launchReceipt"] = launch_receipt
+    return layer
 
 
 def initial_projection() -> dict:
     return {
-        "session": {"deckAssignments": {"A": None, "B": None}, "committedLayers": [], "acceptedActionIds": []},
+        "session": {
+            "deckAssignments": {"A": None, "B": None},
+            "committedLayers": [],
+            "revertedLayers": [],
+            "acceptedActionIds": [],
+        },
         "proposals": {"byId": {}, "order": [], "activeIds": []},
     }

@@ -229,6 +229,7 @@ def build_mash(
     transition_start: float = 0.0,
     crossfade_duration: float = 0.0,
     crossfade_curve: str = "equal_power",
+    committed_sources: list[dict] | None = None,
 ) -> Path:
     """Align both sources to the output BPM and mix them into ``out``.
 
@@ -239,11 +240,19 @@ def build_mash(
     Lead at ``transition_start``, with a crossfade of ``crossfade_duration``
     (zero = hard cut). Every source is processed as EQ → pan → gain before
     mixing, then passed through the shared loudness / true-peak limiter.
+
+    ``committed_sources`` (Phase 11B) is an optional list of already-resolved
+    committed Ghost layers, each ``{path, tempo_ratio, output_start,
+    output_duration, source_trim_start, source_trim_duration, gain_linear}``.
+    Each is trimmed, tempo-stretched (no pitch shift — the asset is already
+    normalized to the destination tempo), gained, delayed to its output
+    position, and mixed in before the shared limiter.
     """
     if arrangement_mode not in {"overlay", "transition"}:
         raise UserError(f"unknown arrangement mode: {arrangement_mode}")
     if crossfade_curve not in {"equal_power", "linear"}:
         raise UserError(f"unknown crossfade curve: {crossfade_curve}")
+    committed_sources = committed_sources or []
 
     # Resolve ratios: keyword ratios take precedence; otherwise treat the
     # positional tempo_ratio as the legacy Lead-only ratio.
@@ -349,6 +358,30 @@ def build_mash(
             else:
                 lead_proc = lead
 
+        # Phase 11B: committed Ghost layers. Each is trimmed to its source
+        # window, tempo-stretched (no pitch shift), gained, and delayed to its
+        # output position. The asset is already normalized to the destination
+        # tempo, so the stretch ratio is output_bpm / target_bpm.
+        committed_proc: list[tuple[Path, float]] = []
+        for index, cs in enumerate(committed_sources):
+            cs_path = Path(cs["path"])
+            cs_ratio = float(cs["tempoRatio"])
+            cs_trim_start = float(cs["sourceTrimStart"])
+            cs_trim_duration = float(cs["sourceTrimDuration"])
+            cs_gain = float(cs["gainLinear"])
+            cs_output_start = float(cs["outputStart"])
+            aligned = render_aligned(
+                str(cs_path), Path(tmp) / f"committed_{index}_aligned.wav",
+                cs_ratio, 0,  # no pitch shift
+                start=cs_trim_start, duration=cs_trim_duration,
+            )
+            if abs(cs_gain - 1.0) > 1e-9:
+                gained = Path(tmp) / f"committed_{index}_proc.wav"
+                _run_simple_filter(aligned, gained, f"volume={cs_gain:.6f}")
+            else:
+                gained = aligned
+            committed_proc.append((gained, cs_output_start))
+
         # Build the mix. Overlay mixes both from time zero. Transition places
         # the lead at transition_start and applies the crossfade envelope.
         pre_mix: list[str] = []
@@ -381,17 +414,42 @@ def build_mash(
                     pre_mix.append("[a][l]amix=inputs=2:duration=longest:normalize=0[mix]")
         else:
             pre_mix.append("[0:a][1:a]amix=inputs=2:duration=first:normalize=0[mix]")
-        complex_graph = ";".join(pre_mix)
+
+        # Phase 11B: mix committed Ghost layers into the base mix. Each is an
+        # additional input (index 2, 3, ...), delayed to its output position,
+        # then amixed with the base mix before the shared limiter.
+        committed_inputs: list[str] = []
+        if committed_proc:
+            for index, (cpath, cstart) in enumerate(committed_proc):
+                input_index = 2 + index
+                delay_ms = int(round(cstart * 1000.0))
+                label = f"c{index}"
+                committed_inputs.append(
+                    f"[{input_index}:a]adelay={delay_ms}:all=1[{label}]"
+                )
+            mix_inputs = "".join(
+                f"[{label}]" for label in ["mix"] + [f"c{i}" for i in range(len(committed_proc))]
+            )
+            n_inputs = 1 + len(committed_proc)
+            committed_inputs.append(
+                f"{mix_inputs}amix=inputs={n_inputs}:duration=longest:normalize=0[mix]"
+            )
+        complex_graph = ";".join(pre_mix + committed_inputs)
 
         filter_complex = (
             f"{complex_graph};[mix]atrim=duration={render_duration:.6f},"
             "loudnorm=I=-16:TP=-1.5:LRA=11[limited]"
         )
 
+        committed_input_args: list[str] = []
+        for cpath, _ in committed_proc:
+            committed_input_args.extend(["-i", str(cpath)])
+
         cmd = [
             "ffmpeg", "-y", "-v", "error",
             *( ["-i", str(anchor_proc)] if anchor_proc is not None else [] ),
             *( ["-i", str(lead_proc)] if lead_proc is not None else [] ),
+            *committed_input_args,
             "-filter_complex", filter_complex,
             "-map", "[limited]",
             "-ar", "44100", "-ac", "2",

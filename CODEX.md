@@ -15,18 +15,28 @@ release pointer after this checkpoint's CI is green.
 
 ## Next authorized implementation boundary
 
-Phase 10's First Visible Ghost UX was explicitly authorized by Richard,
-implemented from the Sol-audited tri-phase plan, and independently audited
-locally on 2026-08-29. The pushed checkpoint still requires green CI for final
-acceptance. Evidence lives in `PHASE_10_VISIBLE_GHOST_UX_EVIDENCE.md`.
+Phase 11 Solid Ghost was explicitly authorized by Richard, implemented from
+the Sol-audited tri-phase plan, and independently audited locally on
+2026-08-29. It adds human Commit, immutable accepted-launch provenance,
+project-owned render inclusion, reload durability, and append-only Undo.
+Evidence lives in `PHASE_11_SOLID_GHOST_EVIDENCE.md`.
 
-No Phase 11 or Ghost Phase C implementation boundary is authorized. Do not
-infer permission to add commit/acceptance UX, undo, Producer access, live
-warping, automatic separation, render inclusion of committed layers, or a
-rewrite of V0.3's single active HTML audio player. The next implementation
-session must begin with a repository-aware, Richard-approved plan.
+No Phase 12 implementation boundary is authorized. Do not infer permission to
+add Producer access, redo, live warping, automatic separation, arbitrary layer
+editing, a persistent live-layer engine, or a rewrite of V0.3's single active
+HTML audio player. The next implementation session must begin with a fresh,
+repository-aware, Richard-approved tri-phase plan.
 
 ## Verified checkpoint
+
+- **Phase 11 final local audit:** human Commit is gated by the durable launch
+  receipt; accepted assets are verified and pinned; committed layers hydrate
+  and enter the shared preview/render planner; human Undo appends exactly one
+  `revert_commit` while retaining history and the asset. Final gates: 425
+  Python tests (1 skipped), 256 frontend declarations, Solid Ghost 15/15 at
+  desktop and mobile, inherited Ghost UX 18/18 at both viewports, scheduler
+  8/8, and V0.3 acceptance 30/30. Static payload is 428,147 bytes under the
+  500,000-byte limit. Push/CI acceptance is pending.
 
 - Branch: `v0.3-workspace`, tracking `origin/v0.3-workspace`.
 - **Phase 8 accepted:** `044cb03` supplies the strict V1 Action/proposal
@@ -172,10 +182,11 @@ analysis correction, truthful stem separation/playback, grouped arrangement
 controls, serialized autosave, and a renderer-shared exact arrangement plan.
 
 Phase 10 connects the accepted Phase 8–9 foundations to normal Studio boot for
-the first deterministic human Ghost preview: Foundation phrase selection,
-durable ready/scheduled/auditioning facts, Lead-owned scheduling, a decorative
-tether, truthful status, and human Release/Retry. Commit/acceptance, undo,
-render parity, and Producer access remain deferred.
+the first deterministic human Ghost preview. Phase 11 makes that audition
+solid: human Commit pins the exact launched asset, a durable layer list survives
+reload, the existing server preview/render pipeline includes it, and confirmed
+human Undo removes it from future output without erasing history. Producer
+access, redo, live warping, and automatic separation remain deferred.
 
 Two historical failed import jobs containing `name 'Path' is not defined` may
 remain visible in Activity. They are honest immutable history, not evidence that

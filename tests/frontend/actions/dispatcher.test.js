@@ -114,6 +114,16 @@ function rejectAction(proposalId = 'a-1') {
   };
 }
 
+function revertAction(overrides = {}) {
+  return {
+    id: 'a-4', schemaVersion: 1, type: 'revert_commit',
+    actor: { type: 'human', id: 'richard' },
+    requestedAt: '2026-08-27T00:00:05Z', idempotencyKey: 'key-4',
+    payload: { commitActionId: 'a-2', revertedAt: '2026-08-27T00:00:06Z' },
+    ...overrides,
+  };
+}
+
 test('human preview creates ready proposal and launch fact', async () => {
   const { store, ledger, dispatcher } = await makeDeps();
   dispatcher._setNowAudioTime(5);
@@ -187,6 +197,26 @@ test('commit requires proposal to be in auditioning', async () => {
   assert.equal(result.code, 'L_NOT_AUDITIONING');
   assert.equal(store.getState().session.committedLayers.length, 0);
   assert.equal(ledger.entries().filter((e) => e.outcome === 'committed').length, 0);
+});
+
+test('revert moves one committed layer, rejects Producer and distinct repeats', async () => {
+  const { store, ledger, dispatcher } = await makeDeps();
+  dispatcher.dispatch(previewAction());
+  dispatcher.advanceLifecycle('a-1', 'scheduled');
+  dispatcher.advanceLifecycle('a-1', 'auditioning');
+  assert.equal(dispatcher.dispatch(commitAction()).ok, true);
+
+  const producer = dispatcher.dispatch(revertAction({
+    id: 'producer-revert', idempotencyKey: 'producer-key',
+    actor: { type: 'producer', id: 'ghost' },
+  }));
+  assert.equal(producer.code, 'P_ACTOR_NOT_ALLOWED');
+  assert.equal(dispatcher.dispatch(revertAction()).ok, true);
+  assert.equal(store.getState().session.committedLayers.length, 0);
+  assert.equal(store.getState().session.revertedLayers.length, 1);
+  const second = dispatcher.dispatch(revertAction({ id: 'a-5', idempotencyKey: 'key-5' }));
+  assert.equal(second.code, 'L_ALREADY_REVERTED');
+  assert.equal(ledger.entries().filter((entry) => entry.outcome === 'commit_reverted').length, 1);
 });
 
 test('Producer preview is allowed only with permission', async () => {

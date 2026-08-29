@@ -569,7 +569,7 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
     }, 250);
   }
 
-  function invalidateAndQueuePlan() {
+  function invalidateAndQueuePlan(force = false) {
     const body = requestForCurrentProject();
     const current = store.getState().plan || {};
     if (!body) {
@@ -582,8 +582,9 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
       return;
     }
     const changed = JSON.stringify(body) !== JSON.stringify(current.request);
-    if (changed || !current.data) {
-      if (changed && abortController) abortController.abort();
+    if (force) lastPlanKey = '';
+    if (force || changed || !current.data) {
+      if ((force || changed) && abortController) abortController.abort();
       // Invalidate synchronously. The 250ms debounce delays only the network
       // request, never the truthfulness of render-action readiness.
       store.dispatch({
@@ -602,6 +603,14 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
     render(store.getState());
   });
 
+  // Committing or reverting a Ghost changes server-owned render inputs while
+  // leaving ordinary project fields unchanged. Force a fresh authoritative
+  // plan and synchronously disable render actions until it arrives.
+  const unsubSession = store.subscribeSlice('session', () => {
+    invalidateAndQueuePlan(true);
+    render(store.getState());
+  });
+
   render(store.getState());
   invalidateAndQueuePlan();
 
@@ -610,5 +619,6 @@ export function mountPlan({ container, store, projectManager = globalProjectMana
     if (abortController) abortController.abort();
     unsubProject();
     unsubPlan();
+    unsubSession();
   };
 }

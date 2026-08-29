@@ -28,6 +28,7 @@ export const ACTION_TYPES = Object.freeze(Object.freeze({
   PREVIEW_LAYER: 'preview_layer',
   COMMIT_LAYER: 'commit_layer',
   REJECT_PROPOSAL: 'reject_proposal',
+  REVERT_COMMIT: 'revert_commit',
 }));
 
 const ALLOWED_TOP_KEYS = Object.freeze([
@@ -51,6 +52,8 @@ const ALLOWED_COMMIT_KEYS = Object.freeze(['proposalId', 'acceptedAsset', 'accep
 const ALLOWED_ACCEPTED_ASSET_KEYS = Object.freeze(['id', 'contentHash', 'transformSpec']);
 
 const ALLOWED_REJECT_KEYS = Object.freeze(['proposalId', 'rejectedAt', 'reason']);
+
+const ALLOWED_REVERT_KEYS = Object.freeze(['commitActionId', 'revertedAt', 'reason']);
 
 const ALLOWED_REGION_KEYS = Object.freeze([
   'id',
@@ -305,6 +308,28 @@ function validateRejectPayload(payload) {
   return null;
 }
 
+function validateRevertPayload(payload) {
+  if (!isPlainObject(payload)) {
+    return buildFailure(ERROR_CODES.V_MISSING_PAYLOAD);
+  }
+  const keyFailure = rejectKeys(payload, ALLOWED_REVERT_KEYS, ERROR_CODES.V_UNEXPECTED_PAYLOAD_KEY);
+  if (keyFailure) return keyFailure;
+  if (!isNonEmptyString(payload.commitActionId)) {
+    return buildFailure(ERROR_CODES.V_MISSING_COMMIT_ACTION_ID);
+  }
+  if (!isNonEmptyString(payload.revertedAt)) {
+    return buildFailure(ERROR_CODES.V_MISSING_REQUESTED_AT, { field: 'revertedAt' });
+  }
+  if (
+    Object.hasOwn(payload, 'reason') &&
+    payload.reason !== undefined &&
+    !isNonEmptyString(payload.reason)
+  ) {
+    return buildFailure(ERROR_CODES.V_REASON_NOT_STRING);
+  }
+  return null;
+}
+
 export function validateAction(rawAction) {
   if (!isPlainObject(rawAction)) {
     return buildFailure(ERROR_CODES.V_INVALID_TYPE);
@@ -363,6 +388,8 @@ export function validateAction(rawAction) {
     payloadFailure = validateCommitPayload(rawAction.payload);
   } else if (rawAction.type === ACTION_TYPES.REJECT_PROPOSAL) {
     payloadFailure = validateRejectPayload(rawAction.payload);
+  } else if (rawAction.type === ACTION_TYPES.REVERT_COMMIT) {
+    payloadFailure = validateRevertPayload(rawAction.payload);
   } else {
     return buildFailure(ERROR_CODES.V_UNKNOWN_TYPE, { type: rawAction.type });
   }

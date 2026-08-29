@@ -31,7 +31,8 @@ function serverProjection() {
     last_sequence: 2,
     session: {
       deckAssignments: { A: 'track-1', B: null },
-      committedLayers: [{ layerId: 'layer-c1', proposalId: 'a-0' }],
+      committedLayers: [{ layerId: 'layer-c1', actionId: 'c-0', proposalId: 'a-0' }],
+      revertedLayers: [],
       acceptedActionIds: ['c-0'],
     },
     proposals: {
@@ -53,7 +54,7 @@ test('validateProjectionShape accepts the documented bootstrap shape', () => {
   const shape = validateProjectionShape({
     projection_version: 1,
     last_sequence: 0,
-    session: { deckAssignments: {}, committedLayers: [], acceptedActionIds: [] },
+    session: { deckAssignments: {}, committedLayers: [], revertedLayers: [], acceptedActionIds: [] },
     proposals: { byId: {}, order: [], activeIds: [] },
   });
   assert.equal(shape.ok, true);
@@ -158,7 +159,7 @@ test('hydrate reducer action is registered and narrow', async () => {
   const before = store.getState();
   store.dispatch({
     type: V1_HYDRATE_ACTION,
-    projection: { session: { deckAssignments: { A: 't', B: null }, committedLayers: [], acceptedActionIds: [] }, proposals: { byId: {}, order: [], activeIds: [] } },
+    projection: { session: { deckAssignments: { A: 't', B: null }, committedLayers: [], revertedLayers: [], acceptedActionIds: [] }, proposals: { byId: {}, order: [], activeIds: [] } },
     lastSequence: 5,
   });
   const after = store.getState();

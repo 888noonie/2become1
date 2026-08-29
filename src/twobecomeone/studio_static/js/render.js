@@ -86,6 +86,9 @@ export function buildRenderBody(project, { preview = false } = {}) {
     : null;
 
   return {
+    // Phase 11: scope committed layers to the authoritative project
+    // projection. The client still supplies no layer identities or paths.
+    project_id: typeof project.id === 'string' && project.id.trim() ? project.id : null,
     anchor_id: project.anchor_track_id,
     lead_id: project.lead_track_id,
     anchor_start: finiteNumber(settings.anchor_start, 0, 'Foundation cue', { min: 0 }),

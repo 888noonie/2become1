@@ -11,6 +11,15 @@ from twobecomeone.migrations import latest_version, run_migrations
 from twobecomeone.studio import StudioService
 
 VECTORS_PATH = Path(__file__).resolve().parent / "fixtures" / "action_contract_vectors.json"
+STUB_ASSET_ID = "ga-00000000000000000000000000000000"
+STUB_CONTENT_HASH = "sha256:" + "0" * 64
+STUB_GRID_REVISION = "grid-v1:" + "a" * 64
+STUB_TRANSFORM = {
+    "semanticRegion": {"id": "r1", "startBeat": 0, "endBeat": 8},
+    "destinationGridRevision": STUB_GRID_REVISION,
+    "destinationGrid": {"originSeconds": 0.0, "intervalSeconds": 0.5},
+    "targetBpm": 120.0,
+}
 
 
 def load_vectors():
@@ -44,18 +53,18 @@ def service(tmp_path):
     # tracks/stems. Here a stub records calls and returns a fixed descriptor.
     svc._actions._asset_preparer = lambda project_id, action, conn=None: {
         "asset": {
-            "id": "ga-stub",
-            "contentHash": "sha256:stub",
-            "transformSpec": {},
-            "audioUrl": f"/api/ghost-assets/ga-stub/audio",
+            "id": STUB_ASSET_ID,
+            "contentHash": STUB_CONTENT_HASH,
+            "transformSpec": STUB_TRANSFORM,
+            "audioUrl": f"/api/ghost-assets/{STUB_ASSET_ID}/audio",
             "expiresAt": 0,
         }
     }
     svc._actions._asset_registrar = None
     svc._actions._asset_verifier = lambda project_id, proposal_id, claimed, conn=None: {
-        "id": claimed.get("id", "ga-stub"),
-        "contentHash": claimed.get("contentHash", "sha256:stub"),
-        "transformSpec": {},
+        "id": claimed.get("id", STUB_ASSET_ID),
+        "contentHash": claimed.get("contentHash", STUB_CONTENT_HASH),
+        "transformSpec": claimed.get("transformSpec", STUB_TRANSFORM),
         "pinned": True,
     }
     yield svc
@@ -128,10 +137,10 @@ class TestActionStore:
                 independent.rollback()
             return {
                 "asset": {
-                    "id": "ga-stub",
-                    "contentHash": "sha256:stub",
+                    "id": STUB_ASSET_ID,
+                    "contentHash": STUB_CONTENT_HASH,
                     "transformSpec": {},
-                    "audioUrl": "/api/ghost-assets/ga-stub/audio",
+                    "audioUrl": f"/api/ghost-assets/{STUB_ASSET_ID}/audio",
                     "expiresAt": 0,
                 }
             }
@@ -314,17 +323,27 @@ class TestRestartDurability:
 
     def test_projection_rebuild_replays_successful_commit_without_asset_io(self, service, project_id):
         service.record_project_action(project_id, valid_preview())
-        with service._connect() as conn:
-            row = conn.execute(
-                "SELECT proposals_json FROM action_projection WHERE project_id = ?",
-                (project_id,),
-            ).fetchone()
-            proposals = json.loads(row["proposals_json"])
-            proposals["byId"]["a-1"]["lifecycle"] = "auditioning"
-            conn.execute(
-                "UPDATE action_projection SET proposals_json = ? WHERE project_id = ?",
-                (json.dumps(proposals), project_id),
-            )
+        # Phase 11 (Sol amendment 6): drive the proposal to auditioning through
+        # the durable lifecycle-fact endpoint (the real path), so the commit
+        # can load the canonical launch receipt.
+        service.record_proposal_lifecycle(
+            project_id, "a-1",
+            {"to": "scheduled", "actor": {"type": "human", "id": "richard"}, "at": "t"},
+        )
+        service.record_proposal_lifecycle(
+            project_id, "a-1",
+            {
+                "to": "auditioning",
+                "actor": {"type": "human", "id": "richard"},
+                "at": "t",
+                "fact": {
+                    "assetId": STUB_ASSET_ID,
+                    "contentHash": STUB_CONTENT_HASH,
+                    "gridRevision": STUB_GRID_REVISION,
+                    "launchBeat": 32.0,
+                },
+            },
+        )
         commit = {
             "id": "c-1",
             "schemaVersion": 1,
@@ -336,9 +355,9 @@ class TestRestartDurability:
                 "proposalId": "a-1",
                 "acceptedAt": "t2",
                 "acceptedAsset": {
-                    "id": "ga-stub",
-                    "contentHash": "sha256:stub",
-                    "transformSpec": {},
+                    "id": STUB_ASSET_ID,
+                    "contentHash": STUB_CONTENT_HASH,
+                    "transformSpec": STUB_TRANSFORM,
                 },
             },
         }
@@ -414,6 +433,7 @@ class TestActionStateShape:
             "session": {
                 "deckAssignments": {"A": None, "B": None},
                 "committedLayers": [],
+                "revertedLayers": [],
                 "acceptedActionIds": [],
             },
             "proposals": {"byId": {}, "order": [], "activeIds": []},

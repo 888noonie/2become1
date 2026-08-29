@@ -2,7 +2,7 @@
 //
 // Phase 8A acceptance: human preview is allowed, producer preview is denied
 // unless producerPreviewAllowed === true, producer commit/reject are always
-// denied, gate returns structured Result and never throws.
+// denied, including revert_commit, gate returns structured Result and never throws.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -64,6 +64,14 @@ function reject(actor) {
   };
 }
 
+function revert(actor) {
+  return {
+    id: 'a-4', schemaVersion: 1, type: ACTION_TYPES.REVERT_COMMIT, actor,
+    requestedAt: '2026-08-27T00:00:05Z', idempotencyKey: 'rk',
+    payload: { commitActionId: 'a-2', revertedAt: '2026-08-27T00:00:06Z' },
+  };
+}
+
 test('human preview is always allowed', () => {
   const r = checkPermission(preview({ type: 'human', id: 'richard' }), {});
   assert.equal(r.ok, true);
@@ -104,6 +112,14 @@ test('producer reject is denied, human reject is allowed', () => {
 
   const allowed = checkPermission(reject({ type: 'human', id: 'richard' }), {});
   assert.equal(allowed.ok, true);
+});
+
+test('producer revert is denied, human revert is allowed', () => {
+  const denied = checkPermission(revert({ type: 'producer', id: 'ghost' }), {});
+  assert.equal(denied.ok, false);
+  assert.equal(denied.code, ERROR_CODES.P_ACTOR_NOT_ALLOWED);
+  assert.equal(denied.details.action, ACTION_TYPES.REVERT_COMMIT);
+  assert.equal(checkPermission(revert({ type: 'human', id: 'richard' }), {}).ok, true);
 });
 
 test('gate defaults: producerPreviewAllowed=false', () => {

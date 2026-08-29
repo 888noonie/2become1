@@ -58,6 +58,8 @@ export const GHOST_PHASES = Object.freeze({
   RELEASING: 'releasing',
   INTERRUPTED: 'interrupted',
   CONFLICT: 'conflict',
+  COMMITTING: 'committing',
+  COMMITTED: 'committed',
 });
 
 const ACTIVE_LIFECYCLES = Object.freeze(['ready', 'scheduled', 'auditioning']);
@@ -113,6 +115,8 @@ export class GhostController {
     this._gen = null;          // active generation: { id, projectId, proposalId, asset, receipt, released, pendingPromise, pendingAction }
     this._launchObserver = null;
     this._schedulingInFlight = false;
+    this._revertActions = new Map();
+    this._revertPromises = new Map();
     this._disposed = false;
   }
 
@@ -369,7 +373,7 @@ export class GhostController {
       assetContentHash: receipt.assetContentHash,
       gridRevision: receipt.gridRevision,
       resolvedBeat: receipt.resolvedBeat ?? receipt.launchBeat,
-      launchBeat: receipt.launchBeat,
+      launchBeat: receipt.resolvedBeat ?? receipt.launchBeat,
       phraseIndex: receipt.phraseIndex,
     };
   }
@@ -451,7 +455,7 @@ export class GhostController {
         this.api.buildLifecycleBody('auditioning', {
           assetId: generation.asset?.id,
           contentHash: generation.asset?.contentHash,
-          launchBeat: generation.receipt.launchBeat,
+          launchBeat: generation.receipt.resolvedBeat ?? generation.receipt.launchBeat,
           launchAudioTime: generation.receipt.launchAudioTime,
           gridRevision: generation.receipt.gridRevision,
         }),
@@ -571,6 +575,17 @@ export class GhostController {
       return { ok: true, note: 'nothing to release' };
     }
 
+    // Phase 11 terminal barrier: Commit and Release never author competing
+    // outcomes concurrently from this controller. If Commit already owns the
+    // barrier, wait for its authoritative result before deciding truthfully.
+    if (gen?.terminalKind === 'commit' && gen.terminalPromise) {
+      const committed = await gen.terminalPromise;
+      if (committed.ok) {
+        return { ok: false, code: 'ALREADY_COMMITTED' };
+      }
+    }
+    if (gen) gen.terminalKind = 'release';
+
     this._setStatus({ phase: GHOST_PHASES.RELEASING, error: null });
     this._announce('Releasing Ghost preview…');
 
@@ -626,6 +641,7 @@ export class GhostController {
         error: barrierError,
         activeProposalId: gen?.proposalId || null,
       });
+      if (gen) gen.terminalKind = null;
       return { ok: false, error: barrierError };
     }
 
@@ -658,6 +674,241 @@ export class GhostController {
       return { ok: false, code: 'RELEASE_FAILED', error: releaseResult.error };
     }
     return this.invoke(region, gainDb);
+  }
+
+  // ------------------------------------------------------------------
+  // Phase 11A: Commit (outcome barrier + idempotency) and 11C: Revert
+  // ------------------------------------------------------------------
+
+  /**
+   * Commit the auditioned Ghost as a durable committed layer.
+   *
+   * Amendment 3: clicking Commit enters `committing` and blocks further
+   * terminal controls. On a definite server rejection, return to `auditioning`
+   * with the mapped error. On an ambiguous network failure, fetch the
+   * authoritative action state to reconcile (committed / still auditioning /
+   * released). Reconciliation failure leaves a retryable unknown state.
+   */
+  async commit() {
+    if (this._disposed) return { ok: false, code: 'DISPOSED' };
+    const gen = this._gen;
+    if (!gen || !gen.proposalId || !gen.asset) {
+      return { ok: false, code: 'NOTHING_TO_COMMIT' };
+    }
+    if (gen.terminalKind === 'release') {
+      return {
+        ok: false,
+        code: 'RELEASE_IN_PROGRESS',
+        error: { code: 'RELEASE_IN_PROGRESS', message: 'Release is already in progress.' },
+      };
+    }
+    if (gen.terminalKind === 'commit' && gen.terminalPromise) {
+      return gen.terminalPromise;
+    }
+    // Only a proposal that actually reached the launch boundary is committable
+    // (the exact Ghost Richard heard). The controller records `auditioning`
+    // only at the launch boundary (A2), so the store lifecycle is the gate.
+    const proposal = this.store.getState().proposals?.byId?.[gen.proposalId];
+    if (!proposal || proposal.lifecycle !== 'auditioning') {
+      return {
+        ok: false,
+        code: 'NOT_AUDITIONING',
+        error: { code: 'NOT_AUDITIONING', message: 'The Ghost is not auditioning yet.' },
+      };
+    }
+
+    const promise = this._commitGeneration(gen);
+    gen.terminalKind = 'commit';
+    gen.terminalPromise = promise;
+    const result = await promise;
+    if (!result.ok && this._gen === gen) {
+      gen.terminalKind = null;
+      gen.terminalPromise = null;
+    }
+    return result;
+  }
+
+  async _commitGeneration(gen) {
+    this._setStatus({ phase: GHOST_PHASES.COMMITTING, error: null });
+    this._announce('Committing Ghost…');
+
+    // Memoize the commit envelope (Amendment 1): built once, reused on retry.
+    if (!gen.commitAction) {
+      gen.commitAction = this.api.buildCommitAction(gen.proposalId, gen.asset);
+    }
+
+    try {
+      await this.api.postProjectAction(gen.projectId, gen.commitAction);
+      // Success: re-fetch the authoritative projection so the client holds the
+      // server's committed layer (with launchReceipt + pinned asset) verbatim.
+      if (gen.projectId === this.store.getState().currentProject?.id) {
+        try {
+          const state = await this.api.getActionState(gen.projectId);
+          this.store.dispatch({
+            type: 'v1/hydrate-projection',
+            projection: { session: state.session, proposals: state.proposals },
+            lastSequence: state.last_sequence,
+          });
+        } catch {
+          // Hydration refresh is best-effort; the durable commit already held.
+        }
+      }
+      this._setStatus({
+        phase: GHOST_PHASES.COMMITTED,
+        activeProposalId: null,
+        receipt: null,
+        summary: null,
+        error: null,
+      });
+      this._announce('Ghost committed. It will be included in the next preview/render.');
+      this._gen = null;
+      return { ok: true };
+    } catch (err) {
+      const failure = scrubError(err);
+      // Definite server rejection (4xx): return to auditioning with the error.
+      if (failure.status !== null && failure.status < 500) {
+        this._setStatus({
+          phase: GHOST_PHASES.AUDITIONING,
+          error: { code: failure.code, message: failure.message },
+        });
+        return { ok: false, code: failure.code, error: { code: failure.code, message: failure.message } };
+      }
+      // Ambiguous outcome (timeout/disconnect/5xx): fetch authoritative state.
+      const reconciled = await this._reconcileCommitOutcome(gen);
+      if (reconciled === 'committed') {
+        this._setStatus({
+          phase: GHOST_PHASES.COMMITTED,
+          activeProposalId: null,
+          receipt: null,
+          summary: null,
+          error: null,
+        });
+        this._announce('Ghost committed. It will be included in the next preview/render.');
+        this._gen = null;
+        return { ok: true };
+      }
+      if (reconciled === 'auditioning') {
+        this._setStatus({
+          phase: GHOST_PHASES.AUDITIONING,
+          error: { code: 'COMMIT_UNKNOWN', message: 'Commit outcome unknown. Try again.' },
+        });
+        return { ok: false, code: 'COMMIT_UNKNOWN' };
+      }
+      if (reconciled === 'released') {
+        this._setStatus({
+          phase: GHOST_PHASES.FAILED,
+          error: { code: 'RELEASED', message: 'The Ghost was released before it could be committed.' },
+        });
+        return { ok: false, code: 'RELEASED' };
+      }
+      // Reconciliation itself failed: retryable unknown state.
+      this._setStatus({
+        phase: GHOST_PHASES.FAILED,
+        error: {
+          code: 'COMMIT_UNRECONCILED',
+          message: 'Commit outcome could not be confirmed. Try Commit again.',
+        },
+      });
+      return { ok: false, code: 'COMMIT_UNRECONCILED' };
+    }
+  }
+
+  async _reconcileCommitOutcome(gen) {
+    try {
+      const state = await this.api.getActionState(gen.projectId);
+      const proposal = state?.proposals?.byId?.[gen.proposalId];
+      if (!proposal) return 'released';
+      if (proposal.lifecycle === 'accepted') return 'committed';
+      if (proposal.lifecycle === 'rejected') return 'released';
+      return 'auditioning';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  /**
+   * Revert a committed layer (Phase 11C). Append-only; the layer moves from
+   * committedLayers to revertedLayers with full provenance retained.
+   */
+  async revert(commitActionId) {
+    if (this._disposed) return { ok: false, code: 'DISPOSED' };
+    const projectId = this.store.getState().currentProject?.id;
+    if (!projectId) return { ok: false, code: 'NO_PROJECT' };
+    if (typeof commitActionId !== 'string' || !commitActionId) {
+      return { ok: false, code: 'INVALID_COMMIT' };
+    }
+    // Both the envelope and in-flight promise are memoized per commit. Rapid
+    // clicks share one POST; a retry after failure reuses the same Action.
+    const pending = this._revertPromises.get(commitActionId);
+    if (pending) return pending;
+    let action = this._revertActions.get(commitActionId);
+    if (!action) {
+      action = this.api.buildRevertAction(commitActionId);
+      this._revertActions.set(commitActionId, action);
+    }
+    const promise = this._revertInner(projectId, commitActionId, action);
+    this._revertPromises.set(commitActionId, promise);
+    const result = await promise;
+    if (!result.ok) this._revertPromises.delete(commitActionId);
+    return result;
+  }
+
+  async _revertInner(projectId, commitActionId, action) {
+    try {
+      const result = await this.api.postProjectAction(projectId, action);
+      this.store.dispatch({
+        type: 'v1/commit/reverted',
+        commitActionId,
+        revertActionId: action.id,
+      });
+      return { ok: true, result: result?.outcome?.result || 'commit_reverted' };
+    } catch (err) {
+      const failure = scrubError(err);
+      // Any ambiguous response, and the explicit already-reverted conflict,
+      // must reconcile against authoritative projection truth.
+      if (failure.code === 'L_ALREADY_REVERTED'
+          || failure.status === null || failure.status >= 500) {
+        const reconciled = await this._reconcileRevertOutcome(projectId, commitActionId);
+        if (reconciled === 'reverted') return { ok: true, reconciled: failure.code || 'network' };
+        if (reconciled === 'committed') {
+          return {
+            ok: false,
+            code: failure.code || 'REVERT_UNKNOWN',
+            error: { code: failure.code, message: 'Undo was not confirmed. Try again.' },
+          };
+        }
+      }
+      return {
+        ok: false,
+        code: failure.code || 'REVERT_FAILED',
+        error: { code: failure.code, message: failure.message },
+      };
+    }
+  }
+
+  async _reconcileRevertOutcome(projectId, commitActionId) {
+    try {
+      const state = await this.api.getActionState(projectId);
+      const session = state?.session || {};
+      const reverted = (session.revertedLayers || []).some(
+        (layer) => layer?.actionId === commitActionId,
+      );
+      const committed = (session.committedLayers || []).some(
+        (layer) => layer?.actionId === commitActionId,
+      );
+      if (projectId === this.store.getState().currentProject?.id) {
+        this.store.dispatch({
+          type: 'v1/hydrate-projection',
+          projection: { session: state.session, proposals: state.proposals },
+          lastSequence: state.last_sequence,
+        });
+      }
+      if (reverted) return 'reverted';
+      if (committed) return 'committed';
+      return 'unknown';
+    } catch {
+      return 'unknown';
+    }
   }
 
   async _rejectDurably(generation, proposalId, reason) {

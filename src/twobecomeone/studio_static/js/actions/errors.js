@@ -43,6 +43,7 @@ export const ERROR_CODES = Object.freeze({
   V_INVALID_GAIN: 'V_INVALID_GAIN',
   V_MISSING_PROPOSAL_ID: 'V_MISSING_PROPOSAL_ID',
   V_PROPOSAL_ID_NOT_STRING: 'V_PROPOSAL_ID_NOT_STRING',
+  V_MISSING_COMMIT_ACTION_ID: 'V_MISSING_COMMIT_ACTION_ID',
   V_MISSING_ACCEPTED_ASSET: 'V_MISSING_ACCEPTED_ASSET',
   V_INVALID_ACCEPTED_ASSET: 'V_INVALID_ACCEPTED_ASSET',
   V_MISSING_CONTENT_HASH: 'V_MISSING_CONTENT_HASH',
@@ -59,6 +60,8 @@ export const ERROR_CODES = Object.freeze({
   L_UNKNOWN_PROPOSAL: 'L_UNKNOWN_PROPOSAL',
   L_INVALID_TRANSITION: 'L_INVALID_TRANSITION',
   L_NOT_AUDITIONING: 'L_NOT_AUDITIONING',
+  L_UNKNOWN_COMMIT: 'L_UNKNOWN_COMMIT',
+  L_ALREADY_REVERTED: 'L_ALREADY_REVERTED',
 
   // --- Idempotency ---
   I_KEY_REUSED_WITH_DIFFERENT_REQUEST: 'I_KEY_REUSED_WITH_DIFFERENT_REQUEST',
@@ -105,6 +108,7 @@ const MESSAGES = Object.freeze({
   V_INVALID_GAIN: 'gainDb must be a finite number within [-24, 12] dB',
   V_MISSING_PROPOSAL_ID: 'commit_layer/reject_proposal payload.proposalId is required',
   V_PROPOSAL_ID_NOT_STRING: 'proposalId must be a non-empty string',
+  V_MISSING_COMMIT_ACTION_ID: 'revert_commit payload.commitActionId is required',
   V_MISSING_ACCEPTED_ASSET: 'commit_layer payload.acceptedAsset is required',
   V_INVALID_ACCEPTED_ASSET: 'acceptedAsset.id and acceptedAsset.contentHash must be non-empty strings',
   V_MISSING_CONTENT_HASH: 'acceptedAsset.contentHash is required and must be a non-empty string',
@@ -118,6 +122,8 @@ const MESSAGES = Object.freeze({
   L_UNKNOWN_PROPOSAL: 'proposalId does not reference a known proposal',
   L_INVALID_TRANSITION: 'proposal lifecycle transition is not permitted from current state',
   L_NOT_AUDITIONING: 'commit_layer requires the referenced proposal to be in auditioning',
+  L_UNKNOWN_COMMIT: 'commitActionId does not reference a committed layer',
+  L_ALREADY_REVERTED: 'the commit is already reverted',
 
   I_KEY_REUSED_WITH_DIFFERENT_REQUEST: 'idempotencyKey was reused with a semantically different request',
 

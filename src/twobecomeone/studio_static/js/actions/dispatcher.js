@@ -88,6 +88,17 @@ export class ActionDispatcher {
         }
       }
     }
+    if (action.type === ACTION_TYPES.REVERT_COMMIT) {
+      const commitActionId = action.payload.commitActionId;
+      if ((state.session.revertedLayers || []).some((layer) => layer.actionId === commitActionId)) {
+        return this._result(buildFailure(ERROR_CODES.L_ALREADY_REVERTED), null);
+      }
+      if (!(state.session.committedLayers || []).some((layer) => layer.actionId === commitActionId)) {
+        return this._result(
+          buildFailure(ERROR_CODES.L_UNKNOWN_COMMIT, { commitActionId }), null,
+        );
+      }
+    }
 
     // 4. Optional transport fact for preview_layer.
     let transportFact = null;
@@ -184,6 +195,19 @@ export class ActionDispatcher {
         proposalId: action.payload.proposalId,
       });
       return this._result(buildSuccess({ rejected: true }), null);
+    }
+
+    if (action.type === ACTION_TYPES.REVERT_COMMIT) {
+      this.ledger.append({ action, outcome: 'commit_reverted', transportFact: null });
+      this.store.dispatch({
+        type: V1_ACTION_TYPES.V1_COMMIT_REVERTED,
+        commitActionId: action.payload.commitActionId,
+        revertActionId: action.id,
+      });
+      return this._result(buildSuccess({
+        reverted: true,
+        commitActionId: action.payload.commitActionId,
+      }), null);
     }
 
     return this._result(buildFailure(ERROR_CODES.X_INTERNAL), null);

@@ -11,6 +11,7 @@
 //                       producerPreviewAllowed === true
 //   commit_layer      - human: allowed; producer: denied
 //   reject_proposal   - human: allowed; producer: denied
+//   revert_commit     - human: allowed; producer: denied
 //
 // The gate returns a Result object that never throws. The dispatcher
 // aborts before any projection or ledger change when the gate fails.
@@ -34,7 +35,8 @@ function normalizeContext(context) {
 export function checkPermission(action, context) {
   if (!action || action.type !== ACTION_TYPES.PREVIEW_LAYER
       && action.type !== ACTION_TYPES.COMMIT_LAYER
-      && action.type !== ACTION_TYPES.REJECT_PROPOSAL) {
+      && action.type !== ACTION_TYPES.REJECT_PROPOSAL
+      && action.type !== ACTION_TYPES.REVERT_COMMIT) {
     return buildFailure(ERROR_CODES.V_UNKNOWN_TYPE, { type: action && action.type });
   }
 
@@ -51,7 +53,8 @@ export function checkPermission(action, context) {
 
   const ctx = normalizeContext(context);
 
-  if (action.type === ACTION_TYPES.COMMIT_LAYER) {
+  if (action.type === ACTION_TYPES.COMMIT_LAYER
+      || action.type === ACTION_TYPES.REVERT_COMMIT) {
     if (!isHuman) {
       return buildFailure(ERROR_CODES.P_ACTOR_NOT_ALLOWED, {
         action: action.type,

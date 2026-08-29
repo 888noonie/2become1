@@ -115,7 +115,7 @@ function validProjection() {
   return {
     projection_version: 1,
     last_sequence: 2,
-    session: { deckAssignments: { A: null, B: null }, committedLayers: [], acceptedActionIds: [] },
+    session: { deckAssignments: { A: null, B: null }, committedLayers: [], revertedLayers: [], acceptedActionIds: [] },
     proposals: {
       byId: { 'a-9': { id: 'a-9', lifecycle: 'scheduled' } },
       order: ['a-9'],
