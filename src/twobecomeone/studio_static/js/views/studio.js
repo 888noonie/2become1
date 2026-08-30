@@ -16,6 +16,7 @@ import { mountPlan } from '../components/plan.js';
 import { mountRenderActions } from '../components/render-actions.js';
 import { mountGhostCard } from '../components/ghost-card.js';
 import { mountCommittedLayers } from '../components/committed-layers.js';
+import { mountPerformanceDeck } from '../components/performance-deck.js';
 import {
   checkGhostPreconditions,
   ensureVocalsStemKnown,
@@ -151,6 +152,7 @@ export function mountStudio({ container }) {
   let renderActionsDisposer = null;
   let ghostCardDisposer = null;
   let committedLayersDisposer = null;
+  let performanceDeckDisposer = null;
 
   const studioRoot = createElement('div', { class: 'studio' });
   container.replaceChildren(studioRoot);
@@ -167,6 +169,7 @@ export function mountStudio({ container }) {
   };
 
   const retryContainer = createElement('div', { class: 'studio__retry-container' });
+  const performanceDeckContainer = createElement('div', { class: 'studio__performance-deck-container' });
   const decksContainer = createElement('div', { class: 'studio__decks' });
   const swapBar = createElement('div', { class: 'studio__swap-bar' });
   // Phase 10C: the Ghost status card sits between decks and plan so the
@@ -185,6 +188,7 @@ export function mountStudio({ container }) {
   studioRoot.appendChild(headerContainer);
   studioRoot.appendChild(liveAnnouncer);
   studioRoot.appendChild(retryContainer);
+  studioRoot.appendChild(performanceDeckContainer);
   studioRoot.appendChild(swapBar);
   studioRoot.appendChild(decksContainer);
   studioRoot.appendChild(ghostCardContainer);
@@ -273,6 +277,19 @@ export function mountStudio({ container }) {
     onRegionSelected: ({ startSeconds, endSeconds }) => openGhostFlow({ startSeconds, endSeconds }),
   });
   leadDisposer = mountDeck({ container: leadDeckMount, role: 'lead', onAnnounce, store, projectManager });
+  performanceDeckDisposer = mountPerformanceDeck({
+    container: performanceDeckContainer,
+    store,
+    projectManager,
+    onAnnounce,
+    onModeChange: (mode) => {
+      const isFun = mode === 'fun';
+      decksContainer.hidden = isFun;
+      swapBar.hidden = isFun;
+      planContainer.hidden = isFun;
+      studioRoot.dataset.deckMode = mode;
+    },
+  });
   planDisposer = mountPlan({ container: planContainer, store, projectManager });
   renderActionsDisposer = mountRenderActions({
     container: renderActionsContainer, store, projectManager,
@@ -325,6 +342,7 @@ export function mountStudio({ container }) {
     if (renderActionsDisposer) renderActionsDisposer();
     if (ghostCardDisposer) ghostCardDisposer();
     if (committedLayersDisposer) committedLayersDisposer();
+    if (performanceDeckDisposer) performanceDeckDisposer();
     projectManager.flushNow();
   };
 }

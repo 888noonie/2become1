@@ -26,6 +26,11 @@
   --color-lead-bg: rgba(91, 215, 255, 0.15);
   --color-waiting-bg: rgba(255, 138, 61, 0.2);
   --color-success-bg: rgba(215, 255, 98, 0.2);
+  --color-deck-glow: rgba(91, 215, 255, 0.24);
+  --color-deck-void: rgba(11, 7, 18, 0.72);
+  --color-deck-grid: rgba(255, 255, 255, 0.045);
+  --color-ghost: #a982ff;
+  --color-ghost-bg: rgba(169, 130, 255, 0.16);
 
   /* ---- Spacing scale ---- */
   --space-1: 4px;

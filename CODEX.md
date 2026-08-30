@@ -15,6 +15,16 @@ release pointer after this checkpoint's CI is green.
 
 ## Next authorized implementation boundary
 
+On 2026-08-30 Richard explicitly authorized a functionally progressive
+UI/UX/frontend build of the Ultimate Deck. A **Sol-audited UI slice** is now
+present: persistent DJ/FUN views, seven project-backed FUN pads,
+single-player Foundation/Lead audition, and real render-plan controls for
+beat-derived length, equal-power blend and overlay/transition. Evidence and
+the exact audit boundary are in `ULTIMATE_DECK_UI_EVIDENCE.md`. This slice does
+not authorize or implement Phase 12 audio-engine work; loops, stutter, reverse,
+multi-source live mixing, Producer, battle and collab remain deferred. Sol
+is checkpointed separately from the still-deferred Phase 12 engine.
+
 Phase 11 Solid Ghost was explicitly authorized by Richard, implemented from
 the Sol-audited tri-phase plan, independently audited locally on
 2026-08-29, and accepted by green CI on 2026-08-29 (run 33276217128: test
