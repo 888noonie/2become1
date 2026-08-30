@@ -36,21 +36,24 @@ Only do that on a network you trust.
 The Studio provides:
 
 - two audio decks accepting drag-and-drop files or single-track YouTube links;
+- persistent DJ/FUN views: waveform precision in DJ and a seven-pad,
+  touch-first project surface in FUN;
 - one managed local media library with source provenance, BPM, key, duration, and playback;
 - lightweight first-beat/downbeat suggestions with manual correction;
 - explicit output BPM (Foundation/Lead/custom), overlay and A→B transition
   modes, and per-deck gain/pan/3-band EQ;
 - optional CUDA-accelerated Demucs stem separation with honest center/side fallback;
 - queued 12-second previews and full renders with live stage progress;
+- bounded vocal Ghost phrase audition, visible tether/status, durable Commit,
+  append-only Undo, and inclusion in the shared preview/render plan;
 - local playback, downloads, and recent-render history;
 - one same-origin FastAPI application—no public CORS or remote upload path.
 
-The `v0.3-workspace` branch also contains the accepted, deliberately headless
-V1 Action/Ghost foundation: a project-scoped append-only Action ledger and
-reload projection, server-managed pre-rendered vocal preview assets, and an
-injected Web Audio phrase scheduler. These components are proven through API,
-unit, and real-browser harnesses; they are not yet exposed as visible Ghost or
-Producer controls in the normal Studio UI.
+The `v0.3-workspace` branch also contains the accepted V1 Action/Ghost
+foundation: a project-scoped append-only Action ledger and reload projection,
+server-managed vocal preview assets, a visible human Ghost audition/Commit/Undo
+workflow, and an injected Web Audio phrase scheduler. Producer access and a
+persistent live committed-layer engine remain deferred.
 
 ## CLI
 
@@ -115,6 +118,7 @@ uv pip install --python .venv/bin/python -e '.[web,dev,demucs]'
 npm ci && npm test           # frontend unit tests (jsdom)
 npm run test:browser          # browser E2E + accessibility (system Chromium)
 npm run test:ghost-browser    # headless V1 API → asset → Web Audio proof
+node tests/browser/ultimate_deck_ux.js  # DJ/FUN desktop + mobile proof
 ```
 
 The test suite covers DSP invariants, invalid media, JSON contracts, truthful
@@ -145,9 +149,11 @@ retried or resumed from the Activity view.
 - YouTube importing requires `yt-dlp` on `PATH` and does not bypass access controls;
   use media you own or have permission to download and remix.
 - Torrent acquisition is not part of the launch UI.
-- V1 Ghost plumbing is headless: there is no production drag/tether/audition
-  UI or Producer interface yet, and the existing single-player V0.3 deck
-  runtime remains unchanged.
+- Human Ghost drag/tether/audition, durable Commit and append-only Undo are
+  visible. Producer access and live committed-layer playback remain deferred.
+- FUN pads use the existing single local audition player. Their 1/2/4/8,
+  blend, and arrangement controls update the saved render plan; multi-source
+  live mixing, loops, stutter, and reverse require a future engine boundary.
 
 ## License
 

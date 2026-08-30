@@ -1,6 +1,6 @@
 # Codex continuity handoff — 2BECOME1 V0.3
 
-Updated: 2026-08-29
+Updated: 2026-08-30
 
 Owner: Richard (`richardn`)
 
@@ -17,13 +17,14 @@ release pointer after this checkpoint's CI is green.
 
 On 2026-08-30 Richard explicitly authorized a functionally progressive
 UI/UX/frontend build of the Ultimate Deck. A **Sol-audited UI slice** is now
-present: persistent DJ/FUN views, seven project-backed FUN pads,
-single-player Foundation/Lead audition, and real render-plan controls for
-beat-derived length, equal-power blend and overlay/transition. Evidence and
-the exact audit boundary are in `ULTIMATE_DECK_UI_EVIDENCE.md`. This slice does
-not authorize or implement Phase 12 audio-engine work; loops, stutter, reverse,
-multi-source live mixing, Producer, battle and collab remain deferred. Sol
-is checkpointed separately from the still-deferred Phase 12 engine.
+present at pushed checkpoint `b460591`: persistent DJ/FUN views, seven
+project-backed FUN pads, single-player Foundation/Lead audition, and real
+render-plan controls for beat-derived length, equal-power blend and
+overlay/transition. CI run `33282392237` is green (test 4m11s, browser-e2e
+3m15s). Evidence and the exact audit boundary are in
+`ULTIMATE_DECK_UI_EVIDENCE.md`. This slice does not authorize or implement
+Phase 12 audio-engine work; loops, stutter, reverse, multi-source live mixing,
+Producer, battle and collab remain deferred.
 
 Phase 11 Solid Ghost was explicitly authorized by Richard, implemented from
 the Sol-audited tri-phase plan, independently audited locally on
@@ -42,14 +43,22 @@ repository-aware, Richard-approved tri-phase plan.
 
 ## Verified checkpoint
 
+- **Ultimate Deck UI accepted:** checkpoint `b460591` is pushed on
+  `v0.3-workspace`; CI run `33282392237` is green for both required jobs. DJ
+  retains the accepted precision Studio; FUN adds seven project-backed pads,
+  truthful single-player audition, and saved render controls. Local closure:
+  427 Python tests (1 skipped), all 30 frontend test files, inherited Chromium
+  30/30, focused desktop/mobile FUN proofs, zero overflow, and 450,008 static
+  bytes under the 500,000-byte ceiling.
+
 - **Phase 11 final local audit:** human Commit is gated by the durable launch
   receipt; accepted assets are verified and pinned; committed layers hydrate
   and enter the shared preview/render planner; human Undo appends exactly one
   `revert_commit` while retaining history and the asset. Final gates: 427
   Python tests (1 skipped), 256 frontend declarations, Solid Ghost 15/15 at
   desktop and mobile, inherited Ghost UX 18/18 at both viewports, scheduler
-  8/8, and V0.3 acceptance 30/30. Static payload is 428,147 bytes under the
-  500,000-byte limit. Push/CI acceptance is pending.
+  8/8, and V0.3 acceptance 30/30. Static payload was 428,147 bytes under the
+  500,000-byte limit. Phase 11 was accepted by green CI run `33276217128`.
 
 - Branch: `v0.3-workspace`, tracking `origin/v0.3-workspace`.
 - **Phase 8 accepted:** `044cb03` supplies the strict V1 Action/proposal
@@ -67,9 +76,9 @@ repository-aware, Richard-approved tri-phase plan.
   wiring, visible phrase selection/status/tether/Release/Retry UX, and all 12
   Sol amendments pass locally: 398 Python tests (1 skipped), 247 frontend test
   declarations, 18/18 Ghost UX checks at desktop and mobile, 8/8 scheduler
-  checks, and 30/30 inherited browser checks. Shipped static size is 402,590
-  bytes under Richard's 500,000-byte allowance. CI acceptance remains pending
-  until the final checkpoint is pushed.
+  checks, and 30/30 inherited browser checks. Shipped static size was 402,590
+  bytes under Richard's 500,000-byte allowance. Phase 10 was accepted before
+  the Phase 11 checkpoint recorded above.
 - Phase 9 final gates: 356 Python tests, 200 Node test declarations, and 8/8
   real-Chromium Ghost checks at both 1280×800 and 390×844. Python/JavaScript
   syntax and `git diff --check` were clean.

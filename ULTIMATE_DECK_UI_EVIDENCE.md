@@ -2,7 +2,11 @@
 
 **Date:** 2026-08-30
 
-**Status:** SOL-AUDITED — accepted for checkpoint
+**Status:** ACCEPTED — pushed checkpoint and CI green
+
+**Checkpoint:** `b460591` (`Build Ultimate Deck DJ and FUN views`)
+
+**CI:** run `33282392237` — test 4m11s and browser-e2e 3m15s, both green
 
 **Authorization:** Richard explicitly requested a functionally progressive
 UI/UX/frontend build of the 2become1 Ultimate Deck.
@@ -42,19 +46,20 @@ automatic separation, collab, battle, or a second HTML audio player.
 - JavaScript syntax and `git diff --check`: clean.
 - Static frontend payload: `450,008` bytes, under the existing `500,000` byte
   ceiling.
+- Pushed branch parity: `b460591` is on `origin/v0.3-workspace`; GitHub Actions
+  run `33282392237` completed successfully for both required jobs.
 
 Visual proofs were inspected at:
 
 - `/tmp/ultimate-deck-fun-1280x800.png`
 - `/tmp/ultimate-deck-fun-390x844.png`
 
-## Audit focus
+## Accepted audit decisions
 
-1. Is FUN the correct projection of the existing engine, or should the render
-   controls remain visible beneath it rather than inside it?
-2. Should committed Ghost pads remain status-only until Phase 12 makes them
-   live-audible? (Current implementation deliberately keeps them status-only.)
-3. Does the seven-pad desktop density preserve enough stage presence while the
-   two-column mobile layout remains fast to scan?
-4. Confirm the equal-power blend mapping is the preferred musical policy for
-   the saved render gains.
+1. FUN is a projection of the existing engine; render controls live inside it
+   and remain explicitly labelled `RENDER`.
+2. Committed Ghost pads remain status-only until an authorized live-layer
+   engine makes them audible.
+3. Seven desktop pads and the two-column mobile layout are accepted for this
+   checkpoint; both were visually inspected.
+4. The equal-power mapping is accepted for the saved render blend.

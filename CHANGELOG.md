@@ -5,6 +5,14 @@ local-first, single-user model; versions track the workspace milestones.
 
 ## [Unreleased] — V1 Action and durable acoustic foundation
 
+- Added the Ultimate Deck UI: persistent `◐ DJ` / `◎ FUN` views, seven
+  project-backed performance pads, truthful single-player Foundation/Lead
+  audition, beat-derived 1/2/4/8 render lengths, equal-power render blend, and
+  overlay/A→B arrangement switching.
+- Added the visible human Ghost workflow: bounded phrase selection, tether and
+  lifecycle status, Release/Retry, durable Commit, project-owned render
+  inclusion, and append-only Undo with reload provenance.
+
 - Added strict cross-language V1 Action contracts, human/Producer permission
   policy, proposal lifecycle reducers, semantic idempotency, and deterministic
   DeckTransport phrase-boundary mathematics.
@@ -20,11 +28,13 @@ local-first, single-user model; versions track the workspace milestones.
 - The independent audit moved ffmpeg work outside SQLite write transactions,
   added strict pre-lookup asset-ID validation, strengthened short-phrase lead
   handling, and made projection rebuild side-effect free.
-- Current verification: 356 Python tests, 200 Node test declarations, and the
-  real Chromium Ghost harness passing 8/8 at desktop and mobile viewports.
+- Current verification: 427 Python tests (1 skipped), all 30 frontend test
+  files, inherited browser acceptance 30/30, focused Ultimate Deck desktop and
+  mobile proofs, and green CI run 33282392237.
 
-This is headless plumbing. Visible Ghost controls, tethers, Producer UX, live
-warping, and production claims of end-to-end sample accuracy remain deferred.
+Producer access, live committed-layer playback, live warping, multi-source FUN
+mixing, loops/stutter/reverse, and production claims of end-to-end sample
+accuracy remain deferred.
 
 ## [0.3.0] — V0.3 local creative workspace
 
