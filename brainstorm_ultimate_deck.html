@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2become1 — Ultimate Mash Deck · Incredibox × Djay × 2b1</title>
+<style>
+  :root{--bg:#070a14;--card:rgba(255,255,255,0.06);--line:rgba(255,255,255,0.12);--accent:#8a5cff;--accent2:#2ee5a8;--accent3:#ff3b9a;--accent4:#3bdcff;--text:#eef2ff;--muted:#9aa3c0}
+  *{box-sizing:border-box;font-family:ui-sans,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+  body{margin:0;color:var(--text);background:radial-gradient(1000px 600px at 15% -10%, #2a1a6a 0%, transparent 60%),radial-gradient(900px 500px at 95% 0%, #0e4a5a 0%, transparent 60%),linear-gradient(180deg,#070a14,#0b0e1e)}
+  header{max-width:1280px;margin:0 auto;padding:18px 20px 6px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+  h1{margin:0;font-size:18px;letter-spacing:0.1em;text-transform:uppercase}
+  h1 i{color:var(--accent);font-style:normal}
+  .pill{font-size:11px;padding:6px 10px;border-radius:999px;background:var(--card);border:1px solid var(--line);color:var(--muted)}
+  .wrap{max-width:1280px;margin:0 auto;padding:10px 20px 28px}
+  /* inspi strip */
+  .inspi{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+  @media(max-width:800px){.inspi{grid-template-columns:1fr}}
+  .inspi figure{margin:0;border:1px solid var(--line);border-radius:16px;overflow:hidden;background:var(--card);backdrop-filter:blur(10px)}
+  .inspi img{width:100%;height:220px;object-fit:cover;display:block;filter:saturate(1.05) contrast(1.02)}
+  .inspi figcaption{padding:8px 10px;font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:8px}
+  .inspi figcaption b{color:var(--text)}
+  /* ultimate deck */
+  .deck{border:1px solid var(--line);border-radius:22px;overflow:hidden;background:linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.02));backdrop-filter:blur(14px);box-shadow:0 28px 90px rgba(0,0,0,0.55)}
+  .deck-top{padding:14px 14px 10px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+  .deck-top h2{margin:0;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--muted)}
+  .deck-top .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .btn{padding:8px 12px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,0.06);color:var(--text);font-weight:800;font-size:12px;cursor:pointer}
+  .btn.primary{background:linear-gradient(180deg,#8a5cff,#6a3bff);border-color:#8a5cff;color:white;box-shadow:0 8px 20px rgba(138,92,255,0.35)}
+  .btn.ghost{border-color:rgba(46,229,168,0.4);color:var(--accent2)}
+  .btn.battle{border-color:rgba(255,59,154,0.5);color:var(--accent3)}
+  /* incredibox row + djay waveforms */
+  .stage-row{padding:14px;display:grid;gap:14px}
+  .holo-row{display:grid;grid-template-columns:repeat(7,1fr);gap:10px}
+  @media(max-width:980px){.holo-row{grid-template-columns:repeat(4,1fr)}}
+  @media(max-width:560px){.holo-row{grid-template-columns:repeat(3,1fr)}}
+  .holo{position:relative;min-height:168px;border-radius:18px;padding:10px 8px;display:flex;flex-direction:column;align-items:center;gap:6px;background:linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));border:1px solid var(--line);backdrop-filter:blur(10px);transition:0.18s}
+  .holo.filled{border-color:rgba(138,92,255,0.5);box-shadow:0 8px 30px rgba(138,92,255,0.22)}
+  .holo.muted{opacity:0.45;filter:grayscale(0.6)}
+  .holo.solo{box-shadow:0 0 0 2px rgba(46,229,168,0.6)}
+  .holo .orb{width:62px;height:62px;border-radius:50%;display:grid;place-items:center;font-size:26px;background:radial-gradient(60% 60% at 30% 30%, #fff, #8a5cff 45%, #1a1540 75%);border:1px solid rgba(255,255,255,0.2);box-shadow:0 6px 18px rgba(0,0,0,0.4)}
+  .holo.empty .orb{background:linear-gradient(180deg,#2a2f4a,#151830);color:var(--muted)}
+  .holo-name{font-size:11px;font-weight:800;text-align:center;line-height:1.2;min-height:14px}
+  .holo-meta{font-size:10px;color:var(--muted);text-align:center}
+  .stems{display:flex;gap:3px;flex-wrap:wrap;justify-content:center}
+  .stems span{font-size:9px;padding:3px 6px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,0.04);color:var(--muted);cursor:pointer}
+  .stems span.on{background:var(--accent);color:white;border-color:var(--accent)}
+  .holo-actions{display:flex;gap:6px;margin-top:auto}
+  .holo-actions button{font-size:10px;padding:4px 7px;border-radius:999px;border:1px solid var(--line);background:rgba(0,0,0,0.25);color:var(--muted);cursor:pointer}
+  .badge{position:absolute;top:7px;right:7px;font-size:9px;padding:3px 6px;border-radius:999px;background:var(--accent2);color:#002013;display:none}
+  .holo.bonus .badge{display:block}
+  /* djay twin decks */
+  .twin{display:grid;grid-template-columns:1fr 56px 1fr;gap:10px;align-items:stretch}
+  @media(max-width:860px){.twin{grid-template-columns:1fr;}}
+  .wave-card{border:1px solid var(--line);border-radius:16px;padding:10px;background:rgba(0,0,0,0.28);display:grid;gap:8px}
+  .wave-card h3{margin:0;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;gap:8px}
+  .wave{height:72px;border-radius:12px;background:linear-gradient(180deg, rgba(138,92,255,0.18), rgba(46,229,168,0.12));border:1px solid var(--line);position:relative;overflow:hidden;display:flex;align-items:center;padding:0 8px;gap:2px}
+  .bar{flex:1;background:linear-gradient(180deg, #bda8ff, #7c5cff);border-radius:2px;opacity:0.9}
+  .bar.alt{background:linear-gradient(180deg, #7af0c8, #2ee5a8)}
+  .playhead{position:absolute;left:50%;top:0;bottom:0;width:2px;background:var(--accent3);box-shadow:0 0 10px var(--accent3)}
+  .deck-meta{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+  .deck-meta .chip{font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,0.06);border:1px solid var(--line);color:var(--muted)}
+  .deck-meta .chip b{color:var(--text)}
+  .xfade{border:1px solid var(--line);border-radius:16px;padding:10px;background:rgba(255,255,255,0.04);display:grid;gap:8px;align-content:center}
+  .xfade h3{margin:0;font-size:10px;letter-spacing:0.13em;text-transform:uppercase;color:var(--muted);text-align:center}
+  input[type=range]{width:100%;accent-color:var(--accent);height:28px}
+  .xfade .hint{font-size:11px;color:var(--muted);text-align:center}
+  /* bottom: library + collab */
+  .bottom{display:grid;grid-template-columns:1.15fr 0.85fr;gap:14px;padding:14px;border-top:1px solid var(--line);background:rgba(255,255,255,0.02)}
+  @media(max-width:980px){.bottom{grid-template-columns:1fr}}
+  .panel{border:1px solid var(--line);border-radius:16px;padding:12px;background:rgba(255,255,255,0.04);backdrop-filter:blur(10px)}
+  .panel h3{margin:0 0 8px;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;gap:8px;align-items:center}
+  .search{display:flex;gap:8px;margin-bottom:8px}
+  .search input{flex:1;padding:9px 10px;border-radius:12px;border:1px solid var(--line);background:rgba(0,0,0,0.3);color:var(--text)}
+  .lib{display:grid;gap:7px;max-height:320px;overflow:auto;padding-right:2px}
+  .track{padding:9px 10px;border-radius:12px;background:rgba(255,255,255,0.06);border:1px solid var(--line);display:flex;gap:10px;align-items:center;cursor:grab}
+  .track:hover{border-color:rgba(138,92,255,0.5)}
+  .track .ic{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:linear-gradient(180deg,#2a2f4a,#151830);border:1px solid var(--line)}
+  .track .meta{flex:1;min-width:0}
+  .track .t{font-size:13px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .track .s{font-size:11px;color:var(--muted)}
+  .track .grab{font-size:10px;color:var(--muted);border:1px solid var(--line);padding:3px 6px;border-radius:999px}
+  .qr{display:grid;gap:10px}
+  .qr-card{border:1px dashed rgba(46,229,168,0.45);border-radius:16px;padding:12px;background:rgba(46,229,168,0.06);display:grid;gap:8px}
+  .qr-grid{display:grid;grid-template-columns:96px 1fr;gap:10px;align-items:center}
+  .qr-box{width:96px;height:96px;border-radius:12px;background:white;display:grid;place-items:center;color:#0a0a0a;font-weight:900;letter-spacing:0.08em;border:1px solid #ddd}
+  .qr-box span{font-size:10px;color:#666;font-weight:600}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chips span{font-size:11px;padding:4px 8px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,0.04);color:var(--muted)}
+  /* mode switch */
+  .mode-switch{display:flex;align-items:center;gap:8px;padding:4px;background:rgba(0,0,0,0.35);border:1px solid var(--line);border-radius:999px}
+  .mode-switch button{padding:6px 14px;border-radius:999px;border:1px solid transparent;background:transparent;color:var(--muted);font-weight:800;font-size:12px;cursor:pointer}
+  .mode-switch button.on{background:linear-gradient(180deg,#8a5cff,#6a3bff);border-color:#8a5cff;color:white;box-shadow:0 6px 16px rgba(138,92,255,0.35)}
+  .mode-fun .twin{display:none}
+  .mode-fun .holo{min-height:196px}
+  .mode-fun .holo-row{grid-template-columns:repeat(7,1fr)}
+  @media(max-width:980px){.mode-fun .holo-row{grid-template-columns:repeat(3,1fr)}}
+  .loop-ctl{display:flex;gap:4px;flex-wrap:wrap;justify-content:center;margin-top:4px}
+  .loop-ctl span{font-size:9px;padding:3px 7px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,0.04);color:var(--muted);cursor:pointer}
+  .loop-ctl span.on{background:var(--accent2);color:#002013;border-color:var(--accent2);font-weight:800}
+  .loop-ctl span.fx.on{background:var(--accent3);color:white;border-color:var(--accent3)}
+  .mode-dj .loop-ctl{display:none}
+  .mode-fun .wave-card, .mode-fun .xfade{opacity:0.35;filter:grayscale(0.3)}
+  .mode-dj .holo .loop-ctl{display:none}
+  .log{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#c8d0f0;background:rgba(0,0,0,0.35);border:1px solid var(--line);border-radius:12px;padding:10px;max-height:200px;overflow:auto;white-space:pre-wrap}
+  .hint{font-size:12px;color:var(--muted);line-height:1.5}
+</style>
+</head>
+<body>
+<header>
+  <h1>2<i>become</i>1 <span style="font-weight:400;color:var(--muted)">— ultimate mash deck · triunification</span></h1>
+  <span class="pill">Incredibox play + Djay flow + 2b1 honest engine · QR live collab</span>
+</header>
+<div class="wrap">
+  <div class="inspi">
+    <figure><img src="Incredibox-mockup.jpg" alt="Incredibox mockup"><figcaption><b>Incredibox — game</b><span>7 characters · drag-drop · mute/solo · bonus</span></figcaption></figure>
+    <figure><img src="djay-spotify-ios-ipados.jpg" alt="Djay mockup"><figcaption><b>Djay — instrument</b><span>twin waveforms · crossfader · browse · sync</span></figcaption></figure>
+  </div>
+
+  <div class="deck" id="deck">
+    <div class="deck-top">
+      <h2 id="deckTitle">Ultimate Deck — DJ Mode</h2>
+      <div class="mode-switch" id="modeSwitch"><button id="modeDJ" class="on">◐ DJ</button><button id="modeFun">◎ FUN</button></div>
+      <div class="actions">
+        <button class="btn primary" id="play">▶ Play Stage</button>
+        <button class="btn" id="bonus">Bonus Fill</button>
+        <button class="btn ghost" id="qrBtn">⬡ QR Join</button>
+        <button class="btn battle" id="battle">⚔ Battle</button>
+        <button class="btn" id="aiBtn">✨ AI Producer</button>
+        <label style="font-size:11px;color:var(--muted)"><input type="checkbox" id="quant" checked> 8-bar quant</label>
+      </div>
+    </div>
+
+    <div class="stage-row">
+      <div class="holo-row" id="holoRow"></div>
+
+      <div class="twin">
+        <div class="wave-card">
+          <h3><span>Deck A — Foundation</span><span id="deckAInfo" style="color:var(--accent2)">—</span></h3>
+          <div class="wave" id="waveA"></div>
+          <div class="deck-meta">
+            <span class="chip">BPM <b id="bpmA">—</b></span><span class="chip">Key <b id="keyA">—</b></span><span class="chip">Grid <b>locked</b></span><span class="chip" id="syncA">sync ●</span>
+          </div>
+        </div>
+        <div class="xfade">
+          <h3>Beat-sync X-Fade</h3>
+          <input id="xfade" type="range" min="0" max="100" value="50">
+          <div class="hint"><span id="xfadeVal">50% · phase-locked</span><br><span style="font-size:10px">not volume — interpolates playbackRate so downbeats stay glued</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">
+            <button class="btn" style="padding:6px" id="cutA">◀ Cut A</button><button class="btn" style="padding:6px" id="cutB">Cut B ▶</button>
+          </div>
+        </div>
+        <div class="wave-card">
+          <h3><span>Deck B — Lead</span><span id="deckBInfo" style="color:var(--accent3)">—</span></h3>
+          <div class="wave" id="waveB"></div>
+          <div class="deck-meta">
+            <span class="chip">BPM <b id="bpmB">—</b></span><span class="chip">Key <b id="keyB">—</b></span><span class="chip">Grid <b>locked</b></span><span class="chip" id="syncB">sync ●</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bottom">
+      <div class="panel">
+        <h3>Web Grab + Stem Lab — drag to holo stage <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">tap V/D/B/O to isolate before you drop</span></h3>
+        <div class="search"><input id="search" placeholder="Search iconic, YouTube link, Spotify URI, or drop mp3…"><button class="btn primary" id="grab">Grab & Separate</button></div>
+        <div class="lib" id="lib"></div>
+        <div class="hint" style="margin-top:8px">Grab pulls bytes locally first, then Demucs separates honestly (V/D/B/O). You drop a <i>Ghost</i>, not a whole track — so you can meld "vocal from 98" over "break from 85" live. Incredibox simplicity, 2b1 honesty.</div>
+      </div>
+      <div class="panel qr">
+        <h3>Live Collab — QR on-the-fly <span id="collabState" style="font-weight:800;color:var(--accent2)">● solo</span></h3>
+        <div class="qr-card">
+          <div class="qr-grid">
+            <div class="qr-box"><div style="text-align:center;line-height:1"><div style="font-size:22px">⬡⬢⬡</div>QR<div style="font-size:10px;color:#666">scan to join</div></div></div>
+            <div><div style="font-weight:900">Friend joins by scanning</div><div style="font-size:12px;color:var(--muted)">They get 3 of your 7 orbs to control, you keep 4. Same stage, same BPM, same ledger. Drag, mute, battle — all Actions append live.</div><div class="chips" style="margin-top:6px"><span>⏱ low latency</span><span>🔒 loopback default</span><span>📜 ledger sync</span></div></div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" id="invite">Copy Invite Link</button><button class="btn" id="battle2">⚔ Start Battle (60s)</button><span id="inviteMsg" style="font-size:11px;color:var(--accent2);align-self:center"></span></div>
+          <div class="log" id="log">Welcome to the triunification.
+
+Incredibox: 7 holo Ghosts — drag, mute, solo, bonus when beat+bass+vocal from 3 eras lock.
+Djay: twin waveforms with phase-locked x-fade — slide keeps downbeats glued, not just volume.
+2become1: every drop is a Ghost — exact-vocal asset, grid, stems, loudnorm I=-16, append-only ledger.
+
+QR: tap QR Join → friend scans → they control S5-S7, you S1-S4. Battle: 60s each, crowd votes, AI Producer suggests next iconic that would meld to perfection (never replaces your pick).
+
+Try: Grab & Separate → drag 2 iconics to orbs → Play Stage → slide x-fade → QR Join to sim a friend.
+
+Full AI Producer support coming soon — honest, on-device, stitching 2-bar bridges only if you clash.</div>
+        </div>
+        <div class="panel" style="padding:10px">
+          <h3>AI Producer — coming soon</h3>
+          <div style="font-size:12px;color:var(--muted);line-height:1.5">
+            "You have Amen + Diva — key clash Cm vs Am. Try Iconic '19 Airy Pad at -2st, 98% meld. Or drop 808 on S5 for Era Clash bonus."
+            <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"><span class="chip">local-small</span><span class="chip">no cloud rip</span><span class="chip">2-bar stitch max</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="hint" style="margin-top:12px;text-align:center">This deck is a brainstorm mock — yaml was the cheap future, this html is the beautiful deck. Next real step: wire an orb to a file in <code>~/.local/share/2become1</code> and let the x-fade drive real <code>playbackRate</code>. Tell me which iconic to wire first.</p>
+</div>
+<script>
+const library=[
+  {title:"Iconic ’98 — House Vocal Chop", sub:"126 BPM · Am · 16 bars · YouTube", emoji:"🎤", bpm:126, key:"Am", stems:["V"]},
+  {title:"Iconic ’91 — Amen Break", sub:"94 BPM · — · drums king", emoji:"🥁", bpm:94, key:"—", stems:["D"]},
+  {title:"Iconic ’12 — Neon Bass", sub:"100 BPM · F#m · bass 8 bars", emoji:"🎸", bpm:100, key:"F#m", stems:["B","O"]},
+  {title:"Iconic ’03 — Diva Hook", sub:"128 BPM · Cm · 4-bar", emoji:"👑", bpm:128, key:"Cm", stems:["V"]},
+  {title:"Iconic ’07 — 808 Kit", sub:"140 BPM · — · drums", emoji:"🔊", bpm:140, key:"—", stems:["D"]},
+  {title:"Iconic ’19 — Airy Pad", sub:"96 BPM · Gm · pad", emoji:"🌫️", bpm:96, key:"Gm", stems:["O"]},
+  {title:"Iconic ’85 — Breakbeat", sub:"94 BPM · Em · full", emoji:"📼", bpm:94, key:"Em", stems:["D","B"]},
+  {title:"Your Web Grab — paste link ↑", sub:"YouTube/Spotify URI → Ghost", emoji:"⬇️", bpm:98, key:"—", stems:["V","D","B","O"]},
+];
+let orbs=Array(7).fill(null);
+let playing=false, timer=null, tick=0, battleOn=false;
+const holoRow=document.getElementById('holoRow'), libEl=document.getElementById('lib'), logEl=document.getElementById('log');
+const xfade=document.getElementById('xfade'), xfadeVal=document.getElementById('xfadeVal'), collabState=document.getElementById('collabState');
+
+function log(m){ const t=new Date().toLocaleTimeString(); logEl.textContent+=`\n[${t}] ${m}`; logEl.scrollTop=logEl.scrollHeight; }
+function wave(el, alt=false){
+  el.innerHTML='<div class="playhead"></div>';
+  for(let i=0;i<28;i++){ const b=document.createElement('div'); b.className='bar'+(alt?' alt':''); b.style.height=(18+Math.random()*42)+'px'; b.style.opacity=0.6+Math.random()*0.4; el.appendChild(b); }
+}
+
+function renderOrbs(){
+  holoRow.innerHTML='';
+  orbs.forEach((o,i)=>{
+    const filled=!!(o&&o.iconic);
+    const el=document.createElement('div');
+    el.className='holo '+(filled?'filled':'empty')+(o&&o.muted?' muted':'')+(o&&o.solo?' solo':'')+(o&&o.bonus?' bonus':'');
+    const name=filled? o.iconic : `Slot ${i+1} — empty`;
+    const meta=filled? `${o.bpm} BPM · ${o.key}` : 'drop iconic';
+    const stems=filled? o.stems.map(s=>`<span class="${o.active.has(s)?'on':''}" data-st="${s}">${s}</span>`).join('') : '';
+    const loopCtl = filled? `<div class="loop-ctl"><span class="${o.loop==='1'?'on':''}" data-loop="1">1bar</span><span class="${o.loop==='2'?'on':''}" data-loop="2">2</span><span class="${o.loop==='4'?'on':''}" data-loop="4">4</span><span class="${o.loop==='8'?'on':''}" data-loop="8">8</span><span class="fx ${o.fx==='stutter'?'on':''}" data-fx="stutter">stutter</span><span class="fx ${o.fx==='rev'?'on':''}" data-fx="rev">rev</span></div>` : '';
+    const owner = o&&o.owner? `<span style="font-size:9px;padding:2px 6px;border-radius:999px;background:${o.owner==='friend'?'rgba(255,59,154,0.18)':'rgba(46,229,168,0.18)'};border:1px solid var(--line)">${o.owner}</span>`:'';
+    el.innerHTML=`<span class="badge">BONUS</span><div class="orb">${filled? o.emoji : '＋'}</div><div class="holo-name">${name}</div><div class="holo-meta">${meta}</div><div class="stems">${stems}</div>${loopCtl}<div style="margin-top:2px">${owner}</div><div class="holo-actions">${filled?'<button data-act="mute">mute</button><button data-act="clear">×</button>':''}</div>`;
+    el.addEventListener('dragover', e=>{ e.preventDefault(); el.style.outline='2px dashed #8a5cff'; });
+    el.addEventListener('dragleave', ()=> el.style.outline='');
+    el.addEventListener('drop', e=>{
+      e.preventDefault(); el.style.outline='';
+      const idx=parseInt(e.dataTransfer.getData('text/plain').replace('lib',''),10);
+      const tr=library[idx]; if(tr==null) return;
+      orbs[i]={iconic:tr.title, emoji:tr.emoji, bpm:tr.bpm, key:tr.key, stems:tr.stems.slice(), active:new Set(tr.stems), loop:'4', fx:'', muted:false,solo:false,bonus:false, owner: (collabState.textContent.includes('friend') && i>=4)?'friend':'you'};
+      syncDecks(); checkBonus(); renderOrbs(); renderWaves(); log(`Dropped “${tr.title}” → Orb ${i+1} (${orbs[i].owner}) — Ghost committed, loudnorm I=-16, grid locked.`);
+    });
+    let press=null;
+    el.addEventListener('mousedown', ()=>{ if(!filled) return; press=setTimeout(()=>{ toggleSolo(i); press=null; },600); });
+    el.addEventListener('mouseup', ()=>{ if(press){ clearTimeout(press); toggleMute(i);} });
+    el.addEventListener('touchstart', ()=>{ if(!filled) return; press=setTimeout(()=>{ toggleSolo(i); press=null; },600); },{passive:true});
+    el.addEventListener('touchend', ()=>{ if(press){ clearTimeout(press); toggleMute(i);} });
+    el.addEventListener('click', e=>{
+      if(e.target.dataset.st){ toggleStem(i,e.target.dataset.st); e.stopPropagation(); return; }
+      if(e.target.dataset.loop){ orbs[i].loop=e.target.dataset.loop; renderOrbs(); log(`Orb ${i+1} loop → ${e.target.dataset.loop} bars — finely lopping!`); e.stopPropagation(); return; }
+      if(e.target.dataset.fx){ orbs[i].fx = orbs[i].fx===e.target.dataset.fx ? '' : e.target.dataset.fx; renderOrbs(); log(`Orb ${i+1} fx → ${orbs[i].fx||'off'} ${orbs[i].fx?'— novel!':''}`); e.stopPropagation(); return; }
+      if(e.target.dataset.act==='mute'){ toggleMute(i); e.stopPropagation(); return; }
+      if(e.target.dataset.act==='clear'){ orbs[i]=null; syncDecks(); checkBonus(); renderOrbs(); renderWaves(); log(`Cleared Orb ${i+1}`); e.stopPropagation(); return; }
+    });
+    el.addEventListener('dblclick', ()=>{ if(filled){ orbs[i]=null; syncDecks(); checkBonus(); renderOrbs(); renderWaves(); }});
+    holoRow.appendChild(el);
+  });
+}
+function renderLib(){
+  libEl.innerHTML='';
+  library.forEach((tr,idx)=>{
+    const d=document.createElement('div');
+    d.className='track'; d.draggable=true;
+    d.innerHTML=`<div class="ic">${tr.emoji}</div><div class="meta"><div class="t">${tr.title}</div><div class="s">${tr.sub}</div></div><span class="grab">drag →</span>`;
+    d.addEventListener('dragstart', e=>{ e.dataTransfer.setData('text/plain','lib'+idx); });
+    libEl.appendChild(d);
+  });
+}
+function renderWaves(){
+  const a=document.getElementById('waveA'), b=document.getElementById('waveB');
+  a.innerHTML=''; b.innerHTML=''; wave(a,false); wave(b,true);
+  const filled=orbs.filter(Boolean);
+  document.getElementById('deckAInfo').textContent=filled[0]?.iconic?.slice(0,18)||'—';
+  document.getElementById('deckBInfo').textContent=filled[1]?.iconic?.slice(0,18)||filled[0]?.iconic?.slice(0,18)||'—';
+  document.getElementById('bpmA').textContent=filled[0]?.bpm||'—';
+  document.getElementById('keyA').textContent=filled[0]?.key||'—';
+  document.getElementById('bpmB').textContent=filled[1]?.bpm||filled[0]?.bpm||'—';
+  document.getElementById('keyB').textContent=filled[1]?.key||filled[0]?.key||'—';
+}
+function syncDecks(){ /* bpm is avg of filled orbs like Ghost transport */ }
+function toggleMute(i){ if(!orbs[i]) return; orbs[i].muted=!orbs[i].muted; if(orbs[i].muted) orbs[i].solo=false; renderOrbs(); log(`${orbs[i].muted?'Muted':'Unmuted'} Orb ${i+1}`); }
+function toggleSolo(i){ if(!orbs[i]) return; const was=orbs[i].solo; orbs.forEach(o=>{ if(o) o.solo=false}); orbs[i].solo=!was; if(orbs[i].solo) orbs[i].muted=false; renderOrbs(); log(`${orbs[i].solo?'Solo':'Unsolo'} Orb ${i+1}`); }
+function toggleStem(i,k){ const o=orbs[i]; if(!o) return; if(o.active.has(k)) o.active.delete(k); else o.active.add(k); renderOrbs(); log(`Orb ${i+1} stem ${k} ${o.active.has(k)?'ON':'OFF'} — honest Demucs toggle`); }
+function checkBonus(){
+  const hasBeat=orbs.some(o=>o&&o.active.has('D')), hasBass=orbs.some(o=>o&&o.active.has('B')), hasVocal=orbs.some(o=>o&&o.active.has('V'));
+  const count=orbs.filter(Boolean).length;
+  const bonus=count>=3 && hasBeat && hasBass && hasVocal;
+  orbs.forEach(o=>{ if(o) o.bonus=bonus; });
+}
+
+document.getElementById('grab').addEventListener('click', ()=>{
+  const q=document.getElementById('search').value.trim();
+  if(!q){ log('Grab: paste a YouTube link, Spotify URI, or type an iconic name — then Grab & Separate pulls it locally and splits V/D/B/O.'); return; }
+  log(`Grabbing “${q}” … (mock) → fetching bytes locally → Demucs V/D/B/O → Ghost ready. Drag it from library to an orb.`);
+  // mock add to library
+  library.unshift({title:q.slice(0,28), sub:"98 BPM · — · grabbed & separated", emoji:"⬇️", bpm:98, key:"—", stems:["V","D","B","O"]});
+  renderLib();
+});
+document.getElementById('play').addEventListener('click', ()=>{
+  playing=!playing;
+  const btn=document.getElementById('play');
+  if(playing){
+    btn.textContent='⏸ Pause';
+    const bpm = orbs.filter(Boolean)[0]?.bpm || 98;
+    timer=setInterval(()=>{ tick++; const bar=Math.floor(tick/4)+1, beat=(tick%4)+1; const f=parseInt(xfade.value,10); const mix=f<50?`A ${100-f*2}%`:f>50?`B ${(f-50)*2}%`:'50/50 locked'; document.getElementById('waveA').style.opacity= f<50?1:0.6; document.getElementById('waveB').style.opacity= f>50?1:0.6; if(battleOn) log(`⚔ Battle bar ${bar} beat ${beat} — ${mix} — crowd: ${Math.random()>0.5?'you 🔥':'friend 🔥'}`); }, 60000/bpm);
+    log(`▶ Stage PLAY @ ${bpm} BPM, x-fade ${xfade.value}% phase-locked. ${battleOn?'⚔ BATTLE ON — 60s!':''}`);
+  } else { btn.textContent='▶ Play Stage'; clearInterval(timer); log('⏸ Paused — orbs hold, resume bar-aligned.'); }
+});
+xfade.addEventListener('input', ()=>{ const v=parseInt(xfade.value,10); xfadeVal.textContent= v===50?'50% · phase-locked': v<50?`${v}% · A dominant`:`${v}% · B dominant`; if(playing) log(`↔ X-Fade ${v}% — interpolating playbackRate, grids glued.`); });
+document.getElementById('cutA').addEventListener('click', ()=>{ xfade.value=0; xfade.dispatchEvent(new Event('input')); log('◀ Cut to A — instant Djay cut.'); });
+document.getElementById('cutB').addEventListener('click', ()=>{ xfade.value=100; xfade.dispatchEvent(new Event('input')); log('Cut to B ▶ — instant.'); });
+document.getElementById('bonus').addEventListener('click', ()=>{
+  orbs[0]={iconic:library[1].title, emoji:library[1].emoji, bpm:library[1].bpm, key:library[1].key, stems:library[1].stems.slice(), active:new Set(library[1].stems), loop:'4', fx:'', muted:false,solo:false,bonus:false, owner:'you'};
+  orbs[1]={iconic:library[2].title, emoji:library[2].emoji, bpm:library[2].bpm, key:library[2].key, stems:library[2].stems.slice(), active:new Set(library[2].stems), loop:'8', fx:'', muted:false,solo:false,bonus:false, owner:'you'};
+  orbs[3]={iconic:library[0].title, emoji:library[0].emoji, bpm:library[0].bpm, key:library[0].key, stems:library[0].stems.slice(), active:new Set(library[0].stems), loop:'2', fx:'stutter', muted:false,solo:false,bonus:false, owner:'you'};
+  checkBonus(); renderOrbs(); renderWaves(); log('Bonus Fill: Amen + Neon Bass + House Vocal → ✨ bonus unlocked!');
+});
+document.getElementById('qrBtn').addEventListener('click', ()=>{
+  const isFriend=collabState.textContent.includes('friend');
+  if(!isFriend){ collabState.textContent='● you + friend (S5-S7)'; collabState.style.color='var(--accent3)'; log('⬡ QR Join: friend scanned! They control S5-S7, you S1-S4. Ledgers sync live. Try dragging to their orbs — Actions append for both.'); }
+  else { collabState.textContent='● solo'; collabState.style.color='var(--accent2)'; log('Left collab — back to solo.'); }
+  renderOrbs();
+});
+document.getElementById('invite').addEventListener('click', ()=>{ document.getElementById('inviteMsg').textContent='link copied (mock): 2become1.local/join/nebula-2030'; log('Invite link copied — friend opens on phone, scans QR, joins stage.'); setTimeout(()=>document.getElementById('inviteMsg').textContent='',2500); });
+function startBattle(){ battleOn=true; log('⚔ Battle started — 60s! You vs friend, crowd votes on meld. AI Producer will suggest after.'); setTimeout(()=>{ battleOn=false; log('⚔ Battle ended — winner: you (mock) — 62% meld score. AI Producer: “That Amen + Diva was 🔥, next try Airy Pad -2st”'); },60000); }
+document.getElementById('battle').addEventListener('click', startBattle);
+document.getElementById('battle2').addEventListener('click', startBattle);
+document.getElementById('aiBtn').addEventListener('click', ()=>{ log('✨ AI Producer (soon): “Orbs 1+2 clash Am vs Cm — I can stitch a honest 2-bar pad bridge, -2 semitones, keep both iconics intact. Allow?” — tap to apply, ledger appends.'); });
+document.getElementById('quant').addEventListener('change', e=> log(e.target.checked?'Quantize ON — drops land on 8-bar.':'Quantize OFF — free.'));
+
+function setMode(m){
+  const deck=document.getElementById('deck');
+  const isFun=m==='fun';
+  deck.classList.toggle('mode-fun', isFun);
+  deck.classList.toggle('mode-dj', !isFun);
+  document.getElementById('modeDJ').classList.toggle('on', !isFun);
+  document.getElementById('modeFun').classList.toggle('on', isFun);
+  document.getElementById('deckTitle').textContent = isFun ? 'Ultimate Deck — FUN Mode · finely lopping' : 'Ultimate Deck — DJ Mode · scratch & alignment';
+  log(isFun ? '◎ FUN Mode — waveforms tucked, orbs enlarged, loop 1/2/4/8 + stutter/rev per orb. Pure Incrediboxish play, same Ghosts.' : '◐ DJ Mode — twin waveforms, x-fade, BPM/key, grid locked. Same Ghosts, precision view.');
+}
+document.getElementById('modeDJ').addEventListener('click', ()=>setMode('dj'));
+document.getElementById('modeFun').addEventListener('click', ()=>setMode('fun'));
+
+renderLib(); renderOrbs(); renderWaves(); wave(document.getElementById('waveA'),false); wave(document.getElementById('waveB'),true); setMode('dj');
+</script>
+</body>
+</html>

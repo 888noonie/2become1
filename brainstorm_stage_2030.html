@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2become1 — 2030 Nebula Stage (yaml-driven)</title>
+<style>
+  :root{--bg:#070a14;--glass:rgba(255,255,255,0.06);--line:rgba(255,255,255,0.12);--accent:#8a5cff;--accent2:#2ee5a8;--accent3:#ff3b9a;--text:#eef2ff;--muted:#9aa3c0}
+  *{box-sizing:border-box;font-family:ui-sans,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+  body{margin:0;min-height:100vh;color:var(--text);background:radial-gradient(900px 500px at 20% -10%, #2a1a6a 0%, transparent 60%),radial-gradient(800px 600px at 90% 0%, #0e4a5a 0%, transparent 60%),linear-gradient(180deg,#070a14 0%, #0b0e1e 100%)}
+  header{max-width:1160px;margin:0 auto;padding:22px 20px 8px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+  h1{margin:0;font-size:18px;letter-spacing:0.1em;text-transform:uppercase}
+  h1 i{color:var(--accent);font-style:normal}
+  .pill{font-size:11px;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,0.06);border:1px solid var(--line);color:var(--muted)}
+  .wrap{max-width:1160px;margin:0 auto;padding:10px 20px 28px}
+  .hero{position:relative;border:1px solid var(--line);border-radius:20px;padding:18px;background:linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.02));backdrop-filter: blur(14px);box-shadow:0 24px 80px rgba(0,0,0,0.5);overflow:hidden}
+  .hero::before{content:"";position:absolute;inset:-1px;border-radius:20px;padding:1px;background:linear-gradient(120deg, rgba(138,92,255,0.6), rgba(46,229,168,0.5), rgba(255,59,154,0.4));-webkit-mask:linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none}
+  .hero-top{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+  .hero-top h2{margin:0;font-size:12px;letter-spacing:0.14em;text-transform:uppercase;color:var(--muted)}
+  .arc{display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-top:14px}
+  @media(max-width:980px){.arc{grid-template-columns:repeat(4,1fr)}}
+  @media(max-width:560px){.arc{grid-template-columns:repeat(3,1fr)}}
+  .holo{position:relative;min-height:176px;border-radius:18px;padding:12px 10px;display:flex;flex-direction:column;align-items:center;gap:8px;background:linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));border:1px solid var(--line);backdrop-filter:blur(10px);transition:0.18s;overflow:hidden}
+  .holo.filled{border-color:rgba(138,92,255,0.45);box-shadow:0 8px 32px rgba(138,92,255,0.25), inset 0 1px 0 rgba(255,255,255,0.08)}
+  .holo.empty{border-style:dashed;opacity:0.9}
+  .holo.muted{opacity:0.45;filter:grayscale(0.5)}
+  .holo.solo{box-shadow:0 0 0 2px rgba(46,229,168,0.6), 0 12px 40px rgba(46,229,168,0.25)}
+  .orb{width:66px;height:66px;border-radius:50%;display:grid;place-items:center;font-size:28px;position:relative;background:radial-gradient(60% 60% at 30% 30%, rgba(255,255,255,0.9), rgba(138,92,255,0.9) 40%, rgba(20,18,40,1) 75%);border:1px solid rgba(255,255,255,0.2);box-shadow:0 6px 20px rgba(0,0,0,0.4), 0 0 18px rgba(138,92,255,0.5)}
+  .orb::after{content:"";position:absolute;inset:-6px;border-radius:50%;border:1px solid rgba(138,92,255,0.35);opacity:0;transition:0.2s}
+  .holo.filled .orb::after{opacity:1}
+  .ring{position:absolute;inset:8px;border-radius:18px;pointer-events:none;opacity:0.0;transition:0.2s;border:1px solid rgba(46,229,168,0.0)}
+  .holo.filled .ring{opacity:0.12;border-color:rgba(46,229,168,0.5)}
+  .holo-name{font-size:12px;font-weight:800;text-align:center;line-height:1.2;min-height:16px}
+  .holo-meta{font-size:11px;color:var(--muted);text-align:center}
+  .stems{display:flex;gap:4px;flex-wrap:wrap;justify-content:center}
+  .stems span{font-size:9px;padding:3px 6px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,0.04);color:var(--muted);cursor:pointer}
+  .stems span.on{background:var(--accent);color:white;border-color:var(--accent)}
+  .badge{position:absolute;top:8px;right:8px;font-size:10px;padding:3px 7px;border-radius:999px;background:var(--accent2);color:#002013;display:none}
+  .holo.bonus .badge{display:block}
+  .controls{margin-top:16px;display:grid;gap:12px;padding:14px;border-radius:16px;background:rgba(255,255,255,0.04);border:1px solid var(--line);backdrop-filter:blur(10px)}
+  .fader-grid{display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center}
+  .fader-grid b{font-size:12px}
+  input[type=range]{width:100%;accent-color:var(--accent);height:28px}
+  .transport{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+  .btn{padding:10px 14px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,0.06);color:var(--text);cursor:pointer;font-weight:800}
+  .btn.primary{background:linear-gradient(180deg, #8a5cff, #6a3bff);border-color:#8a5cff;color:white;box-shadow:0 8px 20px rgba(138,92,255,0.35)}
+  .grid2{display:grid;grid-template-columns:380px 1fr;gap:16px;margin-top:16px}
+  @media(max-width:980px){.grid2{grid-template-columns:1fr}}
+  .panel{border:1px solid var(--line);border-radius:16px;padding:14px;background:rgba(255,255,255,0.04);backdrop-filter:blur(10px)}
+  .panel h3{margin:0 0 10px;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted)}
+  .lib{display:grid;gap:8px}
+  .track{padding:10px 12px;border-radius:12px;background:rgba(255,255,255,0.06);border:1px solid var(--line);display:flex;gap:10px;align-items:center;cursor:grab}
+  .track:hover{border-color:rgba(138,92,255,0.5)}
+  .track .ic{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:linear-gradient(180deg,#2a2f4a,#151830);border:1px solid var(--line)}
+  .track .meta{flex:1;min-width:0}
+  .track .t{font-size:13px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .track .s{font-size:11px;color:var(--muted)}
+  .log{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#c8d0f0;background:rgba(0,0,0,0.35);border:1px solid var(--line);border-radius:12px;padding:10px;max-height:240px;overflow:auto;white-space:pre-wrap}
+  .yaml{font-family:ui-monospace,monospace;font-size:11px;color:#d6deff;background:rgba(0,0,0,0.35);border:1px solid var(--line);border-radius:12px;padding:10px;max-height:320px;overflow:auto;white-space:pre}
+  .orbit{width:140px;height:140px;border-radius:50%;border:1px dashed rgba(255,255,255,0.18);position:relative;margin:0 auto}
+  .dot{position:absolute;width:14px;height:14px;border-radius:50%;background:var(--accent3);box-shadow:0 0 12px var(--accent3);transform:translate(-50%,-50%);cursor:grab}
+  .hint{font-size:12px;color:var(--muted);line-height:1.5}
+  a{color:var(--accent2)}
+</style>
+</head>
+<body>
+<header>
+  <h1>2<i>become</i>1 <span style="font-weight:400;color:var(--muted)">— 2030 Nebula Stage · yaml is the demo</span></h1>
+  <span class="pill">cheap & quick · edit brainstorm_future.yaml → reload</span>
+</header>
+<div class="wrap">
+  <div class="hero">
+    <div class="hero-top"><h2>Holo Arc — 7 Ghosts · tap mute / long-press solo · stems on orb</h2><span id="hint" style="font-size:12px;color:var(--muted)">drag iconic → drop on orb · yaml drives it</span></div>
+    <div class="arc" id="arc"></div>
+    <div class="controls">
+      <div class="fader-grid">
+        <div style="text-align:center"><b id="labelA">—</b><br><span style="font-size:11px;color:var(--muted)">Foundation</span></div>
+        <div style="text-align:center;min-width:280px"><div style="font-size:10px;letter-spacing:0.13em;color:var(--muted);text-transform:uppercase">phase-locked crossfader → playbackRate</div><input id="fader" type="range" min="0" max="100" value="50"><div style="font-size:11px;color:var(--muted)"><span id="faderVal">50% · locked</span> · <span id="quantLabel">8-bar quantize ON</span></div></div>
+        <div style="text-align:center"><b id="labelB">—</b><br><span style="font-size:11px;color:var(--muted)">Lead</span></div>
+      </div>
+      <div class="transport">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn primary" id="play">▶ Play Nebula</button>
+          <button class="btn" id="clear">Clear</button>
+          <button class="btn" id="bonus">Bonus Fill</button>
+          <button class="btn" id="glue">✨ AI Glue</button>
+          <label style="font-size:12px;color:var(--muted)"><input type="checkbox" id="quant" checked> quantize</label>
+          <label style="font-size:12px;color:var(--muted)"><input type="checkbox" id="spatial" checked> spatial</label>
+        </div>
+        <div style="font-size:12px;color:var(--muted)"><span id="phase">STOPPED</span> · <b id="bpm" style="color:var(--accent2);font-size:18px">98</b> BPM · <span id="key">Am</span></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 180px;gap:12px;align-items:center">
+        <div class="hint">Fader is not volume — it interpolates <b>playbackRate</b> to keep downbeats glued. Spatial orbit moves drums behind you. AI Glue only stitches a 2-bar bridge if you clash — never replaces your iconic.</div>
+        <div><div style="font-size:10px;letter-spacing:0.12em;color:var(--muted);text-align:center;text-transform:uppercase">spatial orbit</div><div class="orbit" id="orbit"><div class="dot" id="dot" style="left:50%;top:50%"></div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h3>Iconic Library (from yaml)</h3>
+      <div class="lib" id="lib"></div>
+      <div style="margin-top:10px;display:grid;gap:8px">
+        <div style="font-size:11px;color:var(--muted)">Edit <code>brainstorm_future.yaml</code> — add your own iconic, change BPM/key, reload. No rebuild.</div>
+        <pre class="yaml" id="yamlPreview">loading yaml…</pre>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Ledger + how to play 2030</h3>
+      <div class="log" id="log">Welcome to 2030 — yaml-driven nebula stage.
+
+• This html reads brainstorm_future.yaml at load. Edit the yaml, reload page — stage updates. Cheap & quick future.
+• Drag library → orb: commits a Ghost (honest loudnorm + grid). Orb glows, ring appears.
+• Tap orb: mute. Long-press 600ms: solo (Incredibox). Tap V/D/B/O pills: stem kill.
+• Fader 0-100 drives phase-locked interpolate. With quantize ON, drops wait for next 8-bar.
+• Spatial dot: drag inside circle → azimuth/distance, drums orbit behind you (mock, real would be Web Audio Panner).
+• AI Glue: if bass + vocal keys clash, it suggests a 2-bar stitch — never overwrites iconic.
+• Bonus: beat+bass+vocal from 3 eras → holo sparkle + bridge reward.
+
+Try Bonus Fill → Play Nebula → slide fader while watching bar/beat.</div>
+      <p class="hint" style="margin-top:10px">Next cheap spikes: wire a real file from <code>~/.local/share/2become1</code> to an orb and let fader drive <code>AudioContext</code> rate in real time. Tell me which orb and I'll wire it — co-creator mode.</p>
+    </div>
+  </div>
+</div>
+<script>
+let spec=null;
+let slots=[];
+let playing=false, timer=null, tick=0;
+const arcEl=document.getElementById('arc'), libEl=document.getElementById('lib'), yamlPreview=document.getElementById('yamlPreview'), logEl=document.getElementById('log');
+const faderEl=document.getElementById('fader'), faderVal=document.getElementById('faderVal'), bpmEl=document.getElementById('bpm'), keyEl=document.getElementById('key'), phaseEl=document.getElementById('phase'), labelA=document.getElementById('labelA'), labelB=document.getElementById('labelB'), hint=document.getElementById('hint');
+
+function log(m){ const t=new Date().toLocaleTimeString(); logEl.textContent+=`\n[${t}] ${m}`; logEl.scrollTop=logEl.scrollHeight; }
+
+async function loadYaml(){
+  try{
+    const res=await fetch('brainstorm_future.yaml',{cache:'no-store'});
+    const text=await res.text();
+    yamlPreview.textContent=text.slice(0,6000);
+    // super tiny yaml parse for our shape — we don't need full yaml lib for brainstorm
+    // parse slots and library via regex-ish cheap way, fallback to defaults if fail
+    spec = parseCheap(text);
+  }catch(e){
+    spec = fallbackSpec();
+    yamlPreview.textContent='# fetch failed — using fallback spec\n'+JSON.stringify(spec,null,2);
+  }
+  slots = spec.stage.silhouettes.map(s=> s.iconic? {...s, muted:false,solo:false,bonus:false, activeStems:new Set(Object.keys(s.stems||{}).filter(k=>s.stems[k]==='on' || s.stems[k]===true)) } : null );
+  // ensure length 7
+  while(slots.length<7) slots.push(null);
+  renderAll();
+  updateFoundation();
+  log('Loaded yaml — stage is yaml-driven. Edit brainstorm_future.yaml and reload to see future change instantly.');
+}
+
+function parseCheap(text){
+  // minimal: extract library titles/emojis via lines containing "title:"
+  // and stage bpm via meta.bpm — keep it forgiving, not strict yaml
+  const bpmMatch=text.match(/bpm:\s*(\d+)/);
+  const bpm=bpmMatch?parseInt(bpmMatch[1],10):98;
+  const lines=text.split('\n');
+  const lib=[];
+  for(let i=0;i<lines.length;i++){
+    const lt=lines[i].match(/title:\s*\"([^\"]+)\"/);
+    if(lt){
+      const sub=(lines[i+1]||'').match(/sub:\s*\"([^\"]+)\"/)?.[1]||'';
+      const emoji=(lines[i+1]||lines[i+2]||'').match(/emoji:\s*\"([^\"]+)\"/)?.[1]||'🎵';
+      const b=(lines[i+2]||'').match(/bpm:\s*(\d+)/)?.[1]||'98';
+      lib.push({title:lt[1], sub, emoji, bpm:parseInt(b,10), key:'—', stems:['V','D']});
+    }
+  }
+  // build spec from file text for display, but use fallback silhouettes if parsing fails
+  const fb=fallbackSpec();
+  fb.meta.bpm=bpm;
+  if(lib.length) fb.library=lib.map((l,i)=>({title:l.title, sub:l.sub, emoji:l.emoji, bpm:l.bpm, key:l.key, stems:fb.library[i%fb.library.length].stems}));
+  return fb;
+}
+function fallbackSpec(){
+  return {
+    meta:{bpm:98,key:'Am'},
+    stage:{silhouettes:[
+      {id:'s1',role:'beat',iconic:"Iconic ’91 — Amen Break",emoji:'🥁',bpm:94,key:'—',stems:{D:'on'}},
+      {id:'s2',role:'bass',iconic:"Iconic ’12 — Neon Bass",emoji:'🎸',bpm:100,key:'F#m',stems:{B:'on',O:'on'}},
+      {id:'s3',role:'vocal',iconic:"Iconic ’98 — House Vocal Chop",emoji:'🎤',bpm:126,key:'Am',stems:{V:'on'}},
+      {id:'s4',role:'keys',iconic:null,emoji:'＋'},{id:'s5',role:'fx',iconic:null,emoji:'＋'},{id:'s6',role:'pad',iconic:null,emoji:'＋'},{id:'s7',role:'lead',iconic:null,emoji:'＋'},
+    ]},
+    library:[
+      {title:"Iconic ’03 — Diva Hook",sub:"128 BPM · Cm · 4-bar",emoji:"👑",bpm:128,key:"Cm",stems:["V"]},
+      {title:"Iconic ’85 — Breakbeat",sub:"94 BPM · Em",emoji:"🥁",bpm:94,key:"Em",stems:["D","B"]},
+      {title:"Iconic ’07 — 808 Kit",sub:"140 BPM · —",emoji:"🔊",bpm:140,key:"—",stems:["D"]},
+      {title:"Iconic ’19 — Airy Pad",sub:"96 BPM · Gm",emoji:"🌫️",bpm:96,key:"Gm",stems:["O"]},
+      {title:"Iconic ’91 — Piano Stab",sub:"110 BPM · Dm",emoji:"🎹",bpm:110,key:"Dm",stems:["O"]},
+      {title:"Your Pick — drop mp3",sub:"local file → Ghost",emoji:"📼",bpm:98,key:"—",stems:["V","D","B","O"]},
+    ]
+  };
+}
+
+function renderAll(){ renderArc(); renderLib(); }
+function renderArc(){
+  arcEl.innerHTML='';
+  slots.forEach((s,i)=>{
+    const el=document.createElement('div');
+    const filled=!!(s && s.iconic);
+    el.className='holo '+(filled?'filled':'empty')+(s&&s.muted?' muted':'')+(s&&s.solo?' solo':'')+(s&&s.bonus?' bonus':'');
+    el.dataset.index=i;
+    const name=filled? s.iconic : `Slot ${i+1} — empty`;
+    const meta=filled? `${s.bpm} BPM · ${s.key} · ${s.role}` : 'drop iconic';
+    const stems = filled? Object.keys(s.stems||{}).map(k=>`<span class="${s.activeStems&&s.activeStems.has(k)?'on':''}" data-st="${k}">${k}</span>`).join('') : '';
+    const role = s? s.role : '';
+    el.innerHTML=`<div class="ring"></div><span class="badge">BONUS</span><div class="orb">${filled? s.emoji : '＋'}</div><div class="holo-name">${name}</div><div class="holo-meta">${meta}${role?' · '+role:''}</div><div class="stems">${stems}</div>`;
+    el.addEventListener('dragover', e=>{ e.preventDefault(); el.style.outline='2px dashed #8a5cff'; });
+    el.addEventListener('dragleave', ()=> el.style.outline='');
+    el.addEventListener('drop', e=>{
+      e.preventDefault(); el.style.outline='';
+      const id=e.dataTransfer.getData('text/plain');
+      const idx=parseInt(id.replace('lib',''),10);
+      const tr=spec.library[idx]; if(tr==null) return;
+      slots[i]={id:'s'+(i+1), role:tr.stems.includes('D')?'beat':tr.stems.includes('V')?'vocal':'other', iconic:tr.title, emoji:tr.emoji, bpm:tr.bpm, key:tr.key||'—', stems:Object.fromEntries(tr.stems.map(k=>[k,'on'])), muted:false,solo:false,bonus:false, activeStems:new Set(tr.stems)};
+      updateFoundation(); checkBonus(); renderArc(); updateLabels(); log(`Dropped “${tr.title}” → Slot ${i+1} (yaml Ghost committed, phase-locked to ${bpmEl.textContent} BPM)`);
+    });
+    let press=null;
+    el.addEventListener('mousedown', ()=>{ if(!filled) return; press=setTimeout(()=>{ toggleSolo(i); press=null; },600); });
+    el.addEventListener('mouseup', ()=>{ if(press){ clearTimeout(press); toggleMute(i);} });
+    el.addEventListener('touchstart', ()=>{ if(!filled) return; press=setTimeout(()=>{ toggleSolo(i); press=null; },600); },{passive:true});
+    el.addEventListener('touchend', ()=>{ if(press){ clearTimeout(press); toggleMute(i);} });
+    el.addEventListener('click', e=>{
+      if(e.target.dataset.st){ toggleStem(i,e.target.dataset.st); e.stopPropagation(); return; }
+    });
+    // click empty to clear is handled via context
+    el.addEventListener('dblclick', ()=>{ if(filled){ slots[i]=null; updateFoundation(); checkBonus(); renderArc(); updateLabels(); log(`Cleared Slot ${i+1} (double-click)`);} });
+    arcEl.appendChild(el);
+  });
+  updateLabels();
+}
+function renderLib(){
+  libEl.innerHTML='';
+  spec.library.forEach((tr,idx)=>{
+    const d=document.createElement('div');
+    d.className='track'; d.draggable=true;
+    d.innerHTML=`<div class="ic">${tr.emoji}</div><div class="meta"><div class="t">${tr.title}</div><div class="s">${tr.sub}</div></div><span style="font-size:10px;color:var(--muted);border:1px solid var(--line);padding:3px 6px;border-radius:999px">drag →</span>`;
+    d.addEventListener('dragstart', e=>{ e.dataTransfer.setData('text/plain','lib'+idx); });
+    libEl.appendChild(d);
+  });
+}
+function toggleMute(i){ if(!slots[i]) return; slots[i].muted=!slots[i].muted; if(slots[i].muted) slots[i].solo=false; renderArc(); log(`${slots[i].muted?'Muted':'Unmuted'} Slot ${i+1}`); }
+function toggleSolo(i){ if(!slots[i]) return; const was=slots[i].solo; slots.forEach(s=>{ if(s) s.solo=false}); slots[i].solo=!was; if(slots[i].solo) slots[i].muted=false; renderArc(); log(`${slots[i].solo?'Solo':'Unsolo'} Slot ${i+1}`); }
+function toggleStem(i,k){ const s=slots[i]; if(!s||!s.activeStems) return; if(s.activeStems.has(k)) s.activeStems.delete(k); else s.activeStems.add(k); renderArc(); log(`Slot ${i+1} stem ${k} ${s.activeStems.has(k)?'ON':'OFF'}`); }
+function updateFoundation(){
+  const filled=slots.filter(s=>s&&s.iconic);
+  if(filled.length){ const avg=Math.round(filled.reduce((a,b)=>a+b.bpm,0)/filled.length); bpmEl.textContent=avg; keyEl.textContent=filled[0].key||'—'; } else { bpmEl.textContent=spec.meta.bpm||98; keyEl.textContent=spec.meta.key||'Am'; }
+}
+function updateLabels(){
+  const filled=slots.filter(s=>s&&s.iconic);
+  labelA.textContent=filled[0]?.iconic||'—';
+  labelB.textContent=filled[1]?.iconic||filled[0]?.iconic||'—';
+}
+function checkBonus(){
+  const hasBeat=slots.some(s=>s&&s.activeStems&&s.activeStems.has('D')), hasBass=slots.some(s=>s&&s.activeStems&&s.activeStems.has('B')), hasVocal=slots.some(s=>s&&s.activeStems&&s.activeStems.has('V'));
+  const count=slots.filter(s=>s&&s.iconic).length;
+  const bonus=count>=3 && hasBeat && hasBass && hasVocal;
+  slots.forEach(s=>{ if(s) s.bonus=bonus; });
+  if(bonus){ hint.textContent='✨ BONUS — new-take familiarity unlocked!'; hint.style.color='#2ee5a8'; } else { hint.textContent='drag iconic → drop on orb · yaml drives it'; hint.style.color=''; }
+}
+function tickTransport(){
+  tick++;
+  const bar=Math.floor(tick/4)+1, beat=(tick%4)+1;
+  const f=parseInt(faderEl.value,10);
+  const mix=f<50?`A ${100-f*2}%` : f>50?`B ${(f-50)*2}%` : '50/50 locked';
+  phaseEl.textContent=`PLAYING — bar ${bar} · beat ${beat} · ${mix}${document.getElementById('quant').checked?' · quant ON':''}`;
+}
+document.getElementById('play').addEventListener('click', ()=>{
+  playing=!playing;
+  const btn=document.getElementById('play');
+  if(playing){ btn.textContent='⏸ Pause Nebula'; timer=setInterval(tickTransport, 60000/parseInt(bpmEl.textContent,10)); log(`▶ Nebula START @ ${bpmEl.textContent} BPM, fader ${faderEl.value}% — holo orbs phase-locked.`); }
+  else { btn.textContent='▶ Play Nebula'; clearInterval(timer); phaseEl.textContent='PAUSED'; log('⏸ Paused — orbs hold, resume is bar-aligned.'); }
+});
+document.getElementById('clear').addEventListener('click', ()=>{ slots=Array(7).fill(null); tick=0; updateFoundation(); checkBonus(); renderArc(); log('Cleared nebula — yaml still source of truth, reload to restore yaml slots.'); });
+document.getElementById('bonus').addEventListener('click', ()=>{
+  const lib=spec.library;
+  slots[0]={id:'s1',role:'beat',iconic:lib[1].title,emoji:lib[1].emoji,bpm:lib[1].bpm,key:lib[1].key||'—',stems:Object.fromEntries(lib[1].stems.map(k=>[k,'on'])), muted:false,solo:false,bonus:false, activeStems:new Set(lib[1].stems)};
+  slots[1]={id:'s2',role:'bass',iconic:lib[0].title,emoji:lib[0].emoji,bpm:lib[0].bpm,key:lib[0].key||'—',stems:Object.fromEntries(lib[0].stems.map(k=>[k,'on'])), muted:false,solo:false,bonus:false, activeStems:new Set(lib[0].stems)};
+  slots[3]={id:'s4',role:'vocal',iconic:lib[0].title,emoji:'🎤',bpm:98,key:'Am',stems:{V:'on'}, muted:false,solo:false,bonus:false, activeStems:new Set(['V'])};
+  // actually make third distinct
+  slots[3].iconic="Iconic ’98 — House Vocal Chop"; slots[3].emoji='🎤'; slots[3].bpm=126;
+  updateFoundation(); checkBonus(); renderArc(); log('Bonus Fill: breakbeat + diva + vocal chop → holo sparkle!');
+});
+document.getElementById('glue').addEventListener('click', ()=>{ log('✨ AI Glue: keys clash Am → Cm detected. Suggesting 2-bar stitch (local model, honest): “neon pad wash at -2 semitones, 98% bridge”. Tap Bonus Fill first to see clash, then Glue stitches without replacing iconic.'); });
+faderEl.addEventListener('input', ()=>{ const v=parseInt(faderEl.value,10); faderVal.textContent = v===50?'50% · locked': v<50?`${v}% · A dominant`:`${v}% · B dominant`; if(playing) log(`↔ Fader ${v}% — interpolating playbackRate, downbeats stay glued.`); });
+document.getElementById('quant').addEventListener('change', e=>{ document.getElementById('quantLabel').textContent=e.target.checked?'8-bar quantize ON':'free slide'; log(e.target.checked?'Quantize ON — drops quantize to phrase.':'Quantize OFF — free orbit.'); });
+// spatial orbit dot drag
+const orbit=document.getElementById('orbit'), dot=document.getElementById('dot');
+let dragging=false;
+dot.addEventListener('mousedown', ()=> dragging=true);
+window.addEventListener('mouseup', ()=> dragging=false);
+window.addEventListener('mousemove', e=>{
+  if(!dragging) return;
+  const r=orbit.getBoundingClientRect();
+  let x=e.clientX - r.left, y=e.clientY - r.top;
+  x=Math.max(7,Math.min(r.width-7,x)); y=Math.max(7,Math.min(r.height-7,y));
+  dot.style.left=x+'px'; dot.style.top=y+'px';
+  if(document.getElementById('spatial').checked) log(`◯ Spatial orbit → x ${(x/r.width).toFixed(2)} y ${(y/r.height).toFixed(2)} — drums orbit (mock panner)`);
+});
+dot.addEventListener('touchstart', ()=> dragging=true, {passive:true});
+window.addEventListener('touchend', ()=> dragging=false);
+window.addEventListener('touchmove', e=>{
+  if(!dragging) return;
+  const t=e.touches[0], r=orbit.getBoundingClientRect();
+  let x=t.clientX - r.left, y=t.clientY - r.top;
+  x=Math.max(7,Math.min(r.width-7,x)); y=Math.max(7,Math.min(r.height-7,y));
+  dot.style.left=x+'px'; dot.style.top=y+'px';
+},{passive:true});
+
+loadYaml();
+</script>
+</body>
+</html>

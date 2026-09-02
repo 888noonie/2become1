@@ -1,0 +1,87 @@
+# 2become1 — 2030 Stage Spec (yaml-driven brainstorm)
+# This yaml IS the demo. Edit it, reload html, see future instantly.
+meta:
+  title: "2become1 — Stage 2030"
+  tagline: "Incredibox play × Djay brains × honest audio · new-take on familiarity"
+  version: "2030.0-brainstorm"
+  bpm: 98
+  key: "Am"
+  quantize: "8-bar"
+  spatial: true
+  ai_glue: true
+
+stage:
+  slots: 7
+  layout: "arc" # arc | grid | circle
+  theme: "nebula-glass"
+  silhouettes:
+    - id: s1
+      role: "beat"
+      iconic: "Iconic '91 — Amen Break"
+      emoji: "🥁"
+      bpm: 94
+      key: "—"
+      stems: { V: off, D: on, B: off, O: off }
+      visual: "pulse-ring"
+      position: { x: 0, y: 0 }
+    - id: s2
+      role: "bass"
+      iconic: "Iconic '12 — Neon Bass"
+      emoji: "🎸"
+      bpm: 100
+      key: "F#m"
+      stems: { V: off, D: off, B: on, O: on }
+      visual: "wave-bass"
+      position: { x: 1, y: 0 }
+    - id: s3
+      role: "vocal"
+      iconic: "Iconic '98 — House Vocal Chop"
+      emoji: "🎤"
+      bpm: 126
+      key: "Am"
+      stems: { V: on, D: off, B: off, O: off }
+      visual: "mouth-holo"
+      position: { x: 2, y: 0 }
+    # s4..s7 empty — drag to fill
+    - { id: s4, role: "keys", iconic: null, emoji: "＋", visual: "empty" }
+    - { id: s5, role: "fx", iconic: null, emoji: "＋", visual: "empty" }
+    - { id: s6, role: "pad", iconic: null, emoji: "＋", visual: "empty" }
+    - { id: s7, role: "lead", iconic: null, emoji: "＋", visual: "empty" }
+
+fader:
+  mode: "phase-locked" # phase-locked | free | spatial-orbit
+  crossfade_curve: "equal-power"
+  beat_sync: "interpolate-playbackRate"
+  spatial_orbit: { azimuth: 0, elevation: 0, distance: 1.0 }
+
+ai:
+  glue:
+    enabled: true
+    prompt: "stitch 2-bar bridge if keys clash, never replace iconic"
+    model: "local-small" # keep honest, on-device
+  suggest:
+    - "Try Iconic '03 Diva over this break — +2 semitones, 98% match"
+    - "Drop 808 kit on s5 for bonus unlock"
+
+library:
+  # yaml is source of truth — add your iconics here
+  - { title: "Iconic '03 — Diva Hook", sub: "128 BPM · Cm · 4-bar", emoji: "👑", bpm: 128, key: "Cm", stems: [V] }
+  - { title: "Iconic '85 — Breakbeat", sub: "94 BPM · Em", emoji: "🥁", bpm: 94, key: "Em", stems: [D, B] }
+  - { title: "Iconic '07 — 808 Kit", sub: "140 BPM · —", emoji: "🔊", bpm: 140, key: "—", stems: [D] }
+  - { title: "Iconic '19 — Airy Pad", sub: "96 BPM · Gm", emoji: "🌫️", bpm: 96, key: "Gm", stems: [O] }
+  - { title: "Iconic '91 — Piano Stab", sub: "110 BPM · Dm", emoji: "🎹", bpm: 110, key: "Dm", stems: [O] }
+  - { title: "Your Pick — drop mp3", sub: "local file → Ghost", emoji: "📼", bpm: 98, key: "—", stems: [V, D, B, O] }
+
+bonuses:
+  - name: "New-Take Familiarity"
+    rule: "beat + bass + vocal from 3 distinct eras"
+    reward: "holo sparkle + 8-bar generative fill"
+  - name: "Era Clash"
+    rule: "1985 + 2025 in same phrase"
+    reward: "tape-stop transition"
+
+future_hooks:
+  - "gesture: pinch silhouette to solo, swipe off to clear"
+  - "voice: 'add that diva hook' → drops Ghost"
+  - "collab: friend claims s4 remotely, ledger appends Action"
+  - "spatial: drag fader orbit dot to move drums behind you"

@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2become1 — Stage Mode (Brainstorm Mock)</title>
+<style>
+  :root{--bg:#0d0f14;--card:#171a22;--line:#242a38;--accent:#7c5cff;--accent2:#2ee5a8;--muted:#9aa3b8;--text:#e8eaf0}
+  *{box-sizing:border-box;font-family: ui-sans, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial}
+  body{margin:0;background:radial-gradient(1200px 600px at 50% -10%, #1c2030 0%, var(--bg) 60%);color:var(--text);min-height:100vh}
+  header{max-width:1100px;margin:0 auto;padding:24px 20px 8px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+  h1{font-size:20px;letter-spacing:0.08em;text-transform:uppercase;margin:0}
+  h1 b{color:var(--accent)}
+  .pill{font-size:12px;padding:6px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);background:rgba(255,255,255,0.02)}
+  .wrap{max-width:1100px;margin:0 auto;padding:12px 20px 30px}
+  .stage{background:linear-gradient(180deg,#141824,#0f1220);border:1px solid var(--line);border-radius:18px;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,0.4)}
+  .stage-title{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .stage-title h2{margin:0;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted)}
+  .stage-title .hint{font-size:12px;color:var(--muted);margin-left:auto}
+  .slots{display:grid;grid-template-columns:repeat(7,1fr);gap:12px}
+  @media(max-width:900px){.slots{grid-template-columns:repeat(4,1fr)}}
+  @media(max-width:560px){.slots{grid-template-columns:repeat(3,1fr)}}
+  .slot{background:var(--card);border:1px dashed #2a3042;border-radius:16px;padding:12px 10px;min-height:170px;display:flex;flex-direction:column;align-items:center;gap:8px;position:relative;transition:0.15s;cursor:pointer}
+  .slot.filled{border-style:solid;border-color:#343d5a;box-shadow:0 6px 18px rgba(0,0,0,0.3)}
+  .slot.muted{opacity:0.45;filter:grayscale(0.6)}
+  .slot.solo{border-color:var(--accent2);box-shadow:0 0 0 2px rgba(46,229,168,0.25)}
+  .slot.drag-over{border-color:var(--accent);background:#1d2133;transform:translateY(-1px)}
+  .silhouette{width:64px;height:64px;border-radius:50%;background:linear-gradient(180deg,#2a2f45,#1a1e2e);border:2px solid #2e354d;display:grid;place-items:center;font-size:26px}
+  .slot.filled .silhouette{background:linear-gradient(180deg,#7c5cff,#3d2f8c);border-color:var(--accent);color:white}
+  .slot.solo .silhouette{outline:3px solid var(--accent2)}
+  .slot-name{font-size:12px;font-weight:700;text-align:center;line-height:1.2;min-height:18px}
+  .slot-meta{font-size:11px;color:var(--muted);text-align:center}
+  .stems{display:flex;gap:4px;flex-wrap:wrap;justify-content:center;margin-top:4px}
+  .stems span{font-size:9px;padding:3px 6px;border-radius:999px;background:#0f1220;border:1px solid #2a3042;color:var(--muted)}
+  .stems span.on{background:var(--accent);color:white;border-color:var(--accent)}
+  .slot-actions{display:flex;gap:6px;margin-top:auto}
+  .slot-actions button{font-size:11px;padding:5px 8px;border-radius:999px;border:1px solid var(--line);background:#0e1220;color:var(--muted);cursor:pointer}
+  .slot-actions button:hover{border-color:var(--accent);color:var(--text)}
+  .bonus{position:absolute;top:8px;right:8px;font-size:10px;background:var(--accent2);color:#00140e;padding:3px 6px;border-radius:999px;display:none}
+  .slot.bonus-on .bonus{display:block}
+  .controls{margin-top:16px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;display:grid;gap:12px}
+  .fader-row{display:grid;grid-template-columns:1fr auto 1fr;gap:12px;align-items:center}
+  .fader-label{font-size:12px;color:var(--muted);text-align:center}
+  .fader-label b{color:var(--text)}
+  input[type=range]{width:100%;accent-color:var(--accent);height:28px}
+  .transport{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+  .transport button{padding:10px 16px;border-radius:12px;border:1px solid var(--line);background:#0e1220;color:var(--text);cursor:pointer;font-weight:700}
+  .transport button.primary{background:var(--accent);border-color:var(--accent);color:white}
+  .transport .bpm{font-size:12px;color:var(--muted)}
+  .transport .bpm b{color:var(--accent2);font-size:18px}
+  .grid{display:grid;grid-template-columns:360px 1fr;gap:16px;margin-top:16px}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px}
+  .panel h3{margin:0 0 10px;font-size:12px;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted)}
+  .library{display:grid;gap:8px}
+  .track{padding:10px 12px;border-radius:12px;background:#0e1220;border:1px solid #242a38;display:flex;gap:10px;align-items:center;cursor:grab}
+  .track:active{cursor:grabbing}
+  .track:hover{border-color:#3a415c}
+  .track .icon{width:38px;height:38px;border-radius:9px;display:grid;place-items:center;background:linear-gradient(180deg,#2a2f45,#1a1e2e);border:1px solid #2e354d}
+  .track .meta{flex:1;min-width:0}
+  .track .meta .title{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .track .meta .sub{font-size:11px;color:var(--muted)}
+  .track .drag-hint{font-size:10px;color:var(--muted);border:1px solid var(--line);padding:3px 6px;border-radius:999px}
+  .log{font-family: ui-monospace, SFMono-Regular, Menlo, monospace;font-size:11px;color:#aeb8d1;background:#0a0d16;border:1px solid var(--line);border-radius:12px;padding:10px;max-height:220px;overflow:auto;white-space:pre-wrap}
+  .note{font-size:12px;color:var(--muted);line-height:1.5}
+  .note a{color:var(--accent2)}
+</style>
+</head>
+<body>
+<header>
+  <h1>2<b>become</b>1 <span style="font-weight:400;color:var(--muted)">— Stage Mode · Incredibox × Djay · brainstorm</span></h1>
+  <span class="pill">local mock · no backend · drag to silhouettes</span>
+</header>
+<div class="wrap">
+  <div class="stage">
+    <div class="stage-title"><h2>Stage — 7 Ghost slots (tap to mute, long-press to solo)</h2><span class="hint" id="hint">drag an iconic from below → drop on a silhouette</span></div>
+    <div class="slots" id="slots"></div>
+    <div class="controls">
+      <div class="fader-row">
+        <div class="fader-label"><b>Foundation A</b><br><span id="labelA">—</span></div>
+        <div style="text-align:center"><div style="font-size:10px;letter-spacing:0.12em;color:var(--muted);text-transform:uppercase">Beat-sync crossfader</div><input id="fader" type="range" min="0" max="100" value="50"><div style="font-size:11px;color:var(--muted)"><span id="faderVal">50% → phase-locked</span> · <span id="quantize">8-bar quantize ON</span></div></div>
+        <div class="fader-label"><b>Lead B</b><br><span id="labelB">—</span></div>
+      </div>
+      <div class="transport">
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="primary" id="play">▶ Play Stage</button>
+          <button id="clear">Clear Stage</button>
+          <button id="bonusBtn">Try Bonus Combo</button>
+        </div>
+        <div class="bpm"><span id="phase">STOPPED</span> · <b id="bpm">98</b> BPM · <span id="key">—</span></div>
+        <label style="font-size:12px;color:var(--muted)"><input type="checkbox" id="quant" checked> 8-bar phrase quantize</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h3>Iconic Library — drag me</h3>
+      <div class="library" id="library"></div>
+      <p class="note" style="margin-top:10px">This is just <i>familiarity</i> placeholders. In real engine each card = a <b>Ghost</b> (exact-vocal asset + grid + stems), already loudnorm'd and time-stretched to stage BPM. Fader doesn't just crossfade volume — it drives playbackRate toward the locked grid, so iconic + iconic stays glued.</p>
+    </div>
+    <div class="panel">
+      <h3>Live ledger (what Ghost phase would do) + how to play</h3>
+      <div class="log" id="log">Welcome to Stage Mode — brainstorm mock.
+
+• Drag any iconic onto an empty silhouette → it becomes a committed Ghost layer (lovely Incredibox moment).
+• Tap silhouette → mute/solo. Short tap = mute, long-press 600ms = solo (solo isolates that layer, like Incredibox solo).
+• Each slot shows V/D/B/O stem toggles — tap to kill drums etc. Honest Demucs stems underneath.
+• Play → transport runs, fader interpolates A→B with phase lock. With quantize ON, drops land on next 8-bar boundary (the Djay magic).
+• Bonus combo: fill 3+ slots with complementary roles (beat+bass+vocal) → gold sparkle + bonus bar appears.
+
+No audio files needed - this mock fakes the transport so you can feel the game loop. Real audio would be our Web Audio scheduler + loudnorm chain.
+
+Try dragging 3 cards and hitting Play.</div>
+      <p class="note" style="margin-top:10px">Next steps we could spike: hook this UI to real Ghost assets from <code>~/.local/share/2become1</code>, or wire the fader to a real <code>AudioContext.playbackRate</code> proof. Tell me which spark you want and I'll wire it — co-creator mode on. ;)</p>
+    </div>
+  </div>
+</div>
+<script>
+const library = [
+  {id:'a1', title:'Iconic ’98 — House Vocal', sub:'98 BPM · Am · vocal chop 16 bars', emoji:'🎤', bpm:126, key:'Am', stems:['V','D','B','O']},
+  {id:'a2', title:'Iconic ’85 — Breakbeat', sub:'94 BPM · Em · drums + bass', emoji:'🥁', bpm:94, key:'Em', stems:['D','B']},
+  {id:'a3', title:'Iconic ’12 — Neon Bass', sub:'100 BPM · F#m · bassline 8 bars', emoji:'🎸', bpm:100, key:'F#m', stems:['B','O']},
+  {id:'a4', title:'Iconic ’03 — Diva Hook', sub:'128 BPM · Cm · 4-bar hook', emoji:'👑', bpm:128, key:'Cm', stems:['V']},
+  {id:'a5', title:'Iconic ’91 — Piano Stab', sub:'110 BPM · Dm · keys', emoji:'🎹', bpm:110, key:'Dm', stems:['O']},
+  {id:'a6', title:'Iconic ’07 — 808 Kit', sub:'140 BPM · — · drums only', emoji:'🔊', bpm:140, key:'—', stems:['D']},
+  {id:'a7', title:'Iconic ’19 — Airy Pad', sub:'96 BPM · Gm · pad wash', emoji:'🌫️', bpm:96, key:'Gm', stems:['O']},
+  {id:'a8', title:'YouTube Rip — Your Pick', sub:'drag-drop mp3 here (mock)', emoji:'📼', bpm:98, key:'—', stems:['V','D','B','O']},
+];
+let slots = Array(7).fill(null);
+let transportTimer=null, tick=0, playing=false;
+const slotsEl=document.getElementById('slots'), libEl=document.getElementById('library'), logEl=document.getElementById('log');
+const faderEl=document.getElementById('fader'), faderVal=document.getElementById('faderVal'), bpmEl=document.getElementById('bpm'), phaseEl=document.getElementById('phase'), keyEl=document.getElementById('key'), labelA=document.getElementById('labelA'), labelB=document.getElementById('labelB'), hint=document.getElementById('hint');
+
+function log(msg){ const t=new Date().toLocaleTimeString(); logEl.textContent+=`\n[${t}] ${msg}`; logEl.scrollTop=logEl.scrollHeight; }
+
+function renderLibrary(){
+  libEl.innerHTML='';
+  library.forEach(tr=>{
+    const d=document.createElement('div');
+    d.className='track'; d.draggable=true; d.dataset.id=tr.id;
+    d.innerHTML=`<div class="icon">${tr.emoji}</div><div class="meta"><div class="title">${tr.title}</div><div class="sub">${tr.sub}</div></div><span class="drag-hint">drag →</span>`;
+    d.addEventListener('dragstart', e=>{ e.dataTransfer.setData('text/plain', tr.id); e.dataTransfer.effectAllowed='copy'; });
+    libEl.appendChild(d);
+  });
+}
+function renderSlots(){
+  slotsEl.innerHTML='';
+  slots.forEach((s, i)=>{
+    const el=document.createElement('div');
+    el.className='slot'+(s?' filled':'')+(s&&s.muted?' muted':'')+(s&&s.solo?' solo':'')+(s&&s.bonus?' bonus-on':'');
+    el.dataset.index=i;
+    const name = s ? s.title : `Slot ${i+1}`;
+    const meta = s ? `${s.bpm} BPM · ${s.key}` : 'empty — drop iconic';
+    const stems = s ? s.stems.map(st=>`<span class="${s.activeStems.has(st)?'on':''}" data-st="${st}">${st}</span>`).join('') : '';
+    el.innerHTML=`<div class="bonus">BONUS</div><div class="silhouette">${s? s.emoji : '＋'}</div><div class="slot-name">${name}</div><div class="slot-meta">${meta}</div><div class="stems">${stems}</div><div class="slot-actions">${s?'<button data-act="mute">mute</button><button data-act="clear">×</button>':''}</div>`;
+    // drag over
+    el.addEventListener('dragover', e=>{ e.preventDefault(); el.classList.add('drag-over'); });
+    el.addEventListener('dragleave', ()=> el.classList.remove('drag-over'));
+    el.addEventListener('drop', e=>{
+      e.preventDefault(); el.classList.remove('drag-over');
+      const id=e.dataTransfer.getData('text/plain'); const tr=library.find(x=>x.id===id); if(!tr) return;
+      slots[i]={...tr, muted:false, solo:false, bonus:false, activeStems:new Set(tr.stems)};
+      updateFoundation(); renderSlots(); checkBonus(); log(`Dropped “${tr.title}” → Slot ${i+1} (Ghost committed, loudnorm I=-16, stretched to ${bpmEl.textContent} BPM)`);
+    });
+    // tap / long-press
+    let pressTimer=null;
+    el.addEventListener('mousedown', ()=>{ if(!s) return; pressTimer=setTimeout(()=>{ toggleSolo(i); pressTimer=null; }, 600); });
+    el.addEventListener('mouseup', ()=>{ if(pressTimer){ clearTimeout(pressTimer); if(s) toggleMute(i); } });
+    el.addEventListener('touchstart', ()=>{ if(!s) return; pressTimer=setTimeout(()=>{ toggleSolo(i); pressTimer=null; }, 600); }, {passive:true});
+    el.addEventListener('touchend', ()=>{ if(pressTimer){ clearTimeout(pressTimer); if(s) toggleMute(i); } });
+    el.addEventListener('click', e=>{
+      if(e.target.dataset.st){ toggleStem(i, e.target.dataset.st); e.stopPropagation(); return; }
+      if(e.target.dataset.act==='mute'){ toggleMute(i); e.stopPropagation(); return; }
+      if(e.target.dataset.act==='clear'){ slots[i]=null; updateFoundation(); renderSlots(); checkBonus(); log(`Cleared Slot ${i+1}`); e.stopPropagation(); return; }
+    });
+    slotsEl.appendChild(el);
+  });
+  // labels
+  const filled=slots.filter(Boolean);
+  labelA.textContent = filled[0]?.title || '—';
+  labelB.textContent = filled[1]?.title || filled[0]?.title || '—';
+}
+function toggleMute(i){ slots[i].muted=!slots[i].muted; if(slots[i].muted) slots[i].solo=false; renderSlots(); log(`${slots[i].muted?'Muted':'Unmuted'} Slot ${i+1}`); }
+function toggleSolo(i){
+  const wasSolo=slots[i].solo;
+  slots.forEach(s=>{ if(s) s.solo=false });
+  slots[i].solo=!wasSolo; if(slots[i].solo) slots[i].muted=false;
+  renderSlots(); log(`${slots[i].solo?'Solo':'Unsolo'} Slot ${i+1} — ${slots[i].solo?'isolating like Incredibox':'back to mix'}`);
+}
+function toggleStem(i,st){ const s=slots[i]; if(s.activeStems.has(st)) s.activeStems.delete(st); else s.activeStems.add(st); renderSlots(); log(`Slot ${i+1} stem ${st} ${s.activeStems.has(st)?'ON':'OFF'}`); }
+function updateFoundation(){
+  const filled=slots.filter(Boolean);
+  if(filled.length){ const avg=Math.round(filled.reduce((a,b)=>a+b.bpm,0)/filled.length); bpmEl.textContent=avg; keyEl.textContent=filled[0].key; } else { bpmEl.textContent='98'; keyEl.textContent='—'; }
+}
+function checkBonus(){
+  const hasBeat=slots.some(s=>s&&s.stems.includes('D')), hasBass=slots.some(s=>s&&s.stems.includes('B')), hasVocal=slots.some(s=>s&&s.stems.includes('V'));
+  const count=slots.filter(Boolean).length;
+  const bonus = count>=3 && hasBeat && hasBass && hasVocal;
+  slots.forEach(s=>{ if(s) s.bonus=bonus; });
+  if(bonus){ hint.textContent='✨ BONUS UNLOCKED — iconic + iconic + iconic is glued!'; hint.style.color='#2ee5a8'; log('✨ BONUS: beat + bass + vocal → new-take on familiarity unlocked!'); }
+  else { hint.textContent='drag an iconic from below → drop on a silhouette'; hint.style.color=''; }
+  renderSlots();
+}
+function tickTransport(){
+  tick++;
+  const bar = Math.floor(tick/4)+1, beat=(tick%4)+1;
+  const f=parseInt(faderEl.value,10);
+  const mix = f<50? `A ${100-f*2}%` : f>50? `B ${(f-50)*2}%` : '50/50 locked';
+  phaseEl.textContent=`PLAYING — bar ${bar} · beat ${beat} · ${mix}${document.getElementById('quant').checked?' · quant ON':''}`;
+  // visual pulse on filled slots not muted
+  document.querySelectorAll('.slot.filled').forEach((el,idx)=>{
+    const s=slots[idx]; if(!s||s.muted) return;
+    el.style.transform = (beat===1)?'scale(1.02)':'scale(1)';
+  });
+}
+document.getElementById('play').addEventListener('click', ()=>{
+  playing=!playing;
+  const btn=document.getElementById('play');
+  if(playing){ btn.textContent='⏸ Pause'; transportTimer=setInterval(tickTransport, 60000/parseInt(bpmEl.textContent,10)); log(`▶ Transport START @ ${bpmEl.textContent} BPM, fader ${faderEl.value}%, ${document.getElementById('quant').checked?'8-bar quantize ON':'free slide'} — layers phase-locked.`); }
+  else { btn.textContent='▶ Play Stage'; clearInterval(transportTimer); phaseEl.textContent='PAUSED'; log('⏸ Paused — Ghost layers stay committed, resume is bar-aligned.'); }
+});
+document.getElementById('clear').addEventListener('click', ()=>{ slots=Array(7).fill(null); tick=0; updateFoundation(); renderSlots(); log('Cleared stage — ready for new iconic combo.'); });
+document.getElementById('bonusBtn').addEventListener('click', ()=>{
+  // auto-fill 3 for demo
+  slots[0]={...library[1], muted:false,solo:false,bonus:false,activeStems:new Set(library[1].stems)};
+  slots[1]={...library[2], muted:false,solo:false,bonus:false,activeStems:new Set(library[2].stems)};
+  slots[3]={...library[0], muted:false,solo:false,bonus:false,activeStems:new Set(library[0].stems)};
+  updateFoundation(); checkBonus(); log('Auto-filled demo bonus combo: breakbeat + neon bass + house vocal → try Play!');
+});
+faderEl.addEventListener('input', ()=>{ const v=parseInt(faderEl.value,10); let txt=v===50?'50% → phase-locked': v<50?`${v}% → A dominant, B stretched to grid`:`${v}% → B dominant, A stretched to grid`; faderVal.textContent=txt; if(playing) log(`↔ Fader ${v}% — beat-sync algo interpolates playbackRate to keep downbeats glued.`); });
+document.getElementById('quant').addEventListener('change', e=>{ document.getElementById('quantize').textContent = e.target.checked?'8-bar quantize ON':'free slide'; log(e.target.checked?'Quantize ON — drops land on next 8-bar boundary (Djay/Incredibox safety).':'Quantize OFF — free crossfade, more chaos, more fun.'); });
+
+renderLibrary(); renderSlots();
+</script>
+</body>
+</html>
