@@ -48,6 +48,17 @@ jobs:
         run: node tests/browser/run.js --viewport 1280x800 --out tests/browser/artifacts
       - name: Browser E2E (mobile)
         run: node tests/browser/run.js --viewport 390x844 --out tests/browser/artifacts
+      # Phase 12 (Sol amendment 8): the focused Ghost journeys are CI-hard,
+      # not merely documented. Each runs at both viewports against the real
+      # fixture server and uploads its failure artifacts.
+      - name: Ghost commit journey (desktop)
+        run: node tests/browser/ghost_commit_ux.js --viewport 1280x800 --out tests/browser/artifacts
+      - name: Ghost commit journey (mobile)
+        run: node tests/browser/ghost_commit_ux.js --viewport 390x844 --out tests/browser/artifacts
+      - name: Ghost live-layer journey (desktop)
+        run: node tests/browser/ghost_live_ux.js --viewport 1280x800 --out tests/browser/artifacts
+      - name: Ghost live-layer journey (mobile)
+        run: node tests/browser/ghost_live_ux.js --viewport 390x844 --out tests/browser/artifacts
       - name: Upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4

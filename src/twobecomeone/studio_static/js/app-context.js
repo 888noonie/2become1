@@ -8,6 +8,7 @@ import { StateStore, registerReducers } from './state.js';
 import { ProjectManager } from './project.js';
 import { JobCoordinator } from './job-coordinator.js';
 import { GhostController } from './runtime/ghost-controller.js';
+import { CommittedLayerEngine } from './runtime/committed-layer-engine.js';
 import { audioController } from './audio.js';
 import {
   postProjectAction,
@@ -44,6 +45,10 @@ export const ghostController = new GhostController({
   audioContextFactory: {
     create: () => new AudioContext(),
   },
+  // Phase 12: the live committed-layer engine is built lazily by the
+  // controller (only when an authoritative projection holds a committed
+  // layer), sharing the controller's AudioContext and injected timers.
+  liveEngineFactory: (deps) => new CommittedLayerEngine(deps),
 });
 export const projectManager = new ProjectManager(store, { ghostController });
 export const jobCoordinator = new JobCoordinator(store);

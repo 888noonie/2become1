@@ -152,7 +152,12 @@ export function mountCommittedLayers({ container, store, onUndo, onAnnounce = ()
     ]);
   }
 
-  function render(session) {
+  function render() {
+    // Always read the authoritative session from the store: this render is
+    // subscribed to BOTH the session and ghostLiveStatus slices, and the
+    // slice argument differs per subscription. The session is the source of
+    // truth for which layers exist; ghostLiveStatus only refines their state.
+    const session = store.getState().session;
     const committed = Array.isArray(session?.committedLayers) ? session.committedLayers : [];
     const reverted = Array.isArray(session?.revertedLayers) ? session.revertedLayers : [];
     root.hidden = committed.length === 0 && reverted.length === 0;
