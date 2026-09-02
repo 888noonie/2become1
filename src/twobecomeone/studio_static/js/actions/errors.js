@@ -62,6 +62,7 @@ export const ERROR_CODES = Object.freeze({
   L_NOT_AUDITIONING: 'L_NOT_AUDITIONING',
   L_UNKNOWN_COMMIT: 'L_UNKNOWN_COMMIT',
   L_ALREADY_REVERTED: 'L_ALREADY_REVERTED',
+  L_LAYER_LIMIT: 'L_LAYER_LIMIT',
 
   // --- Idempotency ---
   I_KEY_REUSED_WITH_DIFFERENT_REQUEST: 'I_KEY_REUSED_WITH_DIFFERENT_REQUEST',
@@ -124,6 +125,7 @@ const MESSAGES = Object.freeze({
   L_NOT_AUDITIONING: 'commit_layer requires the referenced proposal to be in auditioning',
   L_UNKNOWN_COMMIT: 'commitActionId does not reference a committed layer',
   L_ALREADY_REVERTED: 'the commit is already reverted',
+  L_LAYER_LIMIT: 'a committed layer already exists; revert it before committing another',
 
   I_KEY_REUSED_WITH_DIFFERENT_REQUEST: 'idempotencyKey was reused with a semantically different request',
 

@@ -86,6 +86,16 @@ export class ActionDispatcher {
             null,
           );
         }
+        // Phase 12A.0: single committed-layer live-action gate (mirrors the
+        // server's L_LAYER_LIMIT). The idempotent-retry path has already
+        // returned above, so reaching here with a committed layer present is
+        // a distinct second live commit attempt.
+        if ((state.session.committedLayers || []).length > 0) {
+          return this._result(
+            buildFailure(ERROR_CODES.L_LAYER_LIMIT, { committed: state.session.committedLayers.length }),
+            null,
+          );
+        }
       }
     }
     if (action.type === ACTION_TYPES.REVERT_COMMIT) {

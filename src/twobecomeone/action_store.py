@@ -560,6 +560,18 @@ class ActionStore:
                 "commit_layer requires the referenced proposal to be in auditioning",
                 code="L_NOT_AUDITIONING",
             )
+        # Phase 12A.0: single committed-layer live-action gate. The live
+        # committed-layer engine is built for exactly one layer under the
+        # fixed musical policy, so a second live commit while a committed
+        # layer exists is a stable conflict, not an implicit queue. Replay
+        # still tolerates legacy multi-layer ledgers (append-only history is
+        # never rewritten; the cap is a live-action gate, not a projection
+        # rule). The idempotent-retry path returns before reaching here.
+        if not replaying and session.get("committedLayers"):
+            raise ConflictError(
+                "a committed layer already exists; undo it before committing another",
+                code="L_LAYER_LIMIT",
+            )
         if self._asset_verifier is None and not replaying:
             raise ConflictError(
                 "the referenced proposal has no prepared server-managed asset to accept",

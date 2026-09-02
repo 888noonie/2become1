@@ -97,9 +97,20 @@ export function beatSeconds(track) {
  * { ok: true } or { ok: false, message, action? } where action names the
  * honest fix chosen by the user (never automatic).
  */
-export function checkGhostPreconditions({ project, anchorTrack, leadTrack, playback }) {
+export function checkGhostPreconditions({ project, anchorTrack, leadTrack, playback, session }) {
   if (!project?.id) {
     return { ok: false, message: 'Create a mix first.' };
+  }
+  // Phase 12A.0: single committed-layer live policy. The live engine holds
+  // exactly one committed layer; a second preview can only end in a commit
+  // the server will refuse (L_LAYER_LIMIT). Refuse here with truthful copy
+  // (convenience only; the server revalidates).
+  const committedCount = Array.isArray(session?.committedLayers) ? session.committedLayers.length : 0;
+  if (committedCount > 0) {
+    return {
+      ok: false,
+      message: 'Undo the committed Ghost first — one live layer at a time.',
+    };
   }
   if (!anchorTrack) {
     return { ok: false, message: 'Choose a Foundation track first.' };

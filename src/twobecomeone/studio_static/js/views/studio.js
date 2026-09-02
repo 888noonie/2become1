@@ -245,7 +245,7 @@ export function mountStudio({ container }) {
     }
     // Honest precondition gate (convenience only; the server revalidates).
     const precondition = checkGhostPreconditions({
-      project, anchorTrack, leadTrack, playback: state.playback,
+      project, anchorTrack, leadTrack, playback: state.playback, session: state.session,
     });
     if (!precondition.ok) {
       showToast(precondition.message, 'danger');
