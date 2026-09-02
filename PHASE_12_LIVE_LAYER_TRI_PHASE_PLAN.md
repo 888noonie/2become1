@@ -1,8 +1,10 @@
 # Phase 12 — Live Committed-Layer Engine (tri-phase plan)
 
-**Author:** Hermes, on Richard's direction (a / fixed / CI-hard / keep-500k)
+**Author:** Hermes, on Richard's direction (a / fixed / CI-hard / keep-500k),
+with Sol pre-implementation audit amendments
 **Date:** 2026-08-29
-**Status:** AWAITING RICHARD'S APPROVAL — no implementation authorized until approved.
+**Status:** APPROVED BY RICHARD ON 2026-09-02 — authorized for Hermes
+implementation under the branch, audit and merge protocol in section 8.
 **Predecessor:** Phase 11 Solid Ghost, accepted by CI 33276217128 (`c04f35d`), continuity in `CODEX.md`.
 
 ---
@@ -26,15 +28,15 @@ single active HTML audio player.
 ## 1. Goal
 
 A committed Ghost layer plays **audibly during the live session**, looped on
-phrase boundaries in sync with the playing Foundation (the single active
+phrase boundaries in sync with the playing Lead (the single active
 HTMLAudioElement), with its auditioned gain applied, appearing and vanishing
 as it is committed and undone. The promise line on the committed-layer list
 changes from *"Included in the next preview/render"* to truthful live-playback
-copy, with an honest idle/fallback state when no Foundation is playing.
+copy, with an honest idle/fallback state when no Lead is playing.
 
-**Primary acceptance outcome:** after Commit, while the Foundation track is
-audibly playing, the committed Ghost renders audibly on the next phrase
-boundary and keeps looping; Undo stops it before the next phrase. This closes
+**Primary acceptance outcome:** after Commit, while the Lead track is
+audibly playing, the committed Ghost plays audibly on the next phrase
+boundary and keeps looping; confirmed Undo stops it immediately. This closes
 Phase 11's acknowledged limitation #4 ("Commit does not add a persistent
 live-layer engine").
 
@@ -42,33 +44,33 @@ live-layer engine").
 
 ## 2. Current context / assumptions (verified in code)
 
-- **Single Foundation player:** `src/.../js/audio.js` `AudioController` owns one
+- **Single authoritative player:** `src/.../js/audio.js` `AudioController` owns one
   `HTMLAudioElement`. `get current()`, `playing`, `time()` are the media clock.
 - **Web Audio Ghost bridge already exists:** `runtime/ghost-scheduler.js`
   `GhostScheduler` fetches/decode-schedules ONE proposal at a phrase boundary
   using `resolveNextPhrase` (`transport/derive.js`), `MIN_LEAD_SECONDS`,
   `onended` cleanup, abort/cancel. The **live engine generalizes this into a
-  persistent looping scheduler**, it does not replace the Foundation player.
+  persistent looping scheduler**, it does not replace the authoritative player.
 - **Clock bridging:** `runtime/transport-bridge.js` `buildDeckTransport()` maps
   `elementSeconds` (HTML audio) + `audioClockNow` (AudioContext) → Deck B
   transport. The engine reuses this to place phrase boundaries on the shared
   clock.
 - **Committed layer data (no schema change):** the durable projection gives
-  `committedLayers[]` with `acceptedAsset.{id,contentHash,transformSpec}` +
+  `committedLayers[]` with `asset.{id,contentHash,transformSpec,pinned}` +
   `launchReceipt.{targetBpm, launchBeat, destinationOriginSeconds,
   destinationGridRevision}` + `placement{gainDb, source, timing}`. Gain is
   **not** baked into the pinned wav; it is applied at render, so live playback
   applies `gainDb` via a `GainNode`.
 - **Asset serving:** pinned asset wav is served at
   `GET /api/ghost-assets/{asset_id}/audio` (opaque ID only; registered/pinned
-  assets are served — verify this holds for *committed* assets during 12A).
+  assets are served; the committed-path check is already closed below).
 - **The asset is already tempo-normalized** to the destination tempo
   (`_resolve_committed_layer` docstring). For live playback we **do not**
   tempo-stretch or pitch-shift; we start the asset at the destination launch
   beat and let it ring over the phrase the way the render places it.
 - **Commit/Revert lifecycle already exists** and appends to the projection
-  (`ghost-controller.js` `commit()`/`revert()`); the engine hooks these to
-  add/remove the live layer.
+  (`ghost-controller.js` `commit()`/`revert()`). The engine reconciles their
+  authoritative projection outcomes through the single `sync()` path.
 
 ### Audit corrections (GLM relay audit, 2026-08-29 — verified in code)
 
@@ -104,7 +106,7 @@ A new leaf module `runtime/committed-layer-engine.js` owned by `GhostController`
 (which already owns all runtime machinery; StateStore stays serializable-only).
 It reuses the existing transport/derive/scheduler primitives:
 
-- **Scheduler:** on each phrase boundary, while the Foundation is audibly
+- **Scheduler:** on each phrase boundary, while the Lead is audibly
   playing and grid parity holds, fetch+decode the committed asset once (cache
   the `AudioBuffer`), then `source.start()` a fresh `AudioBufferSourceNode` at
   the destination launch beat (repeated per phrase = looping). Gain applied via
@@ -117,12 +119,16 @@ It reuses the existing transport/derive/scheduler primitives:
 - **Truthfulness:** engine exposes an immutable schedule snapshot (asset hash,
   grid revision, resolved beats, next launch audio time) — proof of scheduling
   intent, never a physical-speaker/sample-accuracy claim (matches Phase 9C
-  design rules). UI shows *"Playing live on the next phrase"* only when the
-  engine is actively scheduling; otherwise an honest *"Ready when the
-  Foundation is playing"* idle state.
-- **Lifecycle:** `commit()` → engine.add(layer); `revert()` → engine.remove(id);
-  project switch / pause / stop / reload → engine teardown (no autoplay,
-  matching A8). One active committed layer only (fixed policy).
+  design rules). UI shows *"Scheduled for the next Lead phrase"* while a
+  future source is armed, *"Playing live"* only after its boundary passes, and
+  otherwise an honest *"Ready when the Lead is playing"* idle state.
+- **Lifecycle:** authoritative projection hydration/reconciliation →
+  `engine.sync(committedLayers)`; confirmed `revert()` → `engine.remove(id)`.
+  Pause/stop/ended/seek/replacement suspends scheduled and sounding sources,
+  while a later user-authored Lead play may reconcile and resume. Project
+  switch and application shutdown hard-teardown the old runtime. Reload
+  hydrates idle and never autoplays. One active committed layer only (fixed
+  policy).
 
 **Design hard-lines (carried forward):**
 - No DOM in the engine; nothing on `window`; no runtime object in StateStore.
@@ -130,14 +136,66 @@ It reuses the existing transport/derive/scheduler primitives:
 - No sample-accuracy claim; launch receipt + resolved beat are deterministic
   render/schedule authority.
 
+### Binding Sol pre-implementation amendments (2026-09-02)
+
+1. **Lead is the clock authority.** Ghost source audio comes from Foundation,
+   but every live ownership, play/pause, grid-parity and phrase-boundary check
+   follows the destination Lead, exactly as `GhostController` does today.
+2. **Authoritative sync, not optimistic add.** The engine may play only a
+   server-projected committed layer. Commit, ambiguous outcome reconciliation,
+   hydration/reload and Undo converge through one idempotent `sync()` path.
+   A failed post-commit projection refresh is an honest idle/error state, never
+   a client-invented live layer.
+3. **Separate scheduled from live.** Public status is at least
+   `idle|loading|scheduled|live|error`. `scheduled` means a future
+   `AudioBufferSourceNode.start(when)` exists; `live` begins only when the
+   launch boundary has actually passed while Lead ownership still holds.
+4. **Transport changes suspend, not destroy.** Pause, stop, ended, seek and
+   source replacement immediately cancel timers and sources. A subsequent
+   user-authored Lead `play` event re-proves track/grid ownership and may
+   schedule again. Only project switch/app shutdown destroys the engine.
+5. **Legacy conflicts fail honestly.** Projection replay continues to tolerate
+   historical multi-layer ledgers, but the single-layer live engine refuses to
+   choose one silently and publishes a stable conflict/error state.
+6. **Undo ordering is durable-first.** A layer keeps playing while Undo is
+   merely pending. Once the server confirms or reconciliation proves the
+   reversal, runtime cancellation is immediate; a failed Undo leaves playback
+   and projection unchanged.
+7. **No timer-drift claim.** Loop scheduling must use an injected,
+   cancellation-safe look-ahead/wake mechanism and re-resolve against the live
+   Lead media clock each phrase. Tests use fake timers/context. `setInterval`
+   cadence or chaining from prior callback time is not acceptable authority.
+8. **Browser proof must actually be CI-hard.** A new standalone script is not
+   sufficient because `.github/workflows/test.yml` currently runs only
+   `tests/browser/run.js`. Phase 12 must add the focused desktop/mobile live
+   journey to the workflow (or integrate it into `run.js`) and upload its
+   failure artifacts.
+9. **Audibility wording stays bounded.** Automation can prove decoded asset,
+   gain routing, scheduled source, boundary passage, cancellation and visible
+   state. It cannot prove physical speaker output; evidence must say so.
+10. **No premature acceptance.** Hermes delivers a CI-green feature branch and
+    evidence, then stops. Sol independently audits the diff and runtime proof.
+    Richard decides what merges. Only the post-merge `v0.3-workspace` CI run
+    can mark Phase 12 accepted.
+
 ---
 
 ## 4. Step-by-step plan (TDD, bite-sized, frequent commits)
 
 ### Phase 12A — Engine core (pure + Web Audio scheduling)
 
+**12A.0** Enforce the single committed-layer live-action gate before asset
+verification/pinning: server `commit_layer` rejects a second live commit with
+stable `L_LAYER_LIMIT`; replay still tolerates legacy history. Add the same
+code/message to frontend Action errors and the pure dispatcher gate. Disable
+new Preview entry with truthful copy while a committed layer exists. Pin
+server, dispatcher, idempotent-retry, replay-with-legacy-two-layer and UI tests.
+
 **12A.1** `runtime/committed-layer-engine.js` — skeleton class:
-constructor deps (`{ audioContext, loadAsset, transportProvider, resolvePlacement, onStateChange }`), `add(layer)`, `remove(commitActionId)`, `shutdown()`, `snapshot()`. No StateStore import.
+constructor deps (`{ audioContext, loadAsset, transportProvider,
+resolvePlacement, setTimer, clearTimer, onStateChange }`),
+`sync(committedLayers)`, `suspend(reason)`, `remove(commitActionId)`,
+`shutdown()`, `snapshot()`. No StateStore import.
 
 **12A.2** Pure helper `resolveLivePlacement(layer, transport, nowAudioTime)` in
 `transport/derive.js` (or a new `transport/live.js`): given a committed layer's
@@ -154,44 +212,54 @@ than a phrase (head clip), tempo ratio variance, gain linear from gainDb.
 set to gainLinear, `source.onended` cleanup, abort on stale. Schedule receipt
 snapshot per loop.
 
-**12A.5** Node tests fake an AudioContext (as `ghost-scheduler.test.js` does):
-decode fake, `source.start` capture, loop repeats N phrases, cancel stops
-future starts, shutdown clears, stale response never starts.
+**12A.5** Node tests fake an AudioContext and timers (as
+`ghost-scheduler.test.js` does): decode fake, `source.start` capture, loop
+re-resolves for N phrases, pause/seek/replacement cancels current and future
+starts, subsequent owned Lead play reschedules, shutdown clears, stale response
+never starts, and a legacy multi-layer projection fails without choosing.
 
-**12A.6** Wire `commit()`/`revert()` in `ghost-controller.js` to
-`this._engine.add(...)` / `.remove(...)`. Unit tests assert add/remove call
-ordering and engine teardown on project switch / stop / reload.
+**12A.6** Wire `ghost-controller.js` through authoritative projection sync:
+successful hydration/reconciliation calls `this._engine.sync(...)`; confirmed
+Undo removes immediately; audio events suspend/reconcile; project switch and
+app shutdown tear down. Unit tests assert durable-first ordering, failed-Undo
+retention, commit-refresh failure truth, reload idle/no-autoplay, resume on a
+later owned Lead play, and old-project stale-response rejection.
 
 **Commit per 12A sub-task.** 12A gate: engine unit tests + existing 256-node + full pytest still green.
 
 ### Phase 12B — UI truthfulness + wiring
 
 **12B.1** `components/committed-layers.js`: per-layer status badge.
-States: `live` (engine actively looping), `idle` (committed but Foundation not
-playing), `error`. Truthful copy: replace "Included in the next preview/render"
+States: `live` (a scheduled launch boundary has passed while Lead ownership
+holds), `scheduled` (future boundary armed), `loading`, `idle` (committed but
+Lead not playing), `error`. Truthful copy: replace "Included in the next preview/render"
 with the resolved live state; keep the render-inclusion line only as a
 secondary, accurate note.
 
 **12B.2** `state.js` narrow serializable slice `ghostLiveStatus` (subset per
-committed layer: `live`/`idle`/`error`, next launch beat, no runtime objects —
-mirrors Amendment 9 discipline). Controller maps engine snapshot → slice.
+committed layer: `loading`/`scheduled`/`live`/`idle`/`error`, next launch beat,
+no runtime objects — mirrors Amendment 9 discipline). Controller maps engine
+snapshot → slice.
 
 **12B.3** Studio view reads the slice; accessibility + `aria-live` on state
 change; no overflow. `components.css` minimal additions (reuse existing
 badge/status styles; budget-conscious).
 
 **12B.4** New frontend tests `tests/frontend/ghost-live.test.js`:
-controller add/remove, slice transitions, view renders live/idle/error,
+controller sync/remove, slice transitions, view renders
+loading/scheduled/live/idle/error,
 undo-busy disables during live, aria-live present.
 
 **12B.5** Extend/create browser journey `tests/browser/ghost_live_ux.js`
-(8-ish checks): commit → layer shows live while Foundation plays (real
-Web Audio in the harness), undo → stops before next phrase, pause Foundation →
-idle, reload after commit → idle (no autoplay) then live when playing, both
+(8-ish checks): commit → layer shows scheduled then live while Lead plays
+(real Web Audio scheduling in the harness), confirmed Undo → source stops
+immediately, pause Lead → idle, reload after commit → idle (no autoplay) then live when playing, both
 1280×800 and 390×844, no console error / overflow.
 
 **Commit per 12B sub-task.** 12B gate: node + pytest + new/updated browser
-journey green locally.
+journey green locally. Add that focused journey at both viewports to
+`.github/workflows/test.yml` (or integrate it into the existing CI browser
+harness) so this gate is exercised remotely, not merely documented.
 
 ### Phase 12C — Gates, evidence, CI-hard closure
 
@@ -208,9 +276,18 @@ phrase-boundary placement, the honest limitations (media vs Web Audio clock
 independence, no multi-layer, no sample-accuracy, live engine is session-only
 and does not add a render path).
 
-**12C.4** Update `CODEX.md` (Phase 12 accepted + the live gap closed), bump
-gate numbers. **Commit → push → CI-green is the acceptance bar.** Only green CI
-closes Phase 12.
+**12C.4** Write a proposed `CODEX.md` update that says **candidate / awaiting
+Sol audit**, not accepted. Hermes commits and pushes the feature branch and
+waits for both required CI jobs to pass, then stops and hands Sol the baseline
+SHA, head SHA, run URL, evidence file and any deviations.
+
+**12C.5 — Sol-only acceptance gate.** Sol reviews the complete baseline..head
+diff, re-runs focused math/runtime/backend tests, full Python/Node suites,
+desktop/mobile browser journeys, static-size and release-artifact checks, and
+visually inspects both viewports. Findings are fixed and re-audited before Sol
+recommends a merge. Richard decides whether and what to merge. After that
+decision, merge to `v0.3-workspace`, require green target-branch CI, then update
+continuity/evidence from candidate to accepted.
 
 ---
 
@@ -221,9 +298,12 @@ closes Phase 12.
 - Create: `tests/frontend/ghost-live.test.js`, `tests/browser/ghost_live_ux.js`
 - Modify: `runtime/ghost-controller.js`, `components/committed-layers.js`,
   `state.js` (+ slice), `views/studio.js`, `components.css` (minimal),
-  `PHASE_11...EVIDENCE` no, → new `PHASE_12_LIVE_LAYER_EVIDENCE.md`, `CODEX.md`
-- Possibly: `webapp.py` only if the committed-asset serve route needs a pin
-  check (verify in 12A).
+  `actions/errors.js`, `actions/dispatcher.js`, `action_store.py`,
+  `.github/workflows/test.yml`, new `PHASE_12_LIVE_LAYER_EVIDENCE.md`, and a
+  candidate-only `CODEX.md` update.
+- No `webapp.py` route change is expected: the committed-asset serving check
+  was already closed by code inspection. Any newly discovered need is a scope
+  stop for Sol/Richard review, not an automatic expansion.
 
 ---
 
@@ -231,11 +311,14 @@ closes Phase 12.
 
 - Pure resolver: parameterized phrase math tests (TDD, first).
 - Engine: fake-AudioContext Node tests — loop, cancel, shutdown, stale, single-active.
-- Controller: add/remove ordering, teardown boundaries (switch/pause/reload).
-- View/slice: live/idle/error render + aria-live.
-- Browser: real commit→live→undo journey, both viewports.
+- Controller: authoritative sync/remove ordering, suspend/resume boundaries,
+  project-switch teardown, and reload idle/no-autoplay.
+- View/slice: loading/scheduled/live/idle/error render + aria-live.
+- Browser: commit→scheduled→live→undo runtime journey, ownership loss/resume,
+  reload idle/no-autoplay, both viewports; wire the focused journey into CI.
 - Release: full pytest + full node + all browser journeys + syntax + diff-check.
-- **CI-hard:** push and require green test + browser-e2e before declaring done.
+- **CI-hard:** green feature-branch CI makes a candidate auditable; green
+  post-merge target-branch CI is required before declaring Phase 12 done.
 
 ---
 
@@ -254,18 +337,35 @@ closes Phase 12.
 - **Static budget is tight (~50k after the Ultimate Deck checkpoint).** Mitigation: reuse `GhostScheduler` internals
   where possible, no new deps, minimal CSS. If over, the plan forces a trim
   (12C.2) — budget is a hard constraint, not a hint.
-- **Autoplay policy.** The engine only schedules while the Foundation is already
+- **Autoplay policy.** The engine only schedules while the Lead is already
   audibly playing (user-gesture-derived context), so no autoplay violation — but
   the browser journey must drive the same real gesture in CI.
-- **Open question (verification in 12A):** does `GET /api/ghost-assets/{id}/audio`
-  serve a *committed* (registered/pinned) asset, or only unregistered preview
-  assets? If committed assets are not served, 12A adds the minimal route/pin
-  check in `webapp.py` — that is the one server change this plan anticipates,
-  and it is a read-only pin check, not a schema change.
+- **Committed asset serving is closed.** `asset_path()` applies expiry only to
+  unpinned assets and commit pins the verified asset, so the existing opaque-ID
+  audio route already serves committed audio. A contrary implementation-time
+  finding stops the phase for review.
 
 ---
 
-## 8. Out of scope (explicitly NOT in Phase 12)
+## 8. Execution ownership and branch protocol
+
+1. Code baseline is `62a74eb` on `v0.3-workspace`. The Sol plan-amendment
+   commit becomes the documentation parent before Hermes branches; record both
+   SHAs in the handoff.
+2. After Richard says **"approve Phase 12"**, Hermes creates a dedicated
+   `phase12-live-layer-hermes` branch from that exact baseline.
+3. Hermes implements 12A, 12B and 12C in reviewable commits, preserving a
+   clean tree and recording deviations as they occur. Hermes may push only the
+   feature branch for CI; it does not merge, mark accepted, or rewrite history.
+4. Hermes hands off only after feature-branch CI is green, or reports the exact
+   blocker without claiming completion.
+5. Sol performs 12C.5 independently. Audit fixes remain explicit commits on
+   the candidate branch. Richard then chooses full merge, partial follow-up,
+   or no merge.
+
+---
+
+## 9. Out of scope (explicitly NOT in Phase 12)
 
 Redo; Producer/autonomous commits; live warping; automatic separation;
 arbitrary layer editing; multiple simultaneous committed layers; variable
@@ -274,6 +374,7 @@ sample-accuracy claims; altering the export/render parity path.
 
 ---
 
-*Richard: approve by replying **"approve Phase 12"** (or adjust any scope line
-first). On approval, implementation may begin, phase-by-phase, TDD with commit
-per task, CI-hard acceptance.*
+*Richard approved Phase 12 on 2026-09-02. Implementation may proceed only under
+the section 8 branch/handoff protocol, phase-by-phase and TDD-first; Sol audit,
+Richard's merge decision and green post-merge CI remain mandatory acceptance
+gates.*
