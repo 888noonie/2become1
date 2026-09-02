@@ -313,6 +313,35 @@ dialog::backdrop {
 .committed-layer__truth {
   color: var(--color-text);
 }
+.committed-layer__render-note {
+  font-size: var(--text-xs, var(--text-sm));
+}
+.committed-layer__badge {
+  justify-self: start;
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  font-size: var(--text-xs, var(--text-sm));
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted);
+  background: var(--color-surface);
+}
+.committed-layer__badge--live {
+  color: var(--color-success);
+  border-color: var(--color-success);
+}
+.committed-layer__badge--scheduled {
+  color: var(--color-accent, var(--color-lead));
+  border-color: var(--color-accent, var(--color-lead));
+}
+.committed-layer__badge--loading {
+  color: var(--color-muted);
+}
+.committed-layer__badge--error {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
 .committed-layer__error {
   color: var(--color-danger);
 }

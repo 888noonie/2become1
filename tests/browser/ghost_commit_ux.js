@@ -157,7 +157,7 @@ async function main() {
       throw new Error(`${error.message}; phase=${phase.trim()} error=${cardError.trim()} state=${JSON.stringify(durableDebug?.state || null)} actionResponses=${JSON.stringify(actionResponses)}`);
     }
     const copy = await page.locator('.committed-layer').textContent();
-    record('Commit creates truthful visible layer', /Included in the next preview\/render/.test(copy), copy.trim().slice(0, 100));
+    record('Commit creates truthful visible layer', /preview\/render/.test(copy), copy.trim().slice(0, 100));
     const tetherVisible = await page.locator('.ghost-tether').getAttribute('data-visible');
     record('Commit removes transient tether', tetherVisible !== 'true', `data-visible=${tetherVisible}`);
 

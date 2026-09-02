@@ -1,8 +1,10 @@
 // components/committed-layers.js — durable Phase 11 Ghost layers and Undo.
 //
-// This view derives presentation from the serializable session projection.
-// Its only local state is the set of in-flight button identities; no DOM or
-// request object enters StateStore.
+// Phase 12B: per-layer live truth. The view derives presentation from the
+// serializable session projection plus the narrow ghostLiveStatus slice
+// (loading/scheduled/live/idle/error per committed layer). Its only local
+// state is the set of in-flight button identities; no DOM or request object
+// enters StateStore.
 
 import { createElement, replaceChildren } from '../dom.js';
 import { confirmDialog } from './dialog.js';
@@ -25,6 +27,35 @@ function layerSummary(layer) {
     + `Lead launch beat ${formatBeat(launch)}`;
 }
 
+// Phase 12B: truthful per-state copy. The live engine owns the truth; this
+// table only translates states into honest words.
+const LIVE_TRUTH = Object.freeze({
+  loading: 'Loading committed Ghost…',
+  scheduled: 'Scheduled for the next Lead phrase',
+  live: 'Playing live over the Lead',
+  idle: 'Ready when the Lead is playing',
+  error: 'Live playback unavailable',
+});
+
+function liveRecordFor(layerId, liveStatus) {
+  const layers = Array.isArray(liveStatus?.layers) ? liveStatus.layers : [];
+  return layers.find((record) => record.layerId === (layerId || null)) || null;
+}
+
+function liveStateFor(layer, liveStatus) {
+  const record = liveRecordFor(layer?.layerId, liveStatus);
+  if (!record) return 'idle'; // honest default: committed, not yet known to play
+  return record.state;
+}
+
+function liveTruthText(state, record) {
+  const base = LIVE_TRUTH[state] || LIVE_TRUTH.idle;
+  if (state === 'scheduled' && record?.launchBeat != null) {
+    return `${base} (Lead beat ${formatBeat(record.launchBeat)})`;
+  }
+  return base;
+}
+
 /** Mount the durable committed/reverted Ghost history. */
 export function mountCommittedLayers({ container, store, onUndo, onAnnounce = () => {} }) {
   const root = createElement('section', {
@@ -41,7 +72,7 @@ export function mountCommittedLayers({ container, store, onUndo, onAnnounce = ()
     if (!commitActionId || busy.has(commitActionId)) return;
     const confirmed = await confirmDialog({
       title: 'Undo committed Ghost?',
-      description: 'This removes the layer from future previews and renders. Its immutable history and pinned audio are retained.',
+      description: 'This stops live playback now and removes the layer from future previews and renders. Its immutable history and pinned audio are retained.',
       confirmLabel: 'Undo Ghost',
       danger: true,
       trigger,
@@ -75,6 +106,9 @@ export function mountCommittedLayers({ container, store, onUndo, onAnnounce = ()
   function committedItem(layer, index) {
     const actionId = layer.actionId;
     const undoing = busy.has(actionId);
+    const state = store.getState();
+    const liveRecord = liveRecordFor(layer.layerId, state.ghostLiveStatus);
+    const liveState = liveStateFor(layer, state.ghostLiveStatus);
     const undoBtn = createElement('button', {
       class: 'button button--danger',
       type: 'button',
@@ -84,16 +118,34 @@ export function mountCommittedLayers({ container, store, onUndo, onAnnounce = ()
     });
     undoBtn.onclick = () => undo(layer, undoBtn);
     const error = errors.get(actionId);
+    const liveError = liveRecord?.error;
+    const errorText = liveError
+      ? `${liveError.message || 'Live playback is unavailable.'} (${liveError.code || 'error'})`
+      : null;
     return createElement('li', { class: 'committed-layer' }, [
       createElement('div', { class: 'committed-layer__copy' }, [
         createElement('strong', { text: `Committed Ghost ${index + 1}` }),
         createElement('span', { text: layerSummary(layer) }),
         createElement('span', {
+          class: 'committed-layer__badge committed-layer__badge--' + liveState,
+          text: liveState,
+          'aria-hidden': 'true',
+        }),
+        createElement('span', {
           class: 'committed-layer__truth',
-          text: 'Included in the next preview/render.',
+          role: 'status',
+          'aria-live': 'polite',
+          text: liveTruthText(liveState, liveRecord),
+        }),
+        createElement('span', {
+          class: 'committed-layer__render-note',
+          text: 'Still included in the next preview/render.',
         }),
         error ? createElement('span', {
           class: 'committed-layer__error', role: 'status', 'aria-live': 'polite', text: error,
+        }) : null,
+        errorText && !error ? createElement('span', {
+          class: 'committed-layer__error', role: 'status', 'aria-live': 'polite', text: errorText,
         }) : null,
       ]),
       undoBtn,
@@ -112,7 +164,7 @@ export function mountCommittedLayers({ container, store, onUndo, onAnnounce = ()
       createElement('div', { class: 'committed-layers__heading' }, [
         createElement('h2', { id: 'committed-layers-title', text: 'Solid Ghost layers' }),
         createElement('p', {
-          text: 'Committed layers are durable and enter the existing preview/render pipeline.',
+          text: 'Committed layers play live over the Lead and stay in the preview/render pipeline.',
         }),
       ]),
     ];
@@ -129,7 +181,8 @@ export function mountCommittedLayers({ container, store, onUndo, onAnnounce = ()
     replaceChildren(root, nodes);
   }
 
-  const unsubscribe = store.subscribeSlice('session', render);
+  const unsubscribeSession = store.subscribeSlice('session', render);
+  const unsubscribeLive = store.subscribeSlice('ghostLiveStatus', render);
   render(store.getState().session);
-  return () => unsubscribe();
+  return () => { unsubscribeSession(); unsubscribeLive(); };
 }
