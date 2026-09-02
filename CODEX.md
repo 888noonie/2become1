@@ -41,6 +41,27 @@ editing, a persistent live-layer engine, or a rewrite of V0.3's single active
 HTML audio player. The next implementation session must begin with a fresh,
 repository-aware, Richard-approved tri-phase plan.
 
+## Phase 12 — CANDIDATE (awaiting Sol audit, NOT accepted)
+
+On 2026-09-02 Richard authorized Phase 12 (the live committed-layer engine)
+under the branch/audit/merge protocol in
+`PHASE_12_LIVE_LAYER_TRI_PHASE_PLAN.md` (Sol-amended). Hermes implemented it
+on the dedicated feature branch `phase12-live-layer-hermes` from exact
+baseline `62b9c645`, TDD-first, in six reviewable commits (`0034110`,
+`c11ebd3`, `69259c6`, `a618fa6`, `f990e53`, `bbe66b2`).
+
+**This is a candidate, not an acceptance.** Per Sol amendment 10, Hermes
+delivers a CI-green feature branch and evidence, then stops. Sol performs the
+independent audit (12C.5); Richard decides what merges; only the post-merge
+`v0.3-workspace` CI run marks Phase 12 accepted. Do not merge, mark accepted,
+or rewrite history on the feature branch.
+
+Local gates (all green): 431 Python tests (1 skipped), 317 Node tests, live
+browser journey 8/8 at both viewports, commit journey 15/15, static 483,402
+bytes under the 500,000-byte ceiling, `node --check` and `git diff --check`
+clean. Full evidence and the audit boundary are in
+`PHASE_12_LIVE_LAYER_EVIDENCE.md`.
+
 ## Verified checkpoint
 
 - **Ultimate Deck UI accepted:** checkpoint `b460591` is pushed on
