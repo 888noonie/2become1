@@ -144,9 +144,9 @@ semantic region span at the baked `targetBpm` (mirrors `_resolve_committed_layer
 ## 7. Handoff to Sol (12C.5)
 
 - **Baseline SHA:** `62b9c645de4fa67ff7c38d0cd5fc1bea482e1a25`
-- **Head SHA:** `bbe66b2` (feature branch `phase12-live-layer-hermes`)
-- **Diff:** `git diff 62b9c645..bbe66b2`
-- **CI run URL:** (populated after push — see the branch's Actions run)
+- **Head SHA:** `8b6e0b3` (feature branch `phase12-live-layer-hermes`)
+- **Diff:** `git diff 62b9c645..8b6e0b3`
+- **CI run URL:** https://github.com/888noonie/2become1/actions/runs/33696807371 (green: test 4m21s, browser-e2e 6m13s — both required jobs, including the ghost live-layer journey at both viewports)
 - **Evidence file:** this document
 - **Deviations:** section 6 above
 
