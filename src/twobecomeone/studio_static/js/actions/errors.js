@@ -63,6 +63,7 @@ export const ERROR_CODES = Object.freeze({
   L_UNKNOWN_COMMIT: 'L_UNKNOWN_COMMIT',
   L_ALREADY_REVERTED: 'L_ALREADY_REVERTED',
   L_LAYER_LIMIT: 'L_LAYER_LIMIT',
+  L_LAYER_INVALID: 'L_LAYER_INVALID',
 
   // --- Idempotency ---
   I_KEY_REUSED_WITH_DIFFERENT_REQUEST: 'I_KEY_REUSED_WITH_DIFFERENT_REQUEST',
@@ -126,6 +127,7 @@ const MESSAGES = Object.freeze({
   L_UNKNOWN_COMMIT: 'commitActionId does not reference a committed layer',
   L_ALREADY_REVERTED: 'the commit is already reverted',
   L_LAYER_LIMIT: 'a committed layer already exists; revert it before committing another',
+  L_LAYER_INVALID: 'the committed layer is missing valid live placement facts',
 
   I_KEY_REUSED_WITH_DIFFERENT_REQUEST: 'idempotencyKey was reused with a semantically different request',
 
