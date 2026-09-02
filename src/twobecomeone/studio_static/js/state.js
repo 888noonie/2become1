@@ -38,6 +38,9 @@ const INITIAL_STATE = {
   session: structuredClone(V1_INITIAL_SESSION),
   proposals: structuredClone(V1_INITIAL_PROPOSALS),
   ghostStatus: structuredClone(INITIAL_GHOST_STATUS),
+  // Phase 12: serializable per-layer live states from the committed-layer
+  // engine snapshot (A9 discipline: never the runtime objects).
+  ghostLiveStatus: { layers: [] },
   health: null,
   currentProject: null,
   projects: { items: [], total: 0 },
@@ -196,6 +199,22 @@ export function registerReducers(store) {
     return {
       ...state,
       ghostStatus: { ...state.ghostStatus, ...structuredClone(patch) },
+    };
+  });
+
+  // Phase 12 (A9 discipline): narrow ghostLiveStatus presentation updates.
+  // Only the serializable per-layer live states pass through; the reducer
+  // deep-clones the whole patch (the engine snapshot is authoritative).
+  store.register('v1/ghost-live-status/set', (state, action) => {
+    const patch = action && typeof action.patch === 'object' && action.patch !== null
+      ? action.patch
+      : {};
+    if (!isPlainJson(patch)) return state;
+    const layers = Array.isArray(patch.layers) ? patch.layers : [];
+    if (layers.some((layer) => !isPlainJson(layer))) return state;
+    return {
+      ...state,
+      ghostLiveStatus: structuredClone({ layers }),
     };
   });
 

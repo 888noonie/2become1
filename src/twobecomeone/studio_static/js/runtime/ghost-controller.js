@@ -44,6 +44,7 @@
 
 import { GhostScheduler } from './ghost-scheduler.js';
 import { buildDeckTransport, checkGridParity } from './transport-bridge.js';
+import { CommittedLayerEngine } from './committed-layer-engine.js';
 
 const LAUNCH_OBSERVER_INTERVAL_MS = 150;
 
@@ -63,6 +64,12 @@ export const GHOST_PHASES = Object.freeze({
 });
 
 const ACTIVE_LIFECYCLES = Object.freeze(['ready', 'scheduled', 'auditioning']);
+
+// Phase 12: live committed-layer engine wake cadence is injected by the
+// controller so Node tests and the browser share one deterministic policy.
+export const LIVE_TIMER_POLICY = Object.freeze({
+  pollMs: 150,
+});
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
@@ -108,10 +115,14 @@ export class GhostController {
     this.onAnnounce = deps.onAnnounce || (() => {});
     this._ctxFactory = deps.audioContextFactory;
     this._schedulerFactory = deps.schedulerFactory || ((d) => new GhostScheduler(d));
+    this._liveEngineFactory = deps.liveEngineFactory || null; // Phase 12
 
     // Runtime machinery (NEVER StateStore):
     this._ctx = null;
     this._scheduler = null;
+    this._liveEngine = null;
+    this._liveEngineTornDown = false;
+    this._liveLayerStates = new Map(); // serializable per-layer live records
     this._gen = null;          // active generation: { id, projectId, proposalId, asset, receipt, released, pendingPromise, pendingAction }
     this._launchObserver = null;
     this._schedulingInFlight = false;
@@ -496,11 +507,148 @@ export class GhostController {
   }
 
   // ------------------------------------------------------------------
+  // Phase 12A.6: live committed-layer engine wiring
+  // ------------------------------------------------------------------
+
+  /**
+   * Build (once) the live committed-layer engine with injected timers.
+   * The engine is created lazily: no AudioContext work happens until an
+   * authoritative projection actually holds a committed layer.
+   */
+  _ensureLiveEngine() {
+    if (this._disposed || this._liveEngineTornDown) return null;
+    if (this._liveEngine) return this._liveEngine;
+    const factory = this._liveEngineFactory;
+    if (!factory) return null;
+    this._liveEngine = factory({
+      audioContext: this._ensureContext(),
+      loadAsset: async (asset) => {
+        const audioUrl = asset?.audioUrl
+          || (asset?.id ? `/api/ghost-assets/${asset.id}/audio` : null);
+        if (!audioUrl) throw new Error('committed asset has no audio URL');
+        const response = await fetch(audioUrl);
+        if (!response.ok) throw new Error(`committed asset fetch failed: ${response.status}`);
+        return response.arrayBuffer();
+      },
+      transportProvider: (layer) => this._liveTransportProvider(layer),
+      setTimer: (delayMs, fn) => setTimeout(fn, delayMs),
+      clearTimer: (id) => clearTimeout(id),
+      onStateChange: (layerId, state, detail) => this._onLiveStateChange(layerId, state, detail),
+    });
+    return this._liveEngine;
+  }
+
+  /**
+   * A7 ownership proof + A3 grid identity for the live layer. The transport
+   * follows the destination Lead exactly like the preview path, carrying the
+   * layer's server-authored destinationGridRevision.
+   */
+  _liveTransportProvider(layer) {
+    const leadTrack = this.getLeadTrack();
+    const gridRevision = layer?.launchReceipt?.destinationGridRevision
+      || layer?.transformSpec?.destinationGridRevision || null;
+    const result = buildDeckTransport({
+      deck: 'B',
+      track: leadTrack,
+      elementSeconds: this.audioController.time,
+      playing: this._destinationOwnedAndPlaying(),
+      audioClockNow: this._ctx ? this._ctx.currentTime : 0,
+      serverGridRevision: gridRevision,
+      expectTrackId: this.getLeadTrackId(),
+    });
+    if (!result.ok) {
+      throw Object.assign(new Error(`transport unavailable: ${result.code}`), { code: result.code });
+    }
+    return result.value;
+  }
+
+  /** Engine -> serializable ghostLiveStatus slice (Amendment 9 discipline). */
+  _onLiveStateChange(layerId, state, detail) {
+    if (this._disposed) return;
+    const record = this._liveLayerStates.get(layerId);
+    if (record) {
+      record.state = state;
+      record.error = detail?.code
+        ? { code: detail.code, message: detail.message || null }
+        : null;
+    }
+    this._publishLiveSlice();
+  }
+
+  /** Publish the controller-owned per-layer live states to the store. */
+  _publishLiveSlice() {
+    const layers = [...this._liveLayerStates.values()].map((record) => ({
+      layerId: record.layerId,
+      actionId: record.actionId,
+      state: record.state,
+      launchBeat: record.launchBeat,
+      error: record.error,
+    }));
+    this.store.dispatch({ type: 'v1/ghost-live-status/set', patch: { layers } });
+  }
+
+  /**
+   * Authoritative sync of the live engine from a refreshed projection
+   * (Amendment 2). Called after commit success, hydration, reconciliation,
+   * and an owned Lead play. Never invents a layer from client state.
+   */
+  async _syncLiveEngine() {
+    if (this._disposed || this._liveEngineTornDown) return { ok: false, code: 'DISPOSED' };
+    const session = this.store.getState().session || {};
+    const committed = Array.isArray(session.committedLayers) ? session.committedLayers : [];
+    // Seed/trim the controller-owned per-layer records from authority, then
+    // converge the engine. Engine state events refine the seeded records.
+    const nextIds = new Set();
+    for (const layer of committed) {
+      const layerId = layer?.layerId || layer?.actionId;
+      if (!layerId) continue;
+      nextIds.add(layerId);
+      if (!this._liveLayerStates.has(layerId)) {
+        this._liveLayerStates.set(layerId, {
+          layerId,
+          actionId: layer.actionId,
+          state: 'idle', // honest seed: committed, not yet known to play
+          launchBeat: layer?.launchReceipt?.launchBeat ?? null,
+          error: null,
+        });
+      }
+    }
+    for (const layerId of [...this._liveLayerStates.keys()]) {
+      if (!nextIds.has(layerId)) this._liveLayerStates.delete(layerId);
+    }
+    if (committed.length === 0) {
+      // Nothing to play: clear any suspended engine state honestly.
+      if (this._liveEngine) await this._liveEngine.sync([]);
+      this._publishLiveSlice();
+      return { ok: true, code: 'empty' };
+    }
+    const engine = this._ensureLiveEngine();
+    if (!engine) {
+      this._publishLiveSlice();
+      return { ok: false, code: 'NO_ENGINE' };
+    }
+    const result = await engine.sync(committed);
+    this._publishLiveSlice();
+    return result;
+  }
+
+  // ------------------------------------------------------------------
   // A7: destination ownership loss (pause/stop/ended/re-seek/replacement)
   // ------------------------------------------------------------------
 
   handleAudioEvent(type) {
-    if (this._disposed || !this._gen || this._gen.released) return;
+    if (this._disposed) return;
+    // Phase 12: transport changes suspend the live committed-layer engine
+    // (Amendment 4); a later owned Lead play re-syncs it from authority.
+    if (this._liveEngine && !this._liveEngineTornDown) {
+      if (type === 'pause' || type === 'stop' || type === 'ended' || type === 'seek') {
+        this._liveEngine.suspend(`lead-${type}`);
+      } else if (type === 'play') {
+        // Re-prove ownership lazily inside the provider; sync is authoritative.
+        this._syncLiveEngine().catch(() => { /* the slice shows the honest state */ });
+      }
+    }
+    if (!this._gen || this._gen.released) return;
     const gen = this._gen;
     if (!gen.proposalId) return; // still preparing: the POST barrier handles stale outcomes
     const phase = this._status().phase;
@@ -749,8 +897,13 @@ export class GhostController {
             projection: { session: state.session, proposals: state.proposals },
             lastSequence: state.last_sequence,
           });
+          // Phase 12: the refreshed projection now holds the committed layer;
+          // converge the live engine through the authoritative sync path.
+          await this._syncLiveEngine();
         } catch {
           // Hydration refresh is best-effort; the durable commit already held.
+          // Amendment 2: a failed refresh never invents a live layer — the
+          // slice keeps its prior honest state.
         }
       }
       this._setStatus({
@@ -861,6 +1014,12 @@ export class GhostController {
         commitActionId,
         revertActionId: action.id,
       });
+      // Phase 12 (Amendment 6): the server confirmed the reversal — stop the
+      // live layer immediately. A failed Undo above leaves playback and
+      // projection unchanged (durable-first ordering).
+      if (this._liveEngine && !this._liveEngineTornDown) {
+        this._liveEngine.remove(commitActionId);
+      }
       return { ok: true, result: result?.outcome?.result || 'commit_reverted' };
     } catch (err) {
       const failure = scrubError(err);
@@ -1038,6 +1197,12 @@ export class GhostController {
     // Any previous generation is gone: the old project's clock is dead (A8).
     this._cancelGenerationRuntime();
 
+    // Phase 12: every authoritative projection refresh converges the live
+    // engine through the one sync() path (Amendment 2). A refresh after a
+    // project switch may build a fresh engine for the new project.
+    this._liveEngineTornDown = false;
+    this._syncLiveEngine().catch(() => { /* the slice shows the honest state */ });
+
     if (activeIds.length === 0) {
       this._setStatus({
         phase: GHOST_PHASES.IDLE,
@@ -1059,6 +1224,9 @@ export class GhostController {
   onBeforeProjectChange() {
     if (this._disposed) return;
     this._cancelGenerationRuntime();
+    // Phase 12: project switch hard-tears-down the live engine (old project's
+    // clock is dead); the next hydration builds a fresh one.
+    this._teardownLiveEngine();
     this._setStatus({
       phase: GHOST_PHASES.IDLE,
       activeProposalId: null,
@@ -1066,6 +1234,14 @@ export class GhostController {
       summary: null,
       error: null,
     });
+  }
+
+  _teardownLiveEngine() {
+    if (this._liveEngine && !this._liveEngineTornDown) {
+      this._liveEngine.shutdown();
+    }
+    this._liveEngine = null;
+    this._liveEngineTornDown = true;
   }
 
   _cancelGenerationRuntime() {
@@ -1094,6 +1270,7 @@ export class GhostController {
     if (this._disposed) return;
     this._disposed = true;
     this._cancelGenerationRuntime();
+    this._teardownLiveEngine();
     if (this._scheduler) {
       this._scheduler.shutdown();
       this._scheduler = null;

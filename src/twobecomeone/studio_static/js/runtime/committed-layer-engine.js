@@ -232,10 +232,12 @@ export class CommittedLayerEngine {
   _resolveNow(entry) {
     try {
       return this._resolvePlacement(
-        entry.layer, this.transportProvider(), this.ctx.currentTime,
+        entry.layer, this.transportProvider(entry.layer), this.ctx.currentTime,
       );
-    } catch {
-      return { ok: false, code: 'T_TRANSPORT_UNAVAILABLE' };
+    } catch (err) {
+      // The provider throws stable codes (T_TRANSPORT_NOT_PLAYING on a live
+      // transport that is not owned/playing; GHOST_GRID_STALE on parity loss).
+      return { ok: false, code: err?.code || 'T_TRANSPORT_UNAVAILABLE' };
     }
   }
 
@@ -252,6 +254,13 @@ export class CommittedLayerEngine {
       return false;
     }
     const receipt = resolved.value;
+    // A suspended AudioContext cannot sound a scheduled start: stay honest
+    // and idle rather than claiming a launch that will never be audible.
+    if (this.ctx.state && this.ctx.state !== 'running') {
+      entry.state = ENGINE_STATES.IDLE;
+      this._announceLayer(entry.layer, ENGINE_STATES.IDLE, { code: 'CONTEXT_SUSPENDED' });
+      return false;
+    }
     const source = this.ctx.createBufferSource();
     source.buffer = entry.buffer;
     const gainNode = this.ctx.createGain();
@@ -293,6 +302,11 @@ export class CommittedLayerEngine {
     if (this._entry !== entry || this._shutdown) return;
     const now = this.ctx.currentTime;
     const resolved = this._resolveNow(entry);
+    if (!resolved.ok && resolved.code === 'T_TRANSPORT_UNAVAILABLE') {
+      // The provider became unavailable mid-loop: fail honestly.
+      this._fail(entry, resolved.code, 'the live transport is unavailable');
+      return;
+    }
     if (!resolved.ok) {
       if (resolved.code === 'T_TRANSPORT_NOT_PLAYING') {
         this._cancelEntryRuntime();
