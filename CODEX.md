@@ -41,7 +41,7 @@ editing, a persistent live-layer engine, or a rewrite of V0.3's single active
 HTML audio player. The next implementation session must begin with a fresh,
 repository-aware, Richard-approved tri-phase plan.
 
-## Phase 12 — CORRECTED CANDIDATE (Sol audit locally green, NOT accepted)
+## Phase 12 — CORRECTED CANDIDATE (Sol audit + feature CI green, NOT accepted)
 
 On 2026-09-02 Richard authorized Phase 12 (the live committed-layer engine)
 under the branch/audit/merge protocol in

@@ -1,7 +1,7 @@
 # Phase 12 — Live Committed-Layer Engine: Evidence
 
-**Status:** CORRECTED CANDIDATE — Sol's independent 12C.5 audit is locally
-green; awaiting exact-head CI and Richard's merge decision. **NOT accepted.**
+**Status:** CORRECTED CANDIDATE — Sol's independent 12C.5 audit and corrected
+feature-branch CI are green; awaiting Richard's merge decision. **NOT accepted.**
 **Branch:** `phase12-live-layer-hermes`
 **Baseline:** `62b9c645de4fa67ff7c38d0cd5fc1bea482e1a25` (Sol plan-amendment parent)
 **Corrective implementation:** `85c22a8` (Sol audit-fix commit; evidence updates follow it)
@@ -190,6 +190,8 @@ corrections.
 - **Diff:** `git diff 62b9c645..phase12-live-layer-hermes`
 - **Original candidate CI:** https://github.com/888noonie/2become1/actions/runs/33696807371
   (superseded by the corrected exact-head run in Sol's final handoff).
+- **Corrected audit CI:** https://github.com/888noonie/2become1/actions/runs/33703853397
+  (green: test 4m28s, browser-e2e 6m05s, head `415e3ee`).
 - **Evidence file:** this document
 - **Audit findings/corrections:** section 6 above
 
