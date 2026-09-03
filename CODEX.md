@@ -41,25 +41,28 @@ editing, a persistent live-layer engine, or a rewrite of V0.3's single active
 HTML audio player. The next implementation session must begin with a fresh,
 repository-aware, Richard-approved tri-phase plan.
 
-## Phase 12 — CANDIDATE (awaiting Sol audit, NOT accepted)
+## Phase 12 — CORRECTED CANDIDATE (Sol audit locally green, NOT accepted)
 
 On 2026-09-02 Richard authorized Phase 12 (the live committed-layer engine)
 under the branch/audit/merge protocol in
 `PHASE_12_LIVE_LAYER_TRI_PHASE_PLAN.md` (Sol-amended). Hermes implemented it
 on the dedicated feature branch `phase12-live-layer-hermes` from exact
-baseline `62b9c645`, TDD-first, in six reviewable commits (`0034110`,
-`c11ebd3`, `69259c6`, `a618fa6`, `f990e53`, `bbe66b2`).
+baseline `62b9c645`, TDD-first, in reviewable commits beginning with
+`0034110`, `c11ebd3`, `69259c6`, `a618fa6`, `f990e53`, and `bbe66b2`.
 
-**This is a candidate, not an acceptance.** Per Sol amendment 10, Hermes
-delivers a CI-green feature branch and evidence, then stops. Sol performs the
-independent audit (12C.5); Richard decides what merges; only the post-merge
-`v0.3-workspace` CI run marks Phase 12 accepted. Do not merge, mark accepted,
-or rewrite history on the feature branch.
+**This is a corrected candidate, not an acceptance.** Sol's independent 12C.5
+audit initially refused the candidate over missing live-grid parity,
+reconciliation/runtime divergence, and connected `GainNode` cleanup. Corrective
+commit `85c22a8` closes those blockers and strengthens browser/adversarial
+proof. Richard decides what merges; only a green post-merge `v0.3-workspace`
+CI run marks Phase 12 accepted. Do not mark accepted or rewrite feature-branch
+history.
 
-Local gates (all green): 431 Python tests (1 skipped), 317 Node tests, live
-browser journey 8/8 at both viewports, commit journey 15/15, static 483,402
-bytes under the 500,000-byte ceiling, `node --check` and `git diff --check`
-clean. Full evidence and the audit boundary are in
+Corrected local gates (all green): 431 Python tests (1 skipped), 328 Node test
+declarations across 37 files, live browser journey 13/13 at both viewports,
+all inherited journeys at both viewports, and static 488,960 bytes under the
+500,000-byte ceiling. Release archives, `node --check`, and `git diff --check`
+are clean. Full evidence and the audit boundary are in
 `PHASE_12_LIVE_LAYER_EVIDENCE.md`.
 
 ## Verified checkpoint
