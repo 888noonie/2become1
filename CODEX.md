@@ -41,7 +41,7 @@ editing, a persistent live-layer engine, or a rewrite of V0.3's single active
 HTML audio player. The next implementation session must begin with a fresh,
 repository-aware, Richard-approved tri-phase plan.
 
-## Phase 12 — CORRECTED CANDIDATE (Sol audit + feature CI green, NOT accepted)
+## Phase 12 — ACCEPTED
 
 On 2026-09-02 Richard authorized Phase 12 (the live committed-layer engine)
 under the branch/audit/merge protocol in
@@ -50,13 +50,13 @@ on the dedicated feature branch `phase12-live-layer-hermes` from exact
 baseline `62b9c645`, TDD-first, in reviewable commits beginning with
 `0034110`, `c11ebd3`, `69259c6`, `a618fa6`, `f990e53`, and `bbe66b2`.
 
-**This is a corrected candidate, not an acceptance.** Sol's independent 12C.5
-audit initially refused the candidate over missing live-grid parity,
-reconciliation/runtime divergence, and connected `GainNode` cleanup. Corrective
-commit `85c22a8` closes those blockers and strengthens browser/adversarial
-proof. Richard decides what merges; only a green post-merge `v0.3-workspace`
-CI run marks Phase 12 accepted. Do not mark accepted or rewrite feature-branch
-history.
+Sol's independent 12C.5 audit initially refused the candidate over missing
+live-grid parity, reconciliation/runtime divergence, and connected `GainNode`
+cleanup. Corrective commit `85c22a8` closed those blockers and strengthened
+browser/adversarial proof. Richard authorized the full merge on 2026-09-03;
+the audited history fast-forwarded to `v0.3-workspace` at `8793d96`, and
+post-merge CI run `33705121086` passed both required jobs. **Phase 12 is
+accepted.**
 
 Corrected local gates (all green): 431 Python tests (1 skipped), 328 Node test
 declarations across 37 files, live browser journey 13/13 at both viewports,

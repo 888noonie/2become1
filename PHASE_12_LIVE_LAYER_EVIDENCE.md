@@ -1,11 +1,12 @@
 # Phase 12 — Live Committed-Layer Engine: Evidence
 
-**Status:** CORRECTED CANDIDATE — Sol's independent 12C.5 audit and corrected
-feature-branch CI are green; awaiting Richard's merge decision. **NOT accepted.**
-**Branch:** `phase12-live-layer-hermes`
+**Status:** **ACCEPTED** — Richard authorized the merge; Sol fast-forwarded the
+audited candidate to `v0.3-workspace`, and both required target-branch CI jobs
+passed.
+**Branch:** `v0.3-workspace` (accepted checkpoint; feature history retained)
 **Baseline:** `62b9c645de4fa67ff7c38d0cd5fc1bea482e1a25` (Sol plan-amendment parent)
 **Corrective implementation:** `85c22a8` (Sol audit-fix commit; evidence updates follow it)
-**Head:** the exact branch tip reported with the final CI handoff (`git rev-parse HEAD`)
+**Accepted code checkpoint:** `8793d9635aaec4d273646f06d2b2e251b03466c9`
 **Authors:** Hermes implemented the candidate; Sol independently audited and
 corrected it under Richard's branch/audit/merge protocol.
 
@@ -180,21 +181,23 @@ corrections.
 
 ---
 
-## 7. Corrected candidate handoff to Richard
+## 7. Acceptance closure
 
 - **Baseline SHA:** `62b9c645de4fa67ff7c38d0cd5fc1bea482e1a25`
 - **Corrective code SHA:** `85c22a8`
-- **Head SHA + exact-head CI:** reported in Sol's final handoff after both
-  required feature-branch jobs finish; the document deliberately does not
-  hard-code its own commit SHA (which would necessarily become stale).
+- **Accepted code SHA:** `8793d9635aaec4d273646f06d2b2e251b03466c9`
 - **Diff:** `git diff 62b9c645..phase12-live-layer-hermes`
 - **Original candidate CI:** https://github.com/888noonie/2become1/actions/runs/33696807371
   (superseded by the corrected exact-head run in Sol's final handoff).
 - **Corrected audit CI:** https://github.com/888noonie/2become1/actions/runs/33703853397
   (green: test 4m28s, browser-e2e 6m05s, head `415e3ee`).
+- **Final feature-tip CI:** https://github.com/888noonie/2become1/actions/runs/33704314263
+  (green: test 4m52s, browser-e2e 6m17s, head `8793d96`).
+- **Required post-merge target CI:** https://github.com/888noonie/2become1/actions/runs/33705121086
+  (green: test 4m31s, browser-e2e 5m59s, `v0.3-workspace` head `8793d96`).
 - **Evidence file:** this document
 - **Audit findings/corrections:** section 6 above
 
-Sol has completed the independent local 12C.5 audit and corrective re-audit.
-Richard still decides whether and what to merge. Only a green post-merge
-`v0.3-workspace` CI run may mark Phase 12 accepted.
+Sol completed the independent local 12C.5 audit and corrective re-audit.
+Richard authorized the full merge on 2026-09-03. The fast-forward merge and
+green target-branch run above satisfy the protocol: Phase 12 is accepted.
