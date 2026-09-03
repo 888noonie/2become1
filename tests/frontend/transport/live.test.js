@@ -165,6 +165,22 @@ test('non-finite launch beat fails with L_LAYER_INVALID', () => {
   assert.equal(result.code, 'L_LAYER_INVALID');
 });
 
+test('extreme finite launch beat fails boundedly instead of phrase-stepping forever', () => {
+  const broken = layer({
+    launchReceipt: { ...layer().launchReceipt, launchBeat: -Number.MAX_VALUE },
+  });
+  const result = resolveLivePlacement(broken, transport(), 0);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'L_LAYER_INVALID');
+});
+
+test('gain outside the committed-layer contract fails with L_LAYER_INVALID', () => {
+  const broken = layer({ placement: { gainDb: 13 } });
+  const result = resolveLivePlacement(broken, transport(), 0);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'L_LAYER_INVALID');
+});
+
 test('invalid nowAudioTime fails with T_INVALID_TIME', () => {
   const result = resolveLivePlacement(layer(), transport(), Number.NaN);
   assert.equal(result.ok, false);

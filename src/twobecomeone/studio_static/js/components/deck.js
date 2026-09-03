@@ -350,13 +350,28 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
     // dialog with the dragged region pre-filled. The Lead deck never shows it.
     let selectPhraseBtn = null;
     if (role === 'anchor') {
+      // Phase 12A.0: while a committed layer exists the live engine holds the
+      // single live slot, so a new preview can only end in a server-refused
+      // commit (L_LAYER_LIMIT). Disable the entry point with truthful copy
+      // (convenience only; the server revalidates).
+      const committedCount = Array.isArray(state.session?.committedLayers)
+        ? state.session.committedLayers.length
+        : 0;
+      const liveBlocked = committedCount > 0;
       selectPhraseBtn = createElement('button', {
         class: `button deck__select-phrase ${deckState.regionArmed ? 'button--primary' : ''}`,
         type: 'button',
-        text: deckState.regionArmed ? 'Select phrase on waveform…' : 'Select phrase',
+        text: liveBlocked
+          ? 'Undo the committed Ghost first'
+          : (deckState.regionArmed ? 'Select phrase on waveform…' : 'Select phrase'),
         'aria-pressed': deckState.regionArmed ? 'true' : 'false',
-        'aria-label': 'Select a vocal phrase region on the Foundation waveform',
+        'aria-label': liveBlocked
+          ? 'Undo the committed Ghost before selecting a new phrase'
+          : 'Select a vocal phrase region on the Foundation waveform',
+        disabled: liveBlocked ? 'true' : null,
+        title: liveBlocked ? 'One live layer at a time — undo the committed Ghost first.' : null,
         onclick: () => {
+          if (liveBlocked) return;
           if (deckState.regionArmed) {
             // Already armed: open the dialog directly (keyboard path).
             deckState.regionArmed = false;

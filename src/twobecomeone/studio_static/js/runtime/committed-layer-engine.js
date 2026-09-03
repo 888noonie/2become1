@@ -50,8 +50,8 @@ export class CommittedLayerEngine {
   /**
    * @param {object} deps
    * @param {AudioContext} deps.audioContext — injected (fake in Node tests)
-   * @param {(asset: object) => Promise<ArrayBuffer>} deps.loadAsset
-   * @param {() => object} deps.transportProvider — live Deck B transport
+   * @param {(asset: object, signal: AbortSignal) => Promise<ArrayBuffer>} deps.loadAsset
+   * @param {(layer: object) => object} deps.transportProvider — live Deck B transport
    * @param {(delayMs: number, fn: () => void) => number} deps.setTimer — injected
    * @param {(id: number) => void} deps.clearTimer — injected
    * @param {(layerId: string, state: string, detail?: object) => void} [deps.onStateChange]
@@ -71,8 +71,8 @@ export class CommittedLayerEngine {
     this._resolvePlacement = deps.resolvePlacement || resolveLivePlacement;
 
     // One live layer at most (fixed musical policy).
-    this._entry = null;          // { layer, state, buffer, sources:Set, timerId,
-                                 //   receipt, armedInstance, error, decodeToken }
+    this._entry = null;          // { layer, state, buffer, controller, sources:Set,
+                                 //   gains:Set, timerId, receipt, armedInstance, error }
     this._conflictLayers = null; // legacy multi-layer refusal (snapshot truth)
     this._shutdown = false;
     this._epoch = 0;
@@ -189,8 +189,10 @@ export class CommittedLayerEngine {
       layer,
       state: ENGINE_STATES.LOADING,
       decodeToken: ++this._epoch,
+      controller: new AbortController(),
       buffer: null,
       sources: new Set(),
+      gains: new Set(),
       timerId: null,
       receipt: null,
       armedInstance: null,
@@ -214,7 +216,9 @@ export class CommittedLayerEngine {
 
     // Fetch + decode the committed asset once per entry.
     try {
-      const buffer = await this.loadAsset(layer.asset || layer.acceptedAsset || {});
+      const buffer = await this.loadAsset(
+        layer.asset || layer.acceptedAsset || {}, entry.controller.signal,
+      );
       if (this._entry !== entry || this._shutdown) return { ok: false, code: 'STALE' };
       const audioBuffer = await this.ctx.decodeAudioData(buffer);
       if (this._entry !== entry || this._shutdown) return { ok: false, code: 'STALE' };
@@ -224,6 +228,9 @@ export class CommittedLayerEngine {
       return { ok: true, code: 'scheduled' };
     } catch (loadError) {
       if (this._entry !== entry || this._shutdown) return { ok: false, code: 'STALE' };
+      if (entry.controller.signal.aborted || loadError?.name === 'AbortError') {
+        return { ok: false, code: 'STALE' };
+      }
       this._fail(entry, 'S_ASSET_UNAVAILABLE', 'the committed audio could not be loaded');
       return { ok: false, code: 'S_ASSET_UNAVAILABLE' };
     }
@@ -267,9 +274,27 @@ export class CommittedLayerEngine {
     gainNode.gain.value = receipt.gainLinear;
     source.connect(gainNode);
     gainNode.connect(this.ctx.destination);
-    source.onended = () => { entry.sources.delete(source); };
-    source.start(receipt.launchAudioTime);
+    // Track BOTH the source and its gain node so teardown disconnects the
+    // gain from the destination too — otherwise every phrase leaks a
+    // connected GainNode that keeps the graph alive after suspension.
+    source.onended = () => {
+      entry.sources.delete(source);
+      entry.gains.delete(gainNode);
+      try { source.disconnect(); } catch { /* already disconnected */ }
+      try { gainNode.disconnect(); } catch { /* already disconnected */ }
+    };
     entry.sources.add(source);
+    entry.gains.add(gainNode);
+    try {
+      source.start(receipt.launchAudioTime);
+    } catch {
+      entry.sources.delete(source);
+      entry.gains.delete(gainNode);
+      try { source.disconnect(); } catch { /* already disconnected */ }
+      try { gainNode.disconnect(); } catch { /* already disconnected */ }
+      this._fail(entry, 'SCHEDULE_FAILED', 'the committed audio could not be scheduled');
+      return false;
+    }
     entry.receipt = receipt;
     entry.armedInstance = {
       launchAudioTime: receipt.launchAudioTime,
@@ -281,7 +306,12 @@ export class CommittedLayerEngine {
     // instance is part of the live loop, not a return to `scheduled`).
     if (entry.state !== ENGINE_STATES.LIVE) {
       entry.state = ENGINE_STATES.SCHEDULED;
-      this._announceLayer(entry.layer, ENGINE_STATES.SCHEDULED);
+      // Surface the engine's RE-RESOLVED next launch beat (whole-phrase
+      // stepped against the live clock), not the original accepted beat, so
+      // the scheduled UI is truthful about when the layer will actually fire.
+      this._announceLayer(entry.layer, ENGINE_STATES.SCHEDULED, {
+        launchBeat: receipt.launchBeat,
+      });
     }
     this._armWake(entry, (receipt.launchAudioTime - this.ctx.currentTime) * 1000);
     return true;
@@ -340,6 +370,7 @@ export class CommittedLayerEngine {
   _cancelEntryRuntime() {
     const entry = this._entry;
     if (!entry) return;
+    if (entry.controller && !entry.controller.signal.aborted) entry.controller.abort();
     if (entry.timerId !== null) {
       this.clearTimer(entry.timerId);
       entry.timerId = null;
@@ -352,6 +383,10 @@ export class CommittedLayerEngine {
       } catch { /* already stopped */ }
     }
     entry.sources.clear();
+    for (const gainNode of [...entry.gains]) {
+      try { gainNode.disconnect(); } catch { /* already disconnected */ }
+    }
+    entry.gains.clear();
     entry.armedInstance = null;
   }
 

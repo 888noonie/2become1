@@ -1,11 +1,18 @@
-// Phase 12B.5 browser acceptance: commit -> scheduled -> live -> undo -> reload.
+// Phase 12B.5 browser acceptance: commit -> scheduled -> live -> undo -> reload -> resume.
 //
 // Drives the real 2become1 Studio against the ghost fixture server and proves
-// the live committed-layer engine end to end: after Commit the committed layer
-// shows a truthful live state (scheduled while the launch boundary is armed,
-// then live once it passes while the Lead keeps playing), confirmed Undo stops
-// it immediately, pause drops it to idle, and reload hydrates idle with no
-// autoplay. Real Web Audio scheduling in the harness; both viewports.
+// the live committed-layer engine end to end:
+//   - after Commit the committed layer shows a truthful live state (scheduled
+//     while the launch boundary is armed, then live once it passes while the
+//     Lead keeps playing);
+//   - confirmed Undo stops a LIVE source (the Lead is still playing when Undo
+//     is clicked — no pause first);
+//   - pause drops the layer to idle (suspend, not destroy), and a later owned
+//     Lead play resumes it;
+//   - reload hydrates idle with no autoplay;
+//   - Lead-play-after-reload resumes idle -> scheduled/live under NORMAL
+//     autoplay policy (a separate context without the autoplay override).
+// Real Web Audio scheduling in the harness; both viewports.
 
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
@@ -94,13 +101,6 @@ async function stopChild(child) {
   if (child.exitCode === null) child.kill('SIGKILL');
 }
 
-async function projectState() {
-  const projects = await (await fetch(`${BASE}/api/projects`)).json();
-  const projectId = projects.items[0].id;
-  const state = await (await fetch(`${BASE}/api/projects/${projectId}/action-state`)).json();
-  return { projectId, state };
-}
-
 async function startLead(page) {
   const play = page.locator('.deck-slot--lead button[aria-label="Play Lead"]');
   if (await play.count()) await play.click();
@@ -111,8 +111,11 @@ async function startLead(page) {
 }
 
 async function createAudition(page) {
-  await startLead(page);
+  // The Select Phrase button must be enabled (re-enables after Undo clears
+  // the committed layer). Wait for it deterministically rather than racing.
   const select = page.locator('.deck-slot--anchor .deck__select-phrase');
+  await waitFor(async () => (await select.isEnabled().catch(() => false)), 'Select phrase enabled');
+  await startLead(page);
   await select.click();
   await select.click();
   await waitFor(async () => (await page.locator('dialog[open]').count()) === 1, 'Ghost dialog');
@@ -131,6 +134,11 @@ async function liveBadgeState(page) {
   return (await badge.first().textContent()).trim();
 }
 
+async function commitAudition(page) {
+  await page.locator('.ghost-card button', { hasText: 'Commit' }).click();
+  await waitFor(async () => (await page.locator('.committed-layer').count()) === 1, 'committed layer');
+}
+
 async function main() {
   mkdirSync(outDir, { recursive: true });
   const dataDir = mkdtempSync(join(tmpdir(), '2become1-live-layer-'));
@@ -140,10 +148,12 @@ async function main() {
     await waitForServer(child, log);
     browser = await chromium.launch({
       executablePath: resolveChromium(), headless: true,
-      args: ['--autoplay-policy=no-user-gesture-required', '--mute-audio'],
+      args: ['--mute-audio'],
     });
-    const context = await browser.newContext({ viewport: { width, height } });
-    const page = await context.newPage();
+
+    // ---- Context A: the main flow under Chromium's normal autoplay policy. ----
+    const contextA = await browser.newContext({ viewport: { width, height } });
+    const page = await contextA.newPage();
     const errors = [];
     page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
     page.on('console', (message) => {
@@ -153,13 +163,9 @@ async function main() {
     await page.goto(`${BASE}/#/studio`);
     await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, 'Studio');
     await createAudition(page);
+    await commitAudition(page);
 
-    // Commit the auditioned Ghost.
-    await page.locator('.ghost-card button', { hasText: 'Commit' }).click();
-    await waitFor(async () => (await page.locator('.committed-layer').count()) === 1, 'committed layer');
-
-    // The committed layer must show a truthful live state while the Lead is
-    // playing: `scheduled` (armed future boundary) or `live` (boundary passed).
+    // Truthful live state while the Lead plays: scheduled (armed) or live.
     const armed = await waitFor(async () => {
       const state = await liveBadgeState(page);
       return state === 'scheduled' || state === 'live' ? state : null;
@@ -172,6 +178,41 @@ async function main() {
       return state === 'live' ? state : null;
     }, 'live state after boundary', 30000);
     record('Layer goes live while the Lead plays', live === 'live', `state=${live}`);
+    const blockedSelect = page.locator('.deck-slot--anchor .deck__select-phrase');
+    record('Committed layer disables new Preview entry truthfully',
+      await blockedSelect.isDisabled()
+        && /Undo the committed Ghost first/i.test(await blockedSelect.textContent()),
+      (await blockedSelect.textContent()).trim());
+    await page.screenshot({
+      path: join(outDir, `ghost-live-${viewportArg}.png`),
+      fullPage: true,
+    });
+
+    // Confirmed Undo stops a LIVE source: the Lead is still playing (no pause
+    // first), so this proves Undo tears down an actively sounding layer.
+    await page.locator('button[aria-label="Undo committed Ghost 1"]').click();
+    await waitFor(async () => (await page.locator('dialog[open]').count()) === 1, 'Undo confirmation');
+    await page.locator('dialog[open] button', { hasText: 'Undo Ghost' }).click();
+    await waitFor(async () => (await page.locator('.committed-layer').count()) === 0, 'Undo projection');
+    record('Confirmed Undo stops a live source', true);
+
+    // The fixture is only 32 seconds long and the first live boundary has
+    // already consumed half of it. Restart the still-playing Lead AFTER the
+    // live-Undo proof so the second audition has a deterministic future
+    // phrase boundary instead of racing the end of the synthetic track.
+    await page.locator('.deck-slot--lead button[aria-label="Stop Lead playback"]').click();
+    await waitFor(
+      async () => (await page.locator('.deck-slot--lead button[aria-label="Play Lead"]').count()) === 1,
+      'Lead reset after live Undo',
+    );
+
+    // Re-commit for the suspend/resume + reload proofs.
+    await createAudition(page);
+    await commitAudition(page);
+    await waitFor(async () => {
+      const state = await liveBadgeState(page);
+      return state === 'scheduled' || state === 'live' ? state : null;
+    }, 'live state (2nd commit)', 20000);
 
     // Pause the Lead -> honest idle (suspend, not destroy).
     await page.locator('.deck-slot--lead button[aria-label^="Pause Lead"]').click();
@@ -181,23 +222,21 @@ async function main() {
     }, 'idle after Lead pause', 10000);
     record('Pause drops the layer to idle', idle === 'idle', `state=${idle}`);
 
-    // Confirmed Undo stops the live layer immediately.
-    await page.locator('button[aria-label="Undo committed Ghost 1"]').click();
-    await waitFor(async () => (await page.locator('dialog[open]').count()) === 1, 'Undo confirmation');
-    await page.locator('dialog[open] button', { hasText: 'Undo Ghost' }).click();
-    await waitFor(async () => (await page.locator('.committed-layer').count()) === 0, 'Undo projection');
-    record('Confirmed Undo removes the live layer', true);
+    // A later owned Lead play resumes idle -> scheduled/live.
+    await startLead(page);
+    const resumed = await waitFor(async () => {
+      const state = await liveBadgeState(page);
+      return state === 'scheduled' || state === 'live' ? state : null;
+    }, 'resume after Lead play', 20000);
+    record('Lead play resumes the suspended layer', resumed === 'scheduled' || resumed === 'live', `state=${resumed}`);
 
-    // Reload after a fresh commit hydrates idle (no autoplay).
-    await createAudition(page);
-    await page.locator('.ghost-card button', { hasText: 'Commit' }).click();
-    await waitFor(async () => (await page.locator('.committed-layer').count()) === 1, 'committed layer (2nd)');
+    // Reload hydrates idle with no autoplay.
     await page.reload();
     await waitFor(async () => (await page.locator('.committed-layer').count()) === 1, 'committed layer after reload');
     const reloadState = await liveBadgeState(page);
     record('Reload hydrates idle with no autoplay', reloadState === 'idle', `state=${reloadState}`);
 
-    // Accessibility + overflow.
+    // Accessibility + overflow (context A).
     await page.addScriptTag({ content: A11Y_SOURCE });
     const audit = await page.evaluate((viewportWidth) => window.auditDocument(document, { viewportWidth }), width);
     record('Live layer accessibility audit is clean',
@@ -211,7 +250,36 @@ async function main() {
       `scrollWidth=${overflow.scroll} clientWidth=${overflow.client}`);
     record('No uncaught browser errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
-    await context.close();
+    await contextA.close();
+
+    // ---- Context B: fresh normal-policy context for reload/resume. ----
+    // The committed layer persists server-side; a fresh page load hydrates it
+    // idle, and a real user-gesture Play Lead must resume it to scheduled/live
+    // under the browser's default autoplay policy.
+    const contextB = await browser.newContext({ viewport: { width, height } });
+    const pageB = await contextB.newPage();
+    const errorsB = [];
+    pageB.on('pageerror', (error) => errorsB.push(`pageerror: ${error.message}`));
+    pageB.on('console', (message) => {
+      if (message.type() === 'error') errorsB.push(`console.error: ${message.text()}`);
+    });
+
+    await pageB.goto(`${BASE}/#/studio`);
+    await waitFor(async () => (await pageB.locator('.committed-layer').count()) === 1, 'committed layer (normal policy)');
+    const idleB = await liveBadgeState(pageB);
+    record('Normal-policy load hydrates idle (no autoplay)', idleB === 'idle', `state=${idleB}`);
+
+    // A real user-gesture Play Lead resumes idle -> scheduled/live under
+    // normal autoplay policy (no override masking policy-sensitive behavior).
+    await startLead(pageB);
+    const resumedB = await waitFor(async () => {
+      const state = await liveBadgeState(pageB);
+      return state === 'scheduled' || state === 'live' ? state : null;
+    }, 'resume under normal autoplay policy', 20000);
+    record('Lead play resumes under normal autoplay policy', resumedB === 'scheduled' || resumedB === 'live', `state=${resumedB}`);
+    record('No uncaught browser errors (normal policy)', errorsB.length === 0, errorsB.slice(0, 3).join(' | '));
+
+    await contextB.close();
   } finally {
     if (browser) await browser.close().catch(() => {});
     await stopChild(child);

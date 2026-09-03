@@ -338,6 +338,60 @@ test('stale decode never starts after a cancel', async () => {
   engine.shutdown();
 });
 
+test('suspend aborts an in-flight asset fetch without publishing an error', async () => {
+  const ctx = new FakeAudioContext();
+  const states = [];
+  let observedSignal = null;
+  let rejectLoad;
+  const engine = new CommittedLayerEngine({
+    audioContext: ctx,
+    loadAsset: async (_asset, signal) => {
+      observedSignal = signal;
+      return new Promise((_resolve, reject) => { rejectLoad = reject; });
+    },
+    transportProvider: () => transport(),
+    setTimer: () => 1,
+    clearTimer: () => {},
+    onStateChange: (layerId, state, detail) => states.push({ layerId, state, detail }),
+  });
+  const syncing = engine.sync([committedLayer()]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  engine.suspend('lead-pause');
+  assert.equal(observedSignal.aborted, true);
+  const abort = new Error('aborted');
+  abort.name = 'AbortError';
+  rejectLoad(abort);
+  await syncing;
+  assert.equal(states.at(-1).state, ENGINE_STATES.IDLE);
+  assert.equal(ctx.starts.length, 0);
+  engine.shutdown();
+});
+
+test('source.start failure disconnects source and gain and reports an honest error', async () => {
+  const ctx = new FakeAudioContext();
+  const originalCreate = ctx.createBufferSource.bind(ctx);
+  ctx.createBufferSource = () => {
+    const source = originalCreate();
+    source.start = () => { throw new Error('device rejected schedule'); };
+    return source;
+  };
+  const states = [];
+  const engine = new CommittedLayerEngine({
+    audioContext: ctx,
+    loadAsset: async () => new ArrayBuffer(8),
+    transportProvider: () => transport(),
+    setTimer: () => 1,
+    clearTimer: () => {},
+    onStateChange: (layerId, state, detail) => states.push({ layerId, state, detail }),
+  });
+  await engine.sync([committedLayer()]);
+  assert.equal(ctx.sources[0].disconnected, true);
+  assert.equal(ctx.gains[0].disconnected, true);
+  assert.equal(states.at(-1).state, ENGINE_STATES.ERROR);
+  assert.equal(states.at(-1).detail.code, 'SCHEDULE_FAILED');
+  engine.shutdown();
+});
+
 test('transport not playing yields idle, not error', async () => {
   const { ctx, states, engine } = makeEngine({ transportOverrides: { playing: false } });
   await engine.sync([committedLayer()]);
@@ -361,5 +415,33 @@ test('asset load failure is an honest error state', async () => {
   assert.equal(ctx.starts.length, 0);
   assert.equal(states.at(-1).state, ENGINE_STATES.ERROR);
   assert.equal(states.at(-1).detail.code, 'S_ASSET_UNAVAILABLE');
+  engine.shutdown();
+});
+
+test('every phrase disconnects its GainNode (no connected-gain leak)', async () => {
+  const { ctx, engine } = makeEngine({ currentTime: 0 });
+  await engine.sync([committedLayer()]);
+  // One instance armed; its gain is connected to the destination.
+  assert.equal(ctx.gains.length, 1);
+  assert.equal(ctx.gains[0].disconnected, false);
+
+  // Suspend (pause/stop/ended/seek): the gain must be disconnected so the
+  // graph does not keep a connected GainNode alive after suspension.
+  engine.suspend('lead-pause');
+  for (const gain of ctx.gains) {
+    assert.equal(gain.disconnected, true, 'gain must be disconnected on suspend');
+  }
+  engine.shutdown();
+});
+
+test('scheduled announcement surfaces the re-resolved next launch beat', async () => {
+  // At now=16 the accepted launch beat 32 is exactly "now", so the engine
+  // whole-phrase-steps to the NEXT future instance (beat 64). The scheduled
+  // announcement must carry that re-resolved beat, not the original 32.
+  const { states, engine } = makeEngine({ currentTime: 16 });
+  await engine.sync([committedLayer()]);
+  const scheduled = states.find((s) => s.state === ENGINE_STATES.SCHEDULED);
+  assert.ok(scheduled, 'a scheduled announcement exists');
+  assert.equal(scheduled.detail.launchBeat, 64);
   engine.shutdown();
 });

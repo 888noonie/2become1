@@ -43,7 +43,7 @@ function liveRecordFor(layerId, liveStatus) {
 }
 
 function liveStateFor(layer, liveStatus) {
-  const record = liveRecordFor(layer?.layerId, liveStatus);
+  const record = liveRecordFor(layer?.layerId || layer?.actionId, liveStatus);
   if (!record) return 'idle'; // honest default: committed, not yet known to play
   return record.state;
 }
@@ -72,7 +72,7 @@ export function mountCommittedLayers({ container, store, onUndo, onAnnounce = ()
     if (!commitActionId || busy.has(commitActionId)) return;
     const confirmed = await confirmDialog({
       title: 'Undo committed Ghost?',
-      description: 'This stops live playback now and removes the layer from future previews and renders. Its immutable history and pinned audio are retained.',
+      description: 'Once confirmed by the engine, this stops live playback and removes the layer from future previews and renders. Its immutable history and pinned audio are retained.',
       confirmLabel: 'Undo Ghost',
       danger: true,
       trigger,

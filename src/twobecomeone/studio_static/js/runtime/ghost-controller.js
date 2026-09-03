@@ -522,11 +522,11 @@ export class GhostController {
     if (!factory) return null;
     this._liveEngine = factory({
       audioContext: this._ensureContext(),
-      loadAsset: async (asset) => {
+      loadAsset: async (asset, signal) => {
         const audioUrl = asset?.audioUrl
           || (asset?.id ? `/api/ghost-assets/${asset.id}/audio` : null);
         if (!audioUrl) throw new Error('committed asset has no audio URL');
-        const response = await fetch(audioUrl);
+        const response = await fetch(audioUrl, { signal });
         if (!response.ok) throw new Error(`committed asset fetch failed: ${response.status}`);
         return response.arrayBuffer();
       },
@@ -545,8 +545,32 @@ export class GhostController {
    */
   _liveTransportProvider(layer) {
     const leadTrack = this.getLeadTrack();
-    const gridRevision = layer?.launchReceipt?.destinationGridRevision
-      || layer?.transformSpec?.destinationGridRevision || null;
+    const transformSpec = layer?.transformSpec
+      || layer?.asset?.transformSpec
+      || layer?.acceptedAsset?.transformSpec
+      || null;
+    const receiptRevision = layer?.launchReceipt?.destinationGridRevision || null;
+    const transformRevision = transformSpec?.destinationGridRevision || null;
+    const gridRevision = receiptRevision || transformRevision;
+    // A3 parity: the LIVE Lead grid must still match the server-authored
+    // destination grid before the live layer may sound. A Lead whose BPM or
+    // grid changed since the commit is refused (GHOST_GRID_STALE), exactly
+    // like the preview path — never silently accepted.
+    const identityMismatch = !gridRevision
+      || (receiptRevision && transformRevision && receiptRevision !== transformRevision)
+      || (Number.isFinite(Number(layer?.launchReceipt?.targetBpm))
+        && Number.isFinite(Number(transformSpec?.targetBpm))
+        && Number(layer.launchReceipt.targetBpm) !== Number(transformSpec.targetBpm));
+    const parity = identityMismatch || checkGridParity(
+      leadTrack,
+      transformSpec?.destinationGrid || null,
+      transformSpec?.targetBpm,
+    );
+    if (parity) {
+      throw Object.assign(new Error('Lead analysis changed since the commit. Undo and preview again.'), {
+        code: 'GHOST_GRID_STALE',
+      });
+    }
     const result = buildDeckTransport({
       deck: 'B',
       track: leadTrack,
@@ -571,6 +595,12 @@ export class GhostController {
       record.error = detail?.code
         ? { code: detail.code, message: detail.message || null }
         : null;
+      // The engine re-resolves the next launch beat against the live clock;
+      // surface that re-resolved beat (not the original accepted beat) so the
+      // scheduled UI is truthful.
+      if (detail?.launchBeat != null) {
+        record.launchBeat = detail.launchBeat;
+      }
     }
     this._publishLiveSlice();
   }
@@ -630,6 +660,36 @@ export class GhostController {
     const result = await engine.sync(committed);
     this._publishLiveSlice();
     return result;
+  }
+
+  /**
+   * Fetch the authoritative projection and converge the live engine through
+   * the one sync() path. Used by both the clean commit success and the
+   * reconciled-commit path so a committed layer always reaches the engine.
+   * Best-effort: a failed refresh never invents a live layer (Amendment 2) —
+   * the slice keeps its prior honest state.
+   */
+  async _applyProjectionAndSyncLive(projectId, state) {
+    if (projectId !== this.store.getState().currentProject?.id) return false;
+    if (!state?.session || !state?.proposals) return false;
+    this.store.dispatch({
+      type: 'v1/hydrate-projection',
+      projection: { session: state.session, proposals: state.proposals },
+      lastSequence: state.last_sequence,
+    });
+    await this._syncLiveEngine();
+    return true;
+  }
+
+  async _refreshProjectionAndSyncLive(projectId) {
+    if (projectId !== this.store.getState().currentProject?.id) return false;
+    try {
+      const state = await this.api.getActionState(projectId);
+      return await this._applyProjectionAndSyncLive(projectId, state);
+    } catch {
+      // Best-effort refresh; the durable commit already held.
+      return false;
+    }
   }
 
   // ------------------------------------------------------------------
@@ -889,23 +949,7 @@ export class GhostController {
       await this.api.postProjectAction(gen.projectId, gen.commitAction);
       // Success: re-fetch the authoritative projection so the client holds the
       // server's committed layer (with launchReceipt + pinned asset) verbatim.
-      if (gen.projectId === this.store.getState().currentProject?.id) {
-        try {
-          const state = await this.api.getActionState(gen.projectId);
-          this.store.dispatch({
-            type: 'v1/hydrate-projection',
-            projection: { session: state.session, proposals: state.proposals },
-            lastSequence: state.last_sequence,
-          });
-          // Phase 12: the refreshed projection now holds the committed layer;
-          // converge the live engine through the authoritative sync path.
-          await this._syncLiveEngine();
-        } catch {
-          // Hydration refresh is best-effort; the durable commit already held.
-          // Amendment 2: a failed refresh never invents a live layer — the
-          // slice keeps its prior honest state.
-        }
-      }
+      await this._refreshProjectionAndSyncLive(gen.projectId);
       this._setStatus({
         phase: GHOST_PHASES.COMMITTED,
         activeProposalId: null,
@@ -913,7 +957,7 @@ export class GhostController {
         summary: null,
         error: null,
       });
-      this._announce('Ghost committed. It will be included in the next preview/render.');
+      this._announce('Ghost committed. Live playback follows the Lead; preview/render inclusion is retained.');
       this._gen = null;
       return { ok: true };
     } catch (err) {
@@ -936,7 +980,7 @@ export class GhostController {
           summary: null,
           error: null,
         });
-        this._announce('Ghost committed. It will be included in the next preview/render.');
+        this._announce('Ghost committed. Live playback follows the Lead; preview/render inclusion is retained.');
         this._gen = null;
         return { ok: true };
       }
@@ -971,7 +1015,13 @@ export class GhostController {
       const state = await this.api.getActionState(gen.projectId);
       const proposal = state?.proposals?.byId?.[gen.proposalId];
       if (!proposal) return 'released';
-      if (proposal.lifecycle === 'accepted') return 'committed';
+      if (proposal.lifecycle === 'accepted') {
+        // Reuse the exact authoritative state that proved the ambiguous
+        // commit. A second fetch would introduce a new network race between
+        // reconciliation and live-engine convergence.
+        await this._applyProjectionAndSyncLive(gen.projectId, state);
+        return 'committed';
+      }
       if (proposal.lifecycle === 'rejected') return 'released';
       return 'auditioning';
     } catch {
@@ -1009,16 +1059,18 @@ export class GhostController {
   async _revertInner(projectId, commitActionId, action) {
     try {
       const result = await this.api.postProjectAction(projectId, action);
-      this.store.dispatch({
-        type: 'v1/commit/reverted',
-        commitActionId,
-        revertActionId: action.id,
-      });
-      // Phase 12 (Amendment 6): the server confirmed the reversal — stop the
-      // live layer immediately. A failed Undo above leaves playback and
-      // projection unchanged (durable-first ordering).
-      if (this._liveEngine && !this._liveEngineTornDown) {
-        this._liveEngine.remove(commitActionId);
+      // A late response for the prior project must never mutate or stop the
+      // newly selected project's projection/runtime.
+      if (projectId === this.store.getState().currentProject?.id) {
+        this.store.dispatch({
+          type: 'v1/commit/reverted',
+          commitActionId,
+          revertActionId: action.id,
+        });
+        // Converge through the same authoritative session sync used by
+        // hydration/reconciliation. For an empty projection this cancels the
+        // source synchronously and also clears the presentation slice.
+        await this._syncLiveEngine();
       }
       return { ok: true, result: result?.outcome?.result || 'commit_reverted' };
     } catch (err) {
@@ -1061,6 +1113,11 @@ export class GhostController {
           projection: { session: state.session, proposals: state.proposals },
           lastSequence: state.last_sequence,
         });
+        // Phase 12 (Amendment 2): the hydrated projection is authoritative —
+        // converge the live engine so a reconciled Undo actually stops the
+        // layer (the projection no longer holds it) rather than leaving the
+        // engine sounding after a success return.
+        await this._syncLiveEngine();
       }
       if (reverted) return 'reverted';
       if (committed) return 'committed';

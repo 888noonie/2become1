@@ -185,12 +185,14 @@ test('confirmed Undo removes the live layer immediately', async () => {
   const { store, controller, liveEngine } = makeController();
   await hydrate(controller, store, [committedLayer()]);
   assert.equal(liveEngine.syncCalls.length, 1);
-  // The real flow: revert() posts durably, then removes the live layer
-  // immediately once the server confirms (durable-first ordering).
+  // The real flow: revert() posts durably, projects the empty committed list,
+  // then converges through the authoritative sync path. sync([]) cancels the
+  // real engine synchronously and clears the presentation slice.
   const result = await controller.revert('c-1');
   assert.equal(result.ok, true);
-  assert.equal(liveEngine.removes.length, 1);
-  assert.equal(liveEngine.removes[0], 'c-1');
+  assert.equal(liveEngine.syncCalls.length, 2);
+  assert.deepEqual(liveEngine.syncCalls[1], []);
+  assert.equal(store.getState().ghostLiveStatus.layers.length, 0);
   controller.shutdown();
 });
 

@@ -22,7 +22,7 @@ const PHASE_COPY = {
   interrupted: 'Ghost preview interrupted.',
   conflict: 'Several Ghost previews need Release.',
   committing: 'Committing Ghost…',
-  committed: 'Ghost committed — it will be included in the next preview/render.',
+  committed: 'Ghost committed — live state is shown below; preview/render inclusion is retained.',
 };
 
 function fmt(n, digits = 1) {

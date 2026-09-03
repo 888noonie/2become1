@@ -67,19 +67,15 @@ export function resolveLivePlacement(layer, rawTransport, nowAudioTime) {
   const bps = transport.tempoBpm / 60;
   const pb = transport.beatsPerBar * transport.phraseBars;
 
-  // Whole-phrase stepping to the next future instance (epsilon-stable: an
-  // instance exactly at now is past, mirroring resolveNextPhrase's rule).
-  let instanceBeat = launchBeat;
-  while (true) {
-    const instanceTime = transport.startedAtAudioTime
-      + (instanceBeat - transport.beatAtStart) / bps;
-    if (instanceTime - nowAudioTime > LIVE_EPSILON) {
-      if (instanceTime - nowAudioTime >= LIVE_MIN_LEAD_SECONDS) {
-        break; // future with a safe lead: schedule this instance
-      }
-    }
-    instanceBeat += pb; // past, on-now, or unsafe lead: the following phrase
-  }
+  // Whole-phrase stepping to the first safely future instance. Use closed-form
+  // arithmetic rather than an unbounded loop: a corrupted-but-finite legacy
+  // launchBeat must return a bounded failure, never freeze the browser.
+  const phraseSeconds = pb / bps;
+  const firstTime = transport.startedAtAudioTime
+    + (launchBeat - transport.beatAtStart) / bps;
+  const requiredTime = nowAudioTime + LIVE_MIN_LEAD_SECONDS;
+  const stepCount = Math.max(0, Math.ceil((requiredTime - firstTime) / phraseSeconds));
+  const instanceBeat = launchBeat + stepCount * pb;
 
   // Asset ring duration: region span at the asset's baked tempo (asset time,
   // unaffected by live tempo variance inside the parity tolerance).
@@ -90,10 +86,13 @@ export function resolveLivePlacement(layer, rawTransport, nowAudioTime) {
     return buildFailure(ERROR_CODES.L_LAYER_INVALID, { reason: 'invalid semanticRegion' });
   }
   const durationSeconds = (endBeat - startBeat) * 60 / targetBpm;
+  if (!finiteNumber(durationSeconds) || durationSeconds <= 0) {
+    return buildFailure(ERROR_CODES.L_LAYER_INVALID, { reason: 'invalid duration' });
+  }
 
   // Linear gain from the durable placement (never baked into the asset).
   const gainDb = Number(layer?.placement?.gainDb ?? 0);
-  if (!finiteNumber(gainDb)) {
+  if (!finiteNumber(gainDb) || gainDb < -24 || gainDb > 12) {
     return buildFailure(ERROR_CODES.L_LAYER_INVALID, { reason: 'invalid gainDb' });
   }
   const gainLinear = Math.pow(10, gainDb / 20);
@@ -101,6 +100,10 @@ export function resolveLivePlacement(layer, rawTransport, nowAudioTime) {
   const launchAudioTime = transport.startedAtAudioTime
     + (instanceBeat - transport.beatAtStart) / bps;
   const phraseIndex = Math.floor(instanceBeat / pb);
+  if (!finiteNumber(instanceBeat) || !finiteNumber(launchAudioTime)
+      || !Number.isSafeInteger(stepCount)) {
+    return buildFailure(ERROR_CODES.L_LAYER_INVALID, { reason: 'live placement out of range' });
+  }
 
   return buildSuccess(Object.freeze({
     launchBeat: instanceBeat,
