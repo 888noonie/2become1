@@ -60,7 +60,7 @@ class TestHealth:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 resp = await c.get("/api/health")
                 assert resp.status_code == 200
                 body = resp.json()
@@ -128,7 +128,7 @@ class TestJobsPagination:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 # No filters -> V0.2 alias shape.
                 resp = await c.get("/api/jobs")
                 assert resp.status_code == 200
@@ -150,7 +150,7 @@ class TestJobsPagination:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 resp = await c.get("/api/jobs", params={"status": "bogus"})
                 assert resp.status_code == 422
                 assert resp.json()["error"]["code"] == "validation_error"

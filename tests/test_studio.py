@@ -144,7 +144,7 @@ async def test_web_vertical_slice(tmp_path, studio_tracks):
     app = create_app(tmp_path / "web-data")
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
             assert (await client.get("/")).status_code == 200
             health = (await client.get("/api/health")).json()
             assert health["status"] == "ready"
@@ -193,7 +193,7 @@ async def test_web_imports_youtube_into_track_library(
     app = create_app(tmp_path / "web-import-data")
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
             response = await client.post(
                 "/api/tracks/import", json={"url": "https://youtube.com/watch?v=example"},
             )

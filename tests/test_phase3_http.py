@@ -45,7 +45,7 @@ class TestErrorEnvelope:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 resp = await c.get("/api/tracks/nope")
                 assert resp.status_code == 404
                 body = resp.json()
@@ -64,7 +64,7 @@ class TestErrorEnvelope:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 # Invalid sort -> 422 (RequestValidationError) via Literal.
                 resp = await c.get("/api/tracks", params={"sort": "bogus"})
                 assert resp.status_code == 422
@@ -83,7 +83,7 @@ class TestLibraryHTTP:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 p = synth_track(tmp_path / "t.wav", bpm=100, root=261.63)
                 with p.open("rb") as f:
                     resp = await c.post("/api/tracks", files={"file": ("t.wav", f, "audio/wav")})
@@ -125,7 +125,7 @@ class TestProjectsHTTP:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 a = synth_track(tmp_path / "a.wav", bpm=100, root=261.63)
                 l = synth_track(tmp_path / "l.wav", bpm=120, root=220.0)
                 with a.open("rb") as f:
@@ -167,7 +167,7 @@ class TestStemsHTTP:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 p = synth_track(tmp_path / "t.wav", bpm=100, root=261.63)
                 with p.open("rb") as f:
                     t = (await c.post("/api/tracks", files={"file": ("t.wav", f, "audio/wav")})).json()
@@ -207,7 +207,7 @@ class TestRenderVariantsHTTP:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 a = synth_track(tmp_path / "a.wav", bpm=100, root=261.63)
                 l = synth_track(tmp_path / "l.wav", bpm=120, root=220.0)
                 with a.open("rb") as f:

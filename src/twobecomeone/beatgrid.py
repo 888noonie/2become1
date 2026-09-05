@@ -34,9 +34,7 @@ def detect(path: str | Path, bpm: float | None = None, sr: int = 22050) -> BeatG
     if not np.isfinite(bpm) or bpm <= 0:
         raise UserError("a valid BPM is required for beat-grid detection")
 
-    spectra, hop = analyzer._frames(audio, sr)
-    flux = np.zeros(spectra.shape[0], dtype=np.float64)
-    flux[1:] = np.maximum(spectra[1:] - spectra[:-1], 0.0).mean(axis=1)
+    flux, hop = analyzer.spectral_flux(audio, sr)
     if not np.any(flux > 0):
         raise UserError("audio lacks clear onsets for beat-grid detection")
     flux = np.convolve(flux, np.ones(3) / 3, mode="same")

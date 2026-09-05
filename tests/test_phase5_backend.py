@@ -53,7 +53,7 @@ class TestStructuredStems:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 t = await _import_track(c, tmp_path, "t.wav", 100, 261.63)
 
                 # Before any separation, only full is offered.
@@ -98,7 +98,7 @@ class TestStructuredStems:
         data_dir = tmp_path / "data"
         app = create_app(data_dir)
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
             t = await _import_track(c, tmp_path, "t.wav", 100, 261.63)
             track_id = t["id"]
             job = (await c.post(
@@ -112,7 +112,7 @@ class TestStructuredStems:
         app2 = create_app(data_dir)
         transport2 = httpx.ASGITransport(app=app2)
         try:
-            async with httpx.AsyncClient(transport=transport2, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport2, base_url="http://localhost") as c:
                 data = (await c.get(f"/api/tracks/{track_id}/stems")).json()
                 by_name = {v["name"]: v for v in data["variants"]}
                 assert "center" in by_name
@@ -135,7 +135,7 @@ class TestStemDownloadDisposition:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 t = await _import_track(c, tmp_path, "t.wav", 100, 261.63)
                 job = (await c.post(
                     f"/api/tracks/{t['id']}/separations", json={"method": "ffmpeg"}
@@ -174,7 +174,7 @@ class TestProjectVariantValidation:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 a = await _import_track(c, tmp_path, "a.wav", 100, 261.63)
                 l = await _import_track(c, tmp_path, "l.wav", 120, 220.0)
                 proj = (await c.post("/api/projects", json={"name": "Mix"})).json()
@@ -236,7 +236,7 @@ class TestRenderPlan:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 a = await _import_track(c, tmp_path, "a.wav", 100, 261.63)  # C major
                 l = await _import_track(c, tmp_path, "l.wav", 120, 220.0)
 
@@ -295,7 +295,7 @@ class TestRenderPlan:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 a = await _import_track(c, tmp_path, "a.wav", 100, 261.63, duration=8.0)
                 l = await _import_track(c, tmp_path, "l.wav", 100, 261.63, duration=8.0)
 
@@ -322,7 +322,7 @@ class TestRenderPlan:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 a = await _import_track(c, tmp_path, "a.wav", 120, 261.63)
                 l = await _import_track(c, tmp_path, "l.wav", 60, 220.0)
 
@@ -352,7 +352,7 @@ class TestRenderPlan:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 a = await _import_track(c, tmp_path, "a.wav", 100, 261.63)
                 l = await _import_track(c, tmp_path, "l.wav", 100, 261.63)
 
@@ -391,7 +391,7 @@ class TestRenderPlan:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 a = await _import_track(c, tmp_path, "a.wav", 100, 261.63)
                 assert (await c.post("/api/renders/plan", json={
                     "anchor_id": a["id"], "lead_id": "nope",
@@ -412,7 +412,7 @@ class TestRenderPlan:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 a = await _import_track(c, tmp_path, "a.wav", 100, 261.63)
                 l = await _import_track(c, tmp_path, "l.wav", 120, 220.0)
 

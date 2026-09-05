@@ -98,7 +98,7 @@ async def test_post_renders_is_canonical_and_jobs_remains_compatible(tmp_path, m
         "pitch_mode": "preserve",
     }
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
             canonical = await client.post("/api/renders", json=body)
             compatible = await client.post("/api/jobs", json=body)
         assert canonical.status_code == 202
@@ -124,7 +124,7 @@ async def test_result_rename_and_safe_download_name_survive_restart(tmp_path):
     transport = httpx.ASGITransport(app=app)
     unsafe_display = "../../  My\r\n Mix / final ✓  "
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
             renamed = await client.patch(
                 f"/api/renders/{job_id}", json={"display_name": unsafe_display}
             )
@@ -152,7 +152,7 @@ async def test_result_rename_and_safe_download_name_survive_restart(tmp_path):
     restarted = create_app(data_dir)
     transport2 = httpx.ASGITransport(app=restarted)
     try:
-        async with httpx.AsyncClient(transport=transport2, base_url="http://studio.test") as client:
+        async with httpx.AsyncClient(transport=transport2, base_url="http://localhost") as client:
             persisted = (await client.get(f"/api/jobs/{job_id}")).json()
             assert persisted["result"]["display_name"] == "../../ My Mix / final ✓"
             assert persisted["download_name"].endswith(".mp3")
@@ -202,7 +202,7 @@ async def test_rename_rejects_incomplete_non_render_and_corrupt_output(tmp_path)
 
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
             for job_id in (
                 queued_id, import_id, corrupt_id, cross_job_id, symlink_id,
             ):
@@ -239,7 +239,7 @@ async def test_preview_history_does_not_replace_last_completed_full_render(tmp_p
     preview_id = _complete_render(service, preview=True, display_name="Later preview")
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
             activity = (await client.get("/api/jobs", params={"limit": 100})).json()
             assert [item["id"] for item in activity["items"][:2]] == [preview_id, full_id]
 
@@ -280,7 +280,7 @@ async def test_restart_recovery_distinguishes_render_retry_from_import_resume(tm
     app = create_app(data_dir)
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
             render = (await client.get(f"/api/jobs/{render_id}")).json()
             imported = (await client.get(f"/api/jobs/{import_id}")).json()
             assert render["status"] == "interrupted"

@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,9 @@ def _require_ffmpeg() -> None:
 
 HOP = 512  # analysis hop size (samples at 22050)
 MIN_DURATION_SEC = 1.0
+MAX_DECODE_SECONDS = 30 * 60
+DECODE_TIMEOUT_SECONDS = 180
+SPECTRAL_BLOCK_FRAMES = 2048
 MIN_SIGNAL_DB = -60.0  # below this is considered silence
 
 
@@ -41,12 +45,21 @@ def decode_mono(path: str | Path, sr: int = 22050) -> np.ndarray:
     _require_ffmpeg()
     cmd = [
         "ffmpeg", "-v", "error", "-i", str(path),
+        "-t", str(MAX_DECODE_SECONDS + 1),
         "-ac", "1", "-ar", str(sr), "-f", "f32le", "-",
     ]
-    proc = subprocess.run(cmd, capture_output=True)
-    if proc.returncode != 0:
-        raise UserError(f"ffmpeg decode failed for {path}: {proc.stderr.decode()[:400]}")
-    data = np.frombuffer(proc.stdout, dtype=np.float32).astype(np.float64)
+    with tempfile.TemporaryFile() as decoded:
+        try:
+            proc = subprocess.run(cmd, stdout=decoded, stderr=subprocess.PIPE,
+                                  timeout=DECODE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            raise UserError("Audio decoding exceeded the time limit") from exc
+        if proc.returncode != 0:
+            raise UserError(f"ffmpeg decode failed: {proc.stderr.decode(errors='replace')[:400]}")
+        if decoded.tell() > MAX_DECODE_SECONDS * sr * 4:
+            raise UserError("Audio exceeds the 30-minute processing limit; import a shorter region")
+        decoded.seek(0)
+        data = np.fromfile(decoded, dtype=np.float32).astype(np.float64)
     if len(data) == 0:
         raise UserError(f"no audio decoded from {path}")
     return data
@@ -83,6 +96,29 @@ def _frames(x: np.ndarray, sr: int, win_s: float = 0.046, hop_s: float = 0.0115)
 # BPM detection via spectral-flux onset envelope + autocorrelation
 # ---------------------------------------------------------------------------
 
+def _spectral_blocks(x: np.ndarray, sr: int):
+    """Bound spectral storage while retaining every frame and boundary."""
+    win, hop = int(sr * 0.046), int(sr * 0.0115)
+    count = 1 + (len(x) - win) // hop
+    if count <= 0:
+        raise UserError("audio too short for analysis")
+    for first in range(0, count, SPECTRAL_BLOCK_FRAMES):
+        frames = min(SPECTRAL_BLOCK_FRAMES, count - first)
+        yield _frames(x[first * hop : (first + frames - 1) * hop + win], sr)
+
+
+def spectral_flux(x: np.ndarray, sr: int):
+    parts, previous, hop = [], None, None
+    for spec, hop in _spectral_blocks(x, sr):
+        flux = np.zeros(len(spec))
+        if previous is not None:
+            flux[0] = np.maximum(spec[0] - previous, 0.0).mean()
+        flux[1:] = np.maximum(spec[1:] - spec[:-1], 0.0).mean(axis=1)
+        previous = spec[-1].copy()
+        parts.append(flux)
+    return np.concatenate(parts), hop
+
+
 def _autocorr(sig: np.ndarray) -> np.ndarray:
     """Normalized autocorrelation of a mean-centered signal."""
     n = len(sig)
@@ -96,10 +132,7 @@ def _autocorr(sig: np.ndarray) -> np.ndarray:
 
 
 def detect_bpm(x: np.ndarray, sr: int, lo: float = 60.0, hi: float = 200.0) -> float:
-    spec, hop = _frames(x, sr)
-    # Spectral flux onset envelope
-    flux = np.zeros(spec.shape[0])
-    flux[1:] = np.maximum(spec[1:] - spec[:-1], 0.0).mean(axis=1)
+    flux, hop = spectral_flux(x, sr)
     flux -= flux.mean()
     env_sr = sr / hop
 
@@ -183,9 +216,12 @@ def _correlate_kk(chroma_mean: np.ndarray) -> list[tuple[int, bool, float]]:
 
 
 def detect_key(x: np.ndarray, sr: int) -> dict:
-    spec, _ = _frames(x, sr)
-    chroma = _chromagram(spec, sr)
-    chroma_mean = chroma.mean(axis=0)
+    chroma_sum = np.zeros(12)
+    frame_count = 0
+    for spec, _ in _spectral_blocks(x, sr):
+        chroma_sum += _chromagram(spec, sr).sum(axis=0)
+        frame_count += len(spec)
+    chroma_mean = chroma_sum / frame_count
     denom = chroma_mean.sum() + 1e-8
     if denom <= 1e-8:
         raise UserError("audio is too quiet or lacks harmonic content to detect key")
