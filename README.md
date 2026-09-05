@@ -16,7 +16,7 @@ CachyOS/Arch, install ffmpeg with `sudo pacman -S ffmpeg`.
 ```bash
 cd 2become1
 uv venv .venv
-uv pip install --python .venv/bin/python -e '.[web,demucs]'
+uv sync --frozen --extra web --extra demucs
 .venv/bin/twobecomeone web
 ```
 
@@ -28,10 +28,13 @@ Studio and its media routes to your network. It now requires an explicit
 `--allow-network` flag:
 
 ```bash
-.venv/bin/twobecomeone web --host 0.0.0.0 --allow-network
+.venv/bin/twobecomeone web --host 0.0.0.0 --allow-network --trusted-host 192.168.1.10
 ```
 
-Only do that on a network you trust.
+Replace the example IP with this computer's network address. Repeat
+`--trusted-host` for additional exact hostnames. Network access remains
+unauthenticated; only enable it on a network you trust. Mutating browser
+requests must originate from the Studio itself.
 
 The Studio provides:
 
@@ -49,11 +52,12 @@ The Studio provides:
 - local playback, downloads, and recent-render history;
 - one same-origin FastAPI application—no public CORS or remote upload path.
 
-The `v0.3-workspace` branch also contains the accepted V1 Action/Ghost
+The `main` branch contains the accepted V1 Action/Ghost
 foundation: a project-scoped append-only Action ledger and reload projection,
 server-managed vocal preview assets, a visible human Ghost audition/Commit/Undo
-workflow, and an injected Web Audio phrase scheduler. Producer access and a
-persistent live committed-layer engine remain deferred.
+workflow, an injected Web Audio phrase scheduler, and the accepted Phase 12
+live committed-layer engine. One committed layer can play alongside the Lead.
+Producer access, live warping, and multiple committed layers remain deferred.
 
 ## CLI
 
@@ -113,7 +117,7 @@ local ceiling.
 ## Development
 
 ```bash
-uv pip install --python .venv/bin/python -e '.[web,dev,demucs]'
+uv sync --frozen --extra web --extra dev --extra demucs
 .venv/bin/pytest -q          # Python unit + service + HTTP tests
 npm ci && npm test           # frontend unit tests (jsdom)
 npm run test:browser          # browser E2E + accessibility (system Chromium)
@@ -158,3 +162,25 @@ retried or resumed from the Activity view.
 ## License
 
 MIT—see [LICENSE](LICENSE).
+
+## Processing limits and safeguards
+
+- Uploads are limited to 750 MiB per audio file, with an additional 1 MiB
+  allowance for HTTP multipart overhead. Actual streamed bytes are checked
+  before they reach the multipart parser, even without Content-Length. Other
+  request bodies are limited to 1 MiB.
+- Audio inputs longer than 30 minutes are rejected explicitly; import a
+  shorter region. Decoding uses temporary disk storage before loading the
+  bounded signal. Spectral analysis processes every frame in small blocks.
+- Decoding has a three-minute deadline; ffmpeg alignment, mixing, measurement,
+  and center/side stages each have a ten-minute deadline. Demucs cancellation
+  remains cooperative between safe stages.
+- At most 32 jobs may be running or waiting in one Studio process. A full
+  queue returns a retryable `queue_full` error without creating another job.
+- Loopback hosts are allowed by default. Additional hosts require explicit
+  configuration; cross-origin browser mutations are refused.
+- Pitch matching preserves major/minor mode. Matching tonics does not guarantee
+  harmonic compatibility; the plan warns when the source modes differ.
+
+Release CI installs from `uv.lock` with `--frozen`. Dependency updates should
+be made deliberately with a refreshed lockfile and the complete CI gates.

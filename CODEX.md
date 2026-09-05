@@ -1,6 +1,6 @@
 # Codex continuity handoff — 2BECOME1 V0.3
 
-Updated: 2026-08-30
+Updated: 2026-09-05
 
 Owner: Richard (`richardn`)
 
@@ -13,7 +13,22 @@ before changing the repository. V0.3 implementation and its Phase 7 release
 tri-phase are accepted and closed. The `v0.3.0` tag is the authoritative
 release pointer after this checkpoint's CI is green.
 
-## Next authorized implementation boundary
+## Current branch and maintenance boundary
+
+Richard authorized advancing `main` to the accepted Phase 12 checkpoint
+`95cbdc4` on 2026-09-05 and continuing fixes on
+`fix/audio-correctness-and-hardening`. The old main is preserved at
+`archive/main-before-phase12-2026-09-05` (`3fd7a5a`). Main CI run
+`33994153420` passed both jobs. Richard clarified that “protected” meant this
+backup, not GitHub branch-protection administration.
+
+The active work is audio correctness, request/resource hardening, reproducible
+CI, and documentation reconciliation. Preserve existing project data and the
+architectural invariants below. Phase 12 is accepted; historical statements
+below about its then-unauthorized status are superseded by this section and
+the Phase 12 acceptance record. New musical features remain outside this fix.
+
+## Historical implementation boundary (superseded)
 
 On 2026-08-30 Richard explicitly authorized a functionally progressive
 UI/UX/frontend build of the Ultimate Deck. A **Sol-audited UI slice** is now
@@ -35,9 +50,11 @@ provenance, project-owned render inclusion, reload durability, and append-only
 Undo. Evidence lives in `PHASE_11_SOLID_GHOST_EVIDENCE.md`, including the
 pre-push render-parity closure (chain parity and placement parity proofs).
 
-No Phase 12 implementation boundary is authorized. Do not infer permission to
+At that historical checkpoint, no Phase 12 implementation boundary was
+authorized. That restriction was superseded by the acceptance below. The
+remaining exclusions still apply: do not infer permission to
 add Producer access, redo, live warping, automatic separation, arbitrary layer
-editing, a persistent live-layer engine, or a rewrite of V0.3's single active
+editing or a rewrite of V0.3's single active
 HTML audio player. The next implementation session must begin with a fresh,
 repository-aware, Richard-approved tri-phase plan.
 
