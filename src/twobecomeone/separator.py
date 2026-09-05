@@ -18,7 +18,7 @@ import gc
 import subprocess
 from pathlib import Path
 
-from .common import UserError, log
+from .common import run_audio_process, UserError, log
 
 _STEM_NAMES = ["vocals", "drums", "bass", "other"]
 
@@ -127,7 +127,7 @@ def _ffmpeg_fallback(path: str, out_dir: Path) -> dict[str, Path]:
         "-ar", "44100", "-ac", "1", str(sides),
     ]
     for cmd in (cmd_center, cmd_sides):
-        proc = subprocess.run(cmd, capture_output=True)
+        proc = run_audio_process(cmd, capture_output=True)
         if proc.returncode != 0:
             raise UserError(f"ffmpeg separation failed: {proc.stderr.decode()[:400]}")
     return {"center": center, "sides": sides}

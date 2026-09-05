@@ -17,7 +17,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .common import UserError
+from .common import run_audio_process, UserError
 
 # ---------------------------------------------------------------------------
 # Camelot wheel key mapping
@@ -41,25 +41,26 @@ _CAMELOT: dict[str, int] = {
 
 def _normalize_key(key: str) -> str:
     """Accept common enharmonic spellings and return our canonical form."""
-    k = key.strip()
-    if k in _CAMELOT:
-        return k
-    tonic, mode = k.split()
-    mode = mode.lower()
+    parts = key.strip().replace("♭", "b").replace("♯", "#").split()
+    if len(parts) != 2:
+        raise UserError(f"unknown key: {key}")
+    tonic, mode = parts
+    tonic = tonic[0].upper() + tonic[1:]
     enharmonics = {
-        "Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "A#": "Bb",
+        "Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#",
         "B#": "C", "E#": "F", "Fb": "E", "Cb": "B",
     }
-    if tonic in enharmonics:
-        alt = f"{enharmonics[tonic]} {mode}"
-        if alt in _CAMELOT:
-            return alt
-    raise UserError(f"unknown key: {key}")
+    canonical = f"{enharmonics.get(tonic, tonic)} {mode.lower()}"
+    if canonical not in _CAMELOT:
+        raise UserError(f"unknown key: {key}")
+    return canonical
 
 
 def semitones_to_match(key_anchor: str, key_lead: str) -> int:
-    """Return the smallest semitone shift to make `key_lead` harmonically
-    compatible with `key_anchor`.
+    """Return the tonic-matching shift, preserving relative major/minor pairs.
+
+    Transposition preserves mode; matching tonics is not a guarantee of
+    harmonic compatibility when the modes differ.
 
     Relative major/minor share a Camelot number → 0 semitones.
     Otherwise transpose the lead's pitch class onto the anchor's, preferring
@@ -173,7 +174,7 @@ def _ffprobe_duration(path: str) -> float:
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", str(path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = run_audio_process(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise UserError(f"ffprobe failed for {path}: {proc.stderr[:400]}")
     return float(proc.stdout.strip())
@@ -195,7 +196,8 @@ def render_aligned(path: str, out: Path, tempo_ratio: float,
     if not math.isfinite(semitone_shift):
         raise UserError(f"invalid semitone shift: {semitone_shift}")
 
-    fc: list[str] = []
+    # asetrate reinterprets samples; normalize their actual rate first.
+    fc: list[str] = [f"aresample={sr}"]
     fc.extend(_atempo_chain(tempo_ratio))
     if semitone_shift:
         new_sr = sr * (2 ** (semitone_shift / 12.0))
@@ -211,7 +213,7 @@ def render_aligned(path: str, out: Path, tempo_ratio: float,
         "-ar", str(sr), "-ac", "2",
         str(out),
     ]
-    proc = subprocess.run(cmd, capture_output=True)
+    proc = run_audio_process(cmd, capture_output=True)
     if proc.returncode != 0:
         raise UserError(f"align failed: {proc.stderr.decode()[:400]}")
     return out
@@ -455,7 +457,7 @@ def build_mash(
             "-ar", "44100", "-ac", "2",
             str(out_path),
         ]
-        proc = subprocess.run(cmd, capture_output=True)
+        proc = run_audio_process(cmd, capture_output=True)
         if proc.returncode != 0:
             raise UserError(f"mash failed: {proc.stderr.decode()[:500]}")
     return out_path
@@ -470,7 +472,7 @@ def _run_simple_filter(src: Path, out: Path, filter_expr: str) -> None:
         "-ar", "44100", "-ac", "2",
         str(out),
     ]
-    proc = subprocess.run(cmd, capture_output=True)
+    proc = run_audio_process(cmd, capture_output=True)
     if proc.returncode != 0:
         raise UserError(f"channel filter failed: {proc.stderr.decode()[:400]}")
 
@@ -484,7 +486,7 @@ def measure_clipping(path: str) -> dict:
         "ffmpeg", "-v", "info", "-i", str(path),
         "-af", "ebur128=peak=true", "-f", "null", "-",
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = run_audio_process(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise UserError(f"true-peak measurement failed: {proc.stderr[-400:]}")
     lines = proc.stderr.splitlines()
