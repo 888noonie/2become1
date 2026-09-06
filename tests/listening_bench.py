@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
+from scipy.signal import find_peaks
 
 OUTPUT_SR = 44100  # assembler's fixed output rate
 
@@ -26,6 +27,22 @@ OUTPUT_SR = 44100  # assembler's fixed output rate
 # tolerances are pending by design (handover item 1).
 SEARCH_WINDOW_SECONDS = 0.2
 ONSET_RISE_FRAC = 0.5  # fraction of transient peak used as the crossing level
+# Audit A: measurement integrity floors. Below the silence floor there is no
+# transient to measure; a comparable distinct peak inside the association
+# window means the expected onset cannot be attributed to a single transient.
+SILENCE_FLOOR_ABS = 1e-3
+# Maxima this close AFTER the measured crossing belong to the same burst's
+# envelope (attack + decay), not a second transient.
+SAME_BURST_SEC = 0.015
+
+
+class OnsetMeasurementError(ValueError):
+    """An expected onset could not be measured (missing, silent, or ambiguous).
+
+    Raised instead of silently associating whatever energy happens to sit in
+    the search window — a wrong-peak association would misreport timing as
+    good. Callers treat this as a failed measurement, never as 0 ms.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -115,11 +132,14 @@ def read_wav_mono(path: Path, sr: int = OUTPUT_SR) -> np.ndarray:
 
 def locate_onset(signal: np.ndarray, sr: int, peak_index: int,
                  window_seconds: float = SEARCH_WINDOW_SECONDS) -> float:
-    """Locate the energy-rise crossing near ``peak_index`` (a local maximum).
+    """Locate the amplitude-rise crossing near ``peak_index`` (a local max).
 
-    Method: within +/- ``window_seconds`` of the peak, walk backward from the
-    peak to the last sample below ``rise_frac * peak``; the onset is that
-    crossing, sub-sample refined by linear interpolation. Deterministic.
+    Method (amplitude, NOT squared energy): within +/- ``window_seconds`` of
+    the peak, take the maximum of |signal|, find the last sample at or below
+    ``rise_frac * peak`` before that maximum, and sub-sample refine the
+    50%-of-peak crossing by linear interpolation. Deterministic. The crossing
+    level is a fraction of peak AMPLITUDE; the docstring and report strings
+    must keep saying amplitude.
     """
     half = int(round(sr * window_seconds))
     lo = max(0, peak_index - half)
@@ -128,11 +148,11 @@ def locate_onset(signal: np.ndarray, sr: int, peak_index: int,
     peak_rel = int(np.argmax(segment))
     peak = segment[peak_rel]
     if peak <= 1e-9:
-        raise ValueError("no energy peak found in search window")
+        raise OnsetMeasurementError("no energy peak found in search window")
     level = peak * ONSET_RISE_FRAC
     above = np.where(segment[: peak_rel + 1] >= level)[0]
     if len(above) == 0:
-        raise ValueError("no rise crossing found before the peak")
+        raise OnsetMeasurementError("no rise crossing found before the peak")
     first = int(above[0])
     # Sub-sample refinement between first-1 and first when possible.
     if first > 0:
@@ -145,24 +165,65 @@ def locate_onset(signal: np.ndarray, sr: int, peak_index: int,
     return (lo + crossing) / sr
 
 
-def onset_offsets(observed: np.ndarray, sr: int, expected_onsets: list[float]) -> list[float]:
+def peak_times(signal: np.ndarray, sr: int,
+               threshold: float = 0.3) -> list[float]:
+    """Times (seconds) of distinct transient peaks above an absolute amplitude
+    ``threshold``. Used for dropout checks (are the expected clicks actually
+    present?) — distinct from the per-onset offset estimator."""
+    peaks, _ = find_peaks(np.abs(signal), height=threshold,
+                          distance=max(1, int(sr * SAME_BURST_SEC)))
+    return [round(int(p) / sr, 6) for p in peaks]
+
+
+def onset_offsets(observed: np.ndarray, sr: int,
+                  expected_onsets: list[float]) -> list[float]:
     """Signed offsets (observed - expected) in ms for each expected onset.
 
-    For each expected onset, the peak search is seeded from the expected
-    position so a missing/dropped transient surfaces as an error, not a
-    silent mis-association.
+    For each expected onset the peak search is seeded from the expected
+    position. Integrity rules (audit A): silence and missing/dropped
+    transients raise ``OnsetMeasurementError`` instead of measuring a bogus
+    offset, and two comparable transients sharing one window raise rather
+    than silently reporting whichever peak is stronger.
     """
     offsets = []
-    seed = int(round(sr * expected_onsets[0])) if expected_onsets else 0
     half = int(round(sr * SEARCH_WINDOW_SECONDS))
     for expected in expected_onsets:
         lo = max(0, int(round(sr * expected)) - half // 2)
         hi = min(len(observed), int(round(sr * expected)) + half // 2 + 1)
         if hi - lo < 8:
-            raise ValueError(f"no search space for expected onset {expected}")
-        peak_rel = int(np.argmax(np.abs(observed[lo:hi])))
-        peak_index = lo + peak_rel
+            raise OnsetMeasurementError(
+                f"no search space for expected onset {expected}")
+        window = np.abs(observed[lo:hi])
+        peak_amplitude = float(window.max())
+        if peak_amplitude <= SILENCE_FLOOR_ABS:
+            raise OnsetMeasurementError(
+                f"no measurable transient near {expected} s "
+                f"(window peak {peak_amplitude:.2e} at/below the "
+                f"{SILENCE_FLOOR_ABS} silence floor)")
+        peak_index = lo + int(np.argmax(window))
         observed_t = locate_onset(observed, sr, peak_index)
+        # Ambiguity gate (audit A): within the whole association window, any
+        # DISTINCT transient peak of comparable amplitude means this expected
+        # onset cannot be attributed honestly. Maxima within +/- SAME_BURST_SEC
+        # of the measured crossing belong to the same filtered event (its own
+        # attack/decay envelope and resampler pre/post-ring), not a second
+        # transient.
+        peaks, _ = find_peaks(
+            window,
+            height=max(0.2 * peak_amplitude, SILENCE_FLOOR_ABS),
+            distance=max(1, int(sr * 0.002)),
+        )
+        conflicting = []
+        for p in peaks:
+            t = (lo + int(p)) / sr
+            if abs(t - observed_t) <= SAME_BURST_SEC:
+                continue  # same event: attack/decay envelope, pre/post-ring
+            conflicting.append(t)
+        if conflicting:
+            raise OnsetMeasurementError(
+                f"ambiguous onset near {expected} s: comparable transient "
+                f"energy at {[round(t, 4) for t in conflicting]} besides "
+                f"{observed_t:.4f} s inside the association window")
         offsets.append((observed_t - expected) * 1000.0)
     return offsets
 
