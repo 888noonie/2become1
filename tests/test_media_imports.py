@@ -193,7 +193,7 @@ class TestHTTPImports:
         app = create_app(tmp_path / "web-data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
                 resp = await client.post(
                     "/api/imports/youtube", json={"url": "https://youtu.be/dQw4w9WgXcQ"}
                 )
@@ -214,7 +214,7 @@ class TestHTTPImports:
         app = create_app(tmp_path / "web-data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
                 with p.open("rb") as f:
                     resp = await client.post(
                         "/api/imports/upload", files={"file": ("t.wav", f, "audio/wav")}

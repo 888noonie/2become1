@@ -23,7 +23,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
-from .common import UserError
+from .common import UserError, CapabilityError
 from .contracts import (
     TERMINAL_JOB_STATES,
     JobKind,
@@ -408,8 +408,10 @@ class JobEngine:
         store: JobStore,
         *,
         error_formatter: Callable[[Exception], str] | None = None,
+        max_pending: int = 32,
     ):
         self.store = store
+        self._max_pending = max_pending
         self._error_formatter = error_formatter or str
         self._acquisition = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="2become1-acq"
@@ -445,15 +447,24 @@ class JobEngine:
         parent_job_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a queued job and dispatch it to the right executor."""
-        if self._closed:
-            raise UserError("job engine is closed")
-        job_id = self.store.create(
-            kind, request, executor=executor, parent_job_id=parent_job_id
-        )
-        token = CancellationToken()
         with self._lock:
+            if self._closed:
+                raise UserError("job engine is closed")
+            if len(self._tokens) >= self._max_pending:
+                raise CapabilityError("The job queue is full; wait for a job to finish", code="queue_full")
+            job_id = self.store.create(
+                kind, request, executor=executor, parent_job_id=parent_job_id
+            )
+            token = CancellationToken()
             self._tokens[job_id] = token
-        self._pool_for(kind).submit(self._run, job_id, run_fn, token)
+            try:
+                self._pool_for(kind).submit(self._run, job_id, run_fn, token)
+            except Exception:
+                self._tokens.pop(job_id, None)
+                self.store.transition(job_id, JobStatus.INTERRUPTED,
+                                      message="Job could not be scheduled")
+                raise
+
         return self.store.get(job_id)
 
     def _run(
@@ -553,10 +564,10 @@ class JobEngine:
           - cancel queued futures in both pools;
           - drain the active audio job (unsafe to interrupt) to completion.
         """
-        if self._closed:
-            return
-        self._closed = True
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             tokens = list(self._tokens.values())
             terminators = list(self._terminators.values())
         for token in tokens:

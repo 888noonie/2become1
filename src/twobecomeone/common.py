@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 
 # One ceiling for local uploads and network-acquired media. Keeping it here
 # prevents the downloader and managed-ingest layers from drifting apart.
@@ -67,3 +68,12 @@ class CapabilityError(UserError):
 def log(message: str) -> None:
     """Emit a diagnostic line to stderr."""
     print(message, file=sys.stderr)
+
+
+def run_audio_process(cmd, **kwargs):
+    """Bound ffmpeg/ffprobe work and return a user-facing timeout error."""
+    kwargs.setdefault("timeout", 600)
+    try:
+        return subprocess.run(cmd, **kwargs)
+    except subprocess.TimeoutExpired as exc:
+        raise UserError("Audio processing exceeded the 10-minute stage limit") from exc

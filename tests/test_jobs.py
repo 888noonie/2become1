@@ -494,7 +494,7 @@ class TestSSE:
         app = create_app(tmp_path / "web-data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
                 # Create a job directly via the service, then complete it.
                 service = app.state.studio
                 from twobecomeone.jobs import JobStore
@@ -525,7 +525,7 @@ class TestSSE:
         app = create_app(tmp_path / "web-data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as client:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
                 resp = await client.get("/api/jobs/nope/events")
                 assert resp.status_code == 400
         finally:

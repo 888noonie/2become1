@@ -423,7 +423,7 @@ class TestRenderBodyCompatibility:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 a = lead = None
                 for name, bpm in (("a.wav", 100.0), ("l.wav", 120.0)):
                     p = synth_track(tmp_path / name, bpm=bpm, root=261.63, duration=8.0)
@@ -473,7 +473,7 @@ class TestRenderBodyCompatibility:
         app = create_app(tmp_path / "data")
         transport = httpx.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+            async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
                 a = lead = None
                 for name, bpm in (("a.wav", 100.0), ("l.wav", 120.0)):
                     p = synth_track(tmp_path / name, bpm=bpm, root=261.63, duration=8.0)

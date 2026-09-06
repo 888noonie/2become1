@@ -1273,6 +1273,11 @@ class StudioService:
                     "The requested output ends during the crossfade; the "
                     "transition is truncated."
                 )
+        if options.pitch_mode == "match" and anchor['key']['mode'] != lead['key']['mode']:
+            warnings.append(
+                "The sources have different major/minor modes. Pitch matching "
+                "does not change mode or guarantee harmonic compatibility; audition the result."
+            )
         if abs(semitone_shift) >= 4:
             warnings.append(
                 f"A {semitone_shift:+d}-semitone shift is large; expect audible "

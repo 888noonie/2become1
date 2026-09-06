@@ -140,7 +140,7 @@ def cmd_web(args) -> int:
         ) from exc
 
     _require_allow_network(args.host, allow_network=args.allow_network)
-    app = create_app(args.data_dir, bind_host=args.host)
+    app = create_app(args.data_dir, bind_host=args.host, trusted_hosts=args.trusted_host)
     print(f"2become1 Studio → http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
@@ -285,6 +285,8 @@ def main(argv=None) -> int:
     w.add_argument("--host", default="127.0.0.1",
                    help=("bind address (default: local machine only; 0.0.0.0 exposes the "
                          "unauthenticated Studio to your network)"))
+    w.add_argument("--trusted-host", action="append", default=[],
+                   help="Additional exact host/IP allowed to access Studio; repeat as needed")
     w.add_argument("--allow-network", action="store_true",
                    help="permit binding to a non-loopback host (accepts the no-auth risk)")
     w.add_argument("--port", type=int, default=8765)

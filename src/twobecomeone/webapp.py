@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, m
 from . import __version__
 from .common import UserError
 from .contracts import TERMINAL_JOB_STATES
+from .http_safety import RequestSafetyMiddleware
 from .studio import RenderOptions, StudioService
 
 
@@ -155,7 +156,7 @@ class RenderResultPatchBody(BaseModel):
 SSE_HEARTBEAT_SEC = 15.0
 
 
-def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = None):
+def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = None, trusted_hosts: list[str] | None = None):
     service = StudioService(data_dir)
 
     @asynccontextmanager
@@ -172,6 +173,11 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
     )
     app.state.studio = service
     app.state.bind_host = bind_host or "127.0.0.1"
+    allowed_hosts = {"localhost", "127.0.0.1", "::1"}
+    if bind_host and bind_host not in {"0.0.0.0", "::"}:
+        allowed_hosts.add(bind_host.lower())
+    allowed_hosts.update(trusted_hosts or [])
+    app.add_middleware(RequestSafetyMiddleware, allowed_hosts=allowed_hosts)
 
     @app.exception_handler(UserError)
     async def user_error_handler(_request: Request, exc: UserError):
@@ -289,9 +295,14 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
     def import_upload(file: UploadFile = File(...)):
         if not file.filename:
             raise UserError("file name is required")
-        staging_key = service.stage_upload(file.file, file.filename)
         try:
-            return service.submit_upload_import(staging_key, original_name=file.filename)
+            staging_key = service.stage_upload(file.file, file.filename)
+            try:
+                return service.submit_upload_import(staging_key, original_name=file.filename)
+            except Exception:
+                # This route owns this newly staged upload until admission.
+                service._resolve_staging_key(staging_key).unlink(missing_ok=True)
+                raise
         finally:
             file.file.close()
 

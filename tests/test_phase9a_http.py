@@ -17,7 +17,7 @@ async def client(tmp_path):
     app = create_app(tmp_path / "data")
     transport = httpx.ASGITransport(app=app)
     try:
-        async with httpx.AsyncClient(transport=transport, base_url="http://studio.test") as c:
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
             # Create a project to act within.
             resp = await c.post("/api/projects", json={"name": "Action mix"})
             project_id = resp.json()["id"]
