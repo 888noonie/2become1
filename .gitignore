@@ -11,3 +11,4 @@ dist/
 .coverage
 node_modules/
 tests/browser/artifacts/
+benchmark_report.json
