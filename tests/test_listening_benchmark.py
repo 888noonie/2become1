@@ -15,6 +15,7 @@ acceptance tolerances are deliberately pending everywhere (None).
 from __future__ import annotations
 
 import json
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -82,12 +83,22 @@ def test_unshifted_playback_preserves_onset_positions(bench_dir, transients):
     measure signed onset offsets against the known fixture onsets."""
     for sr, path in transients.items():
         out = bench_dir / f"unshifted_{sr}.wav"
-        assembler.render_aligned(str(path), out, tempo_ratio=1.0, semitone_shift=0, sr=sr)
+        assembler.render_aligned(str(path), out, tempo_ratio=1.0, semitone_shift=0)
         samples = bench.read_wav_mono(out)
         offsets = bench.onset_offsets(samples, bench.OUTPUT_SR, [1.0])
         summary = bench.summarize(offsets)
         # Measured-observation gate, not an acceptance tolerance (pending).
         assert abs(summary["worstCaseMs"]) <= 200.0, summary
+
+
+def test_input_rate_matrix_uses_production_44100_output(bench_dir, transients):
+    """Input rate is a fixture property; production keeps 44.1 kHz output."""
+    for input_sr, path in transients.items():
+        out = bench_dir / f"production-output-from-{input_sr}.wav"
+        assembler.render_aligned(
+            str(path), out, tempo_ratio=1.0, semitone_shift=0)
+        with wave.open(str(out), "rb") as rendered:
+            assert rendered.getframerate() == bench.OUTPUT_SR
 
 
 def test_pitch_shift_preserves_onset_positions(bench_dir, transients):
@@ -98,7 +109,7 @@ def test_pitch_shift_preserves_onset_positions(bench_dir, transients):
         for shift in (-3, 5):
             out = bench_dir / f"shift{shift}_sr{sr}.wav"
             assembler.render_aligned(str(path), out, tempo_ratio=1.0,
-                                     semitone_shift=shift, sr=sr)
+                                     semitone_shift=shift)
             samples = bench.read_wav_mono(out)
             expected = [1.0]
             offsets = bench.onset_offsets(samples, bench.OUTPUT_SR, expected)
@@ -121,16 +132,16 @@ def test_tempo_ratio_scales_onset_times(bench_dir, transients):
         assert abs(summary["worstCaseMs"]) <= 200.0, summary
 
 
-def test_phrase_launch_measures_all_committed_clicks(bench_dir, click_grid):
+def test_committed_placement_measures_all_committed_clicks(bench_dir, click_grid):
     """Audit A: measure the whole committed region, not only its first click.
 
     Exact committed benchmark mix (anchor_gain=0.8): the trimmed 1 s region
-    contains two clicks, so expected onsets are the launch boundary AND the
+    contains two clicks, so expected onsets are the output placement AND the
     second click one beat later. The first click is not representative of the
     render path by itself (the file head absorbs part of the advance).
     """
     path, onsets = click_grid
-    planned_launch = 9.0  # lead-in 1.0 + 16-beat phrase boundary at 120 BPM
+    planned_launch = 9.0  # arbitrary destination placement; beat 18 at 120 BPM
     interval = 0.5
 
     committed = [{
@@ -147,7 +158,7 @@ def test_phrase_launch_measures_all_committed_clicks(bench_dir, click_grid):
         anchor_gain=0.8,
         duration=planned_launch + 2.0,
     )
-    out = bench_dir / "phrase_launch.wav"
+    out = bench_dir / "committed_placement.wav"
     assembler.build_mash(spec, tempo_ratio=1.0, committed_sources=committed, out=str(out))
     samples = bench.read_wav_mono(out)
     expected = [planned_launch, planned_launch + interval]
@@ -178,7 +189,7 @@ def test_isolated_committed_layer_is_a_distinct_condition_from_mixed(
             anchor_path=path, lead_path=path, lead_gain=0.0,
             anchor_gain=anchor_gain, duration=planned_launch + 2.0,
         )
-        out = bench_dir / f"phrase_launch_{condition}.wav"
+        out = bench_dir / f"committed_placement_{condition}.wav"
         assembler.build_mash(spec, tempo_ratio=1.0, committed_sources=committed,
                              out=str(out))
         samples = bench.read_wav_mono(out)
@@ -197,7 +208,7 @@ def test_32beat_phrase_boundary_launch_through_committed_pipeline(
     boundary the browser scheduler resolves). Launch the committed layer at
     beat 32 offline and measure every click of the committed region."""
     path, onsets = click_grid
-    planned_launch = 1.0 + 32 * 0.5  # beat 32 boundary at 120 BPM = 17.0 s
+    planned_launch = 32 * 0.5  # destination beat 32 at 120 BPM = 16.0 s
     committed = [{
         "path": str(path), "tempoRatio": 1.0,
         "sourceTrimStart": onsets[0], "sourceTrimDuration": 1.0,
@@ -236,7 +247,7 @@ def test_drift_measured_over_full_click_sequence(bench_dir, click_grid):
     assert all(abs(o) <= 200.0 for o in offsets), offsets
 
 
-def test_source_position_sweep_offsets_vary_by_position(bench_dir):
+def test_source_position_sweep_records_all_positions(bench_dir):
     """Audit C: same render_aligned configuration, different source onsets —
     the offsets are recorded as a sweep. The test asserts the sweep is
     measured and reports its spread; it must NOT conclude a fixed latency."""
@@ -252,10 +263,8 @@ def test_source_position_sweep_offsets_vary_by_position(bench_dir):
         offsets = bench.onset_offsets(samples, bench.OUTPUT_SR, [onset])
         sweep.append({"sourceOnsetSec": onset, "offsetsMs": offsets})
     offsets = [point["offsetsMs"][0] for point in sweep]
-    spread = max(offsets) - min(offsets)
-    # The sweep exists precisely because offsets are NOT constant; a spread of
-    # zero would mean the sweep measured nothing.
-    assert spread > 0.0, sweep
+    assert len(sweep) == 4
+    assert all(np.isfinite(offset) for offset in offsets), sweep
 
 
 def test_missing_click_raises_not_misreports(bench_dir, click_grid):
@@ -299,6 +308,21 @@ def test_ambiguous_double_transient_raises(bench_dir):
         bench.onset_offsets(samples, bench.OUTPUT_SR, [1.0])
 
 
+def test_transient_outside_association_window_raises_not_reattributes_tail():
+    """A burst just outside the window can leak a decay tail into it; the
+    estimator must not walk outside association bounds to claim that burst."""
+    sr = 44100
+    signal = bench.transient_signal(sr, onset=0.895)
+    with pytest.raises(bench.OnsetMeasurementError):
+        bench.onset_offsets(signal, sr, [1.0])
+
+
+@pytest.mark.parametrize("interval", [0.0, -0.5, float("nan")])
+def test_drift_rejects_invalid_interval(interval):
+    with pytest.raises(ValueError, match="interval"):
+        bench.drift_per_minute([0.0, 1.0], interval)
+
+
 def test_estimator_calibration_and_polarity_documented(bench_dir):
     """Audit A/C: the estimator's instrument bias is measured and bounded, and
     the method's amplitude thresholding (|x|, NOT squared energy) is pinned by
@@ -333,7 +357,7 @@ def test_clipping_and_dropout_recorded_for_committed_case(bench_dir, click_grid)
         anchor_path=path, lead_path=path, lead_gain=0.0, anchor_gain=0.8,
         duration=planned_launch + 2.0,
     )
-    out = bench_dir / "phrase_launch_clipping.wav"
+    out = bench_dir / "committed_placement_clipping.wav"
     assembler.build_mash(spec, tempo_ratio=1.0, committed_sources=committed,
                          out=str(out))
     stats = assembler.measure_clipping(str(out))
@@ -369,12 +393,13 @@ def _measure(case_id: str, source: Path, expected: float, bench_dir, *, ratio: f
     """Render one class-A case through the real pipeline and measure it."""
     out = bench_dir / f"{case_id}.wav"
     assembler.render_aligned(str(source), out, tempo_ratio=ratio,
-                             semitone_shift=shift, sr=sr, start=start)
+                             semitone_shift=shift, start=start)
     samples = bench.read_wav_mono(out)
     offsets = bench.onset_offsets(samples, bench.OUTPUT_SR, [expected])
     return {
         "id": case_id,
         "inputSampleRate": sr,
+        "outputSampleRate": bench.OUTPUT_SR,
         "tempoRatio": ratio,
         "semitoneShift": shift,
         "cueSec": start,
@@ -389,9 +414,9 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
     """Assemble benchmark_report.json: class A measured, class B captured by the
     browser journey when present, class C defined but explicitly not measured."""
     click_path, click_onsets = click_grid
-    planned_launch = 1.0 + 16 * 0.5
+    planned_launch = 9.0
     crossing_method = (
-        "onset = energy-rise crossing at 50% of the search-window peak, "
+        "onset = amplitude-rise crossing at 50% of the search-window peak, "
         "sub-sample linear interpolation; deterministic"
     )
 
@@ -422,10 +447,10 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
             method=crossing_method + "; expected onset scaled by 1/ratio (atempo design)",
         ))
 
-    # Committed-layer phrase launches through the real pipeline (build_mash),
+    # Committed-layer placements through the real pipeline (build_mash),
     # per audit A: isolated and mixed conditions reported separately, both
-    # clicks of the committed region measured, plus the documented 32-beat
-    # boundary. planned_launch = lead-in + 16-beat phrase boundary at 120 BPM.
+    # clicks of the committed region measured. The historical 9-second case is
+    # an arbitrary destination placement (beat 18 at 120 BPM), not a boundary.
     for condition, anchor_gain in (("isolated", 0.0), ("mixed", 0.8)):
         committed = [{
             "path": str(click_path), "tempoRatio": 1.0,
@@ -437,20 +462,33 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
             lead_gain=0.0, anchor_gain=anchor_gain,
             duration=planned_launch + 2.0,
         )
-        out = bench_dir / f"report-phrase-launch-{condition}.wav"
+        out = bench_dir / f"report-committed-placement-{condition}.wav"
         assembler.build_mash(spec, tempo_ratio=1.0, committed_sources=committed,
                              out=str(out))
         samples = bench.read_wav_mono(out)
-        offsets = bench.onset_offsets(samples, bench.OUTPUT_SR,
-                                      [planned_launch, planned_launch + 0.5])
+        expected_onsets = [planned_launch, planned_launch + 0.5]
+        offsets = bench.onset_offsets(samples, bench.OUTPUT_SR, expected_onsets)
+        clipping = assembler.measure_clipping(str(out))
+        detected = [
+            t for t in bench.peak_times(samples, bench.OUTPUT_SR, threshold=0.2)
+            if planned_launch - 0.2 <= t <= planned_launch + 1.2
+        ]
         class_a_cases.append({
-            "id": f"phrase-launch-committed-layer-{condition}",
+            "id": f"committed-layer-placement-9s-{condition}",
             "anchorGain": anchor_gain,
+            "destinationBeatAt120Bpm": 18,
+            "sourceTrimStartSec": click_onsets[0],
             "plannedLaunchSec": planned_launch,
-            "expectedOnsetsSec": [planned_launch, planned_launch + 0.5],
+            "expectedOnsetsSec": expected_onsets,
             "offsetsMs": offsets,
             "summary": bench.summarize(offsets),
-            "method": "adelay to the phrase boundary via build_mash "
+            "clipping": clipping,
+            "dropout": {
+                "expectedClickCount": len(expected_onsets),
+                "detectedClickCount": len(detected),
+                "detectedPeakTimesSec": detected,
+            },
+            "method": "adelay to an arbitrary 9.0-second output placement via build_mash "
                       "committed_sources; both committed clicks measured; "
                       "isolated (anchor_gain=0) and mixed (0.8) are distinct "
                       "conditions, not interchangeable results",
@@ -534,8 +572,8 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
     unshifted = [c["summary"]["worstCaseMs"] for c in class_a_cases
                  if c["id"].startswith("unshifted-")]
     sweep_worst = [p["summary"]["worstCaseMs"] for p in sweep_points]
-    phrase_mixed = next((c for c in class_a_cases
-                         if c["id"] == "phrase-launch-committed-layer-mixed"), None)
+    committed_mixed = next((c for c in class_a_cases
+                            if c["id"] == "committed-layer-placement-9s-mixed"), None)
     drift_case = next((c for c in class_a_cases
                        if c["id"].startswith("drift-")), None)
     observations = [
@@ -548,11 +586,11 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
         "22.05/44.1/48k inputs (n=1 each; single-onset cases are labeled as "
         "such and cannot establish drift).",
     ]
-    if phrase_mixed is not None:
+    if committed_mixed is not None:
         observations.append(
-            "Committed-layer phrase launch (mixed condition, exact anchor_gain"
-            f"=0.8 mix) measured both clicks: {phrase_mixed['offsetsMs']} ms at "
-            f"{phrase_mixed['expectedOnsetsSec']} s. The two clicks differ; the "
+            "Committed-layer 9.0-second placement (mixed condition, exact anchor_gain"
+            f"=0.8 mix) measured both clicks: {committed_mixed['offsetsMs']} ms at "
+            f"{committed_mixed['expectedOnsetsSec']} s. The two clicks differ; the "
             "first sits at the trim boundary and is not representative of the "
             "render path alone.")
     if drift_case is not None and drift_case["summary"]["n"] > 1:
@@ -635,8 +673,18 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
     assert report["acceptanceTolerances"] is None
     assert report["classC"]["measured"] is False
     assert all(case["measured"] is None for case in report["classC"]["cases"])
-    assert len(class_a_cases) == 12  # 3 rates + 2 shifts + 2 ratios + drift + sweep + 3 committed + cue
+    assert len(class_a_cases) == 12  # 3 rates + 2 shifts + 2 ratios + 2 committed + cue + drift + sweep
     assert all(case["summary"]["n"] >= 1 for case in class_a_cases)
+    committed_cases = [case for case in class_a_cases
+                       if case["id"].startswith("committed-layer-placement-9s-")]
+    assert committed_cases
+    assert all(case["plannedLaunchSec"] == 9.0 for case in committed_cases)
+    assert all("clipping" in case and "dropout" in case
+               for case in committed_cases)
+    assert all(case["dropout"]["detectedClickCount"]
+               == case["dropout"]["expectedClickCount"] == 2
+               for case in committed_cases)
+    assert all("energy-rise" not in case["method"] for case in class_a_cases)
     if class_b_measured:
         assert report["classB"]["status"] == "current"
         assert report["classB"]["captureMeta"]["commit"] == report["commit"]

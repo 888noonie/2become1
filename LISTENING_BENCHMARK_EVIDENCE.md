@@ -214,3 +214,12 @@ Correction commits are local only (`0725283`, `e306376`, `54db552` on
 `benchmark-listening-timing`). Nothing pushed, merged, or accepted; awaiting
 Richard's authorization and Astra's re-audit. Base for the re-audit diff:
 `59ffc52..54db552`.
+
+## Re-audit continuation
+
+The correction addendum above ends at its then-current implementation commit.
+The actual candidate subsequently included documentation commit `65ce92e` and
+has now been re-audited over `59ffc52..65ce92e`. Current findings, Astra's
+uncommitted cheap fixes, verification, and the remaining rhythmic-matrix gap
+are recorded in `LISTENING_BENCHMARK_REAUDIT.md`. This section supersedes the
+stale re-audit range above without rewriting the historical addendum.

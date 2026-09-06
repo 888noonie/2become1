@@ -31,6 +31,7 @@ import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
+import { release as osRelease } from 'node:os';
 import { resolveChromium } from './chromium.js';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)), '..');
@@ -88,8 +89,9 @@ window.__runScenario = async function(scenario) {
   clock.now = scenario.clockStart;
   const decodeMs = { value: null };
 
-  // Production GhostScheduler with real nodes. source.start is captured, not
-  // forwarded: no rendering is started and nothing reaches any device.
+  // Production GhostScheduler with real nodes. source.start is captured and
+  // forwarded to the OfflineAudioContext; rendering is never started and
+  // nothing reaches a device.
   const starts = [];
   const realCreateBufferSource = realCtx.createBufferSource.bind(realCtx);
   ctx.createBufferSource = () => {
@@ -132,7 +134,6 @@ window.__runScenario = async function(scenario) {
     }),
     onScheduled: (proposalId, receipt) => scheduledReceipts.push(receipt),
     onStateChange: (proposalId, state) => states.push(state),
-    minLeadSeconds: scenario.minLeadSeconds ?? 0.25,
   });
 
   const t0 = performance.now();
@@ -160,6 +161,11 @@ window.__runScenario = async function(scenario) {
 window.__runRealClockObservation = async function(scenario) {
   const ctx = new AudioContext({ sampleRate: 44100 });
   try {
+    const clockBeforeWait = ctx.currentTime;
+    await ctx.resume();
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    const clockAfterWait = ctx.currentTime;
+    const ctxStateAtSchedule = ctx.state;
     const starts = [];
     const states = [];
     const scheduledReceipts = [];
@@ -178,7 +184,6 @@ window.__runRealClockObservation = async function(scenario) {
       }),
       onScheduled: (id, receipt) => scheduledReceipts.push(receipt),
       onStateChange: (id, state) => states.push(state),
-      minLeadSeconds: 0.25,
     });
     const result = await scheduler.schedule(
       { id: scenario.id, actor: { type: 'human', id: 'bench' },
@@ -193,6 +198,9 @@ window.__runRealClockObservation = async function(scenario) {
       capturedStarts: null, // start forwarding not needed for this observation
       states,
       ctxCurrentTimeAtReturn: ctx.currentTime,
+      clockBeforeWait,
+      clockAfterWait,
+      ctxStateAtSchedule,
       ctxSampleRate: ctx.sampleRate,
       ctxState: ctx.state,
     };
@@ -303,7 +311,11 @@ function assertScenario(scenario, observed) {
     failures.push(`scheduler.result.ok=${observed.schedulerResult?.ok} code=${observed.schedulerResult?.code}`);
   }
   const receipt = observed.receipts?.[0];
+  const returnedReceipt = observed.schedulerResult?.receipt;
   if (!receipt) failures.push('no production onScheduled receipt captured');
+  if (!returnedReceipt || JSON.stringify(returnedReceipt) !== JSON.stringify(receipt)) {
+    failures.push('scheduler return receipt and onScheduled receipt differ');
+  }
   if (observed.capturedStarts?.length !== exp.startCount) {
     failures.push(`captured source.start count=${observed.capturedStarts?.length} expected ${exp.startCount}`);
   }
@@ -354,7 +366,7 @@ async function main() {
         || probe.derive !== 'function') {
       console.error('page script did not install; probe =', probe);
       console.error('page errors =', pageErrors);
-      process.exit(1);
+      throw new Error('page script did not install');
     }
 
     const assetB64 = toneWavBytes().toString('base64');
@@ -396,6 +408,13 @@ async function main() {
     const receipt = obs.receipts?.[0];
     const obsFailures = [];
     if (obs.schedulerResult?.ok !== true) obsFailures.push('scheduler not ok');
+    if (obs.ctxStateAtSchedule !== 'running') {
+      obsFailures.push(`AudioContext state at schedule=${obs.ctxStateAtSchedule}`);
+    }
+    if (!(obs.clockAfterWait > obs.clockBeforeWait)) {
+      obsFailures.push(
+        `AudioContext clock did not advance (${obs.clockBeforeWait} -> ${obs.clockAfterWait})`);
+    }
     if (!receipt) obsFailures.push('no receipt');
     else {
       if (!(receipt.launchAudioTime > receipt.requestedAt)) obsFailures.push('launch not after request');
@@ -418,6 +437,9 @@ async function main() {
       states: obs.states,
       ctxState: obs.ctxState,
       ctxCurrentTimeAtReturn: obs.ctxCurrentTimeAtReturn,
+      clockBeforeWait: obs.clockBeforeWait,
+      clockAfterWait: obs.clockAfterWait,
+      ctxStateAtSchedule: obs.ctxStateAtSchedule,
     });
     console.log(`${obsFailures.length ? 'FAIL' : 'PASS'}  ${REAL_CLOCK_SCENARIO.id}`);
     if (obsFailures.length) assertionFailures += 1;
@@ -436,6 +458,19 @@ async function main() {
 
   const commit = execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim();
   const dirty = execSync('git status --porcelain', { cwd: ROOT }).toString().trim().length > 0;
+  // Unrelated workspace files (for example .vscode/) do not invalidate a
+  // capture. Any tracked or untracked change in the benchmark or production
+  // modules it executes does, so commit + this scoped-clean gate identifies
+  // the executable sources without requiring a globally clean worktree.
+  const sourceStatus = execSync(
+    'git status --porcelain --untracked-files=all -- '
+      + 'tests/browser/timing_bench.js '
+      + 'src/twobecomeone/studio_static/js/actions/errors.js '
+      + 'src/twobecomeone/studio_static/js/transport/normalize.js '
+      + 'src/twobecomeone/studio_static/js/transport/derive.js '
+      + 'src/twobecomeone/studio_static/js/runtime/ghost-scheduler.js',
+    { cwd: ROOT },
+  ).toString().trim();
   const report = {
     schema: '2become1.listening-timing/1',
     evidenceClass: 'B_browser_scheduling',
@@ -443,8 +478,10 @@ async function main() {
     capturedAt: new Date().toISOString(),
     commit,
     repoDirtyAtCapture: dirty,
+    benchmarkSourcesDirtyAtCapture: sourceStatus.length > 0,
+    sourceIdentityPolicy: 'commit match + clean benchmark source scope',
     browser: { name: 'chromium', version: browser.version?.() ?? 'unknown', executablePath },
-    os: { platform: process.platform, release: process.release?.name ?? null, node: process.version },
+    os: { platform: process.platform, release: osRelease(), node: process.version },
     contextKind: 'OfflineAudioContext (nodes real; never rendered to device) + one real AudioContext observation',
     clockPolicy: 'per-scenario clockMode field; synthetic clocks are labeled injected',
     schedulerCoverage: 'production runtime/ghost-scheduler.js GhostScheduler; '

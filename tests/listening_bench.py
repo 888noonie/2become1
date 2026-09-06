@@ -31,8 +31,8 @@ ONSET_RISE_FRAC = 0.5  # fraction of transient peak used as the crossing level
 # transient to measure; a comparable distinct peak inside the association
 # window means the expected onset cannot be attributed to a single transient.
 SILENCE_FLOOR_ABS = 1e-3
-# Maxima this close AFTER the measured crossing belong to the same burst's
-# envelope (attack + decay), not a second transient.
+# Maxima this close on either side of the measured crossing belong to the same
+# burst's envelope or filter pre/post-ring, not a second transient.
 SAME_BURST_SEC = 0.015
 
 
@@ -202,6 +202,16 @@ def onset_offsets(observed: np.ndarray, sr: int,
                 f"{SILENCE_FLOOR_ABS} silence floor)")
         peak_index = lo + int(np.argmax(window))
         observed_t = locate_onset(observed, sr, peak_index)
+        # locate_onset walks backward from a local peak to its rise crossing.
+        # A burst just outside this association window can leak a decay tail
+        # into it; never reattribute that outside event to this expectation.
+        association_lo = lo / sr
+        association_hi = (hi - 1) / sr
+        if not association_lo <= observed_t <= association_hi:
+            raise OnsetMeasurementError(
+                f"onset near {expected} s resolves outside its association "
+                f"window ({observed_t:.6f} not in "
+                f"[{association_lo:.6f}, {association_hi:.6f}])")
         # Ambiguity gate (audit A): within the whole association window, any
         # DISTINCT transient peak of comparable amplitude means this expected
         # onset cannot be attributed honestly. Maxima within +/- SAME_BURST_SEC
@@ -252,6 +262,8 @@ def drift_per_minute(offsets_ms: list[float], interval_s: float) -> float | None
     ``interval_s`` is the spacing between consecutive onsets. Returns None
     when there are fewer than two points.
     """
+    if not math.isfinite(interval_s) or interval_s <= 0:
+        raise ValueError("interval_s must be finite and greater than zero")
     if len(offsets_ms) < 2:
         return None
     x = np.arange(len(offsets_ms), dtype=np.float64) * interval_s

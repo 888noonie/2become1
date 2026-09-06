@@ -116,13 +116,119 @@ def test_current_capture_embeds_cases_and_preserves_provenance(tmp_path, commit)
     record = ing.load_and_validate_receipts(path, current_commit_sha=commit)
     assert record["captured"] is True
     assert record["status"] == "current"
-    assert len(record["embeddedCases"]) == 1
+    assert len(record["embeddedCases"]) == len(ing.EXPECTED_SCENARIO_IDS)
     assert record["embeddedCases"][0]["receipt"]["resolvedBeat"] == 32
     meta = record["captureMeta"]
     assert meta["capturedAt"] == "2026-09-06T00:00:00Z"
     assert meta["commit"] == commit
     assert meta["repoDirtyAtCapture"] is False
     assert record["browser"]["name"] == "chromium"
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("selfTestWrongExpectationDetected", False),
+    ("measured", False),
+    ("assertionFailureCount", 1),
+    ("benchmarkSourcesDirtyAtCapture", True),
+])
+def test_failed_capture_level_truth_gate_is_invalid(
+        tmp_path, commit, field, value):
+    payload = _valid(commit)
+    payload[field] = value
+    path = _write_capture(tmp_path / "receipts.json", payload, commit)
+    record = ing.load_and_validate_receipts(path, current_commit_sha=commit)
+    assert record["status"] == "invalid"
+    assert any(field in problem for problem in record["problems"])
+
+
+def test_missing_or_unexpected_scenario_set_is_invalid(tmp_path, commit):
+    payload = _valid(commit)
+    payload["cases"].pop()
+    payload["cases"][0]["scenario"] = "unexpected-scenario"
+    path = _write_capture(tmp_path / "receipts.json", payload, commit)
+    record = ing.load_and_validate_receipts(path, current_commit_sha=commit)
+    assert record["status"] == "invalid"
+    assert any("scenario set" in problem for problem in record["problems"])
+
+
+def test_nonempty_case_assertion_failures_cannot_hide_behind_ok(
+        tmp_path, commit):
+    payload = _valid(commit)
+    payload["cases"][0]["assertionFailures"] = ["hidden failure"]
+    path = _write_capture(tmp_path / "receipts.json", payload, commit)
+    record = ing.load_and_validate_receipts(path, current_commit_sha=commit)
+    assert record["status"] == "invalid"
+    assert any("assertionFailures" in problem for problem in record["problems"])
+
+
+def test_nonfinite_nonreceipt_number_is_invalid(tmp_path, commit):
+    payload = _valid(commit)
+    payload["cases"][0]["decodeMs"] = float("nan")
+    path = _write_capture(tmp_path / "receipts.json", payload, commit)
+    record = ing.load_and_validate_receipts(path, current_commit_sha=commit)
+    assert record["status"] == "invalid"
+    assert any("non-finite number" in problem for problem in record["problems"])
+
+
+def test_receipt_must_belong_to_its_scenario(tmp_path, commit):
+    payload = _valid(commit)
+    payload["cases"][0]["receipt"]["proposalId"] = "another-proposal"
+    path = _write_capture(tmp_path / "receipts.json", payload, commit)
+    record = ing.load_and_validate_receipts(path, current_commit_sha=commit)
+    assert record["status"] == "invalid"
+    assert any("proposalId" in problem for problem in record["problems"])
+
+
+def test_case_requires_clock_sample_rate_and_state_shape(tmp_path, commit):
+    payload = _valid(commit)
+    del payload["cases"][0]["sampleRate"]
+    payload["cases"][1]["states"] = "started"
+    path = _write_capture(tmp_path / "receipts.json", payload, commit)
+    record = ing.load_and_validate_receipts(path, current_commit_sha=commit)
+    assert record["status"] == "invalid"
+    assert any("sampleRate" in problem for problem in record["problems"])
+    assert any("states" in problem for problem in record["problems"])
+
+
+def test_controlled_start_must_match_receipt(tmp_path, commit):
+    payload = _valid(commit)
+    payload["cases"][0]["capturedStarts"] = [99.0]
+    path = _write_capture(tmp_path / "receipts.json", payload, commit)
+    record = ing.load_and_validate_receipts(path, current_commit_sha=commit)
+    assert record["status"] == "invalid"
+    assert any("capturedStarts" in problem for problem in record["problems"])
+
+
+def test_capture_metadata_requires_typed_nonempty_provenance(tmp_path, commit):
+    payload = _valid(commit)
+    payload.update({
+        "capturedAt": None,
+        "repoDirtyAtCapture": "unknown",
+        "browser": [],
+        "os": "linux",
+        "contextKind": None,
+        "clockPolicy": "",
+        "schedulerCoverage": None,
+        "selfTestWrongExpectationDetected": 1,
+        "measured": 1,
+        "assertionFailureCount": False,
+    })
+    path = _write_capture(tmp_path / "receipts.json", payload, commit)
+    record = ing.load_and_validate_receipts(path, current_commit_sha=commit)
+    assert record["status"] == "invalid"
+    assert record["captured"] is False
+    assert any("metadata" in problem or "truth gate" in problem
+               for problem in record["problems"])
+
+
+def test_unhashable_scenario_id_is_invalid_not_an_exception(tmp_path, commit):
+    payload = _valid(commit)
+    payload["cases"][0]["scenario"] = ["not", "an", "id"]
+    path = _write_capture(tmp_path / "receipts.json", payload, commit)
+    record = ing.load_and_validate_receipts(path, current_commit_sha=commit)
+    assert record["status"] == "invalid"
+    assert record["captured"] is False
+    assert any("case id" in problem for problem in record["problems"])
 
 
 def test_real_capture_ingests_or_reports_its_true_state():
