@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2become1 — FUN · Stem Crate (interaction prototype)</title>
+<style>
+  :root{
+    --bg:#070a14; --card:rgba(255,255,255,0.06); --line:rgba(255,255,255,0.12);
+    --accent:#8a5cff; --accent2:#2ee5a8; --accent3:#ff3b9a; --accent4:#3bdcff;
+    --warn:#ffb020; --danger:#ff5c5c; --text:#eef2ff; --muted:#9aa3c0;
+  }
+  *{box-sizing:border-box;font-family:ui-sans,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+  html{color-scheme:dark}
+  body{margin:0;color:var(--text);background:radial-gradient(1000px 600px at 15% -10%,#2a1a6a 0%,transparent 60%),radial-gradient(900px 500px at 95% 0%,#0e4a5a 0%,transparent 60%),linear-gradient(180deg,#070a14,#0b0e1e);min-height:100vh}
+  :focus-visible{outline:2px solid var(--accent4);outline-offset:2px;border-radius:6px}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+  header{max-width:1280px;margin:0 auto;padding:16px 20px 6px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+  h1{margin:0;font-size:17px;letter-spacing:.1em;text-transform:uppercase}
+  h1 i{color:var(--accent);font-style:normal}
+  .pill{font-size:11px;padding:6px 10px;border-radius:999px;background:var(--card);border:1px solid var(--line);color:var(--muted)}
+  .wrap{max-width:1280px;margin:0 auto;padding:10px 20px 32px}
+
+  /* mode toggle (DJ / FUN) */
+  .deck-mode{display:flex;gap:6px;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:4px}
+  .deck-mode__button{min-height:44px;padding:0 18px;border-radius:999px;border:0;background:transparent;color:var(--muted);font-weight:800;font-size:13px;cursor:pointer}
+  .deck-mode__button.is-active{background:linear-gradient(180deg,#8a5cff,#6a3bff);color:#fff}
+  .deck-mode__button:disabled{opacity:.45;cursor:not-allowed}
+
+  /* visible status bar */
+  .status{max-width:1280px;margin:8px auto 0;padding:8px 14px;border-radius:10px;font-size:13px;min-height:20px;border:1px solid var(--line);background:var(--card)}
+  .status.is-error{color:var(--danger);border-color:rgba(255,92,92,0.5)}
+  .status.is-ok{color:var(--accent2);border-color:rgba(46,229,168,0.4)}
+
+  /* master strip */
+  .master{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border:1px solid var(--line);border-radius:16px;background:var(--card);padding:10px 14px;margin:12px 0}
+  .master .label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .master .value{font-size:15px;font-weight:800}
+  .master .cell{display:flex;flex-direction:column;gap:2px;min-width:64px}
+  .master .grow{flex:1;min-width:120px}
+  .master input[type=range]{width:100%;accent-color:var(--accent)}
+  .master button{min-height:44px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,0.06);color:var(--text);font-weight:800;font-size:12px;cursor:pointer}
+  .master button:disabled{opacity:.45;cursor:not-allowed}
+  .master button.rec{color:var(--accent3);border-color:rgba(255,59,154,0.5)}
+
+  /* four role slots */
+  .slots{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0}
+  @media(max-width:820px){.slots{grid-template-columns:repeat(2,1fr)}}
+  .slot{position:relative;min-height:210px;border-radius:18px;padding:12px;display:flex;flex-direction:column;gap:8px;background:linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02));border:1px solid var(--line);transition:.18s}
+  .slot[data-state="empty"]{border-style:dashed}
+  .slot[data-state="compatible"]{border-color:rgba(46,229,168,0.6);box-shadow:0 8px 30px rgba(46,229,168,0.18)}
+  .slot[data-state="transform"]{border-color:rgba(255,176,32,0.6);box-shadow:0 8px 30px rgba(255,176,32,0.16)}
+  .slot[data-state="error"]{border-color:rgba(255,92,92,0.7)}
+  .slot[data-state="unavailable"]{opacity:.55;border-color:rgba(255,92,92,0.5)}
+  .slot.is-muted{opacity:.45;filter:grayscale(.6)}
+  .slot.is-solo{box-shadow:0 0 0 2px rgba(46,229,168,0.7)}
+  .slot.reject-flash{border-color:var(--danger);box-shadow:0 0 0 2px rgba(255,92,92,0.6)}
+  .slot__role{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+  .slot__orb{width:64px;height:64px;border-radius:50%;margin:2px auto;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:900;background:var(--card);border:1px solid var(--line)}
+  .slot__orb.dim{opacity:.35}
+  .slot__title{font-size:13px;font-weight:800;text-align:center;min-height:18px}
+  .slot__meta{font-size:11px;color:var(--muted);text-align:center;min-height:15px}
+  .slot__compat{font-size:11px;line-height:1.35;color:var(--muted);min-height:30px}
+  .slot__compat b{color:var(--text)}
+  .slot__controls{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-top:auto}
+  .slot__controls button{min-height:44px;min-width:44px;padding:0 10px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,0.06);color:var(--text);font-weight:800;font-size:12px;cursor:pointer}
+  .slot__controls button.is-active{background:var(--accent);border-color:var(--accent);color:#fff}
+  .slot__controls button.mute.is-active{background:var(--accent3);border-color:var(--accent3)}
+  .slot__controls button.solo.is-active{background:var(--accent2);border-color:var(--accent2);color:#04120c}
+  .slot__controls button.remove{color:var(--danger);border-color:rgba(255,92,92,0.5)}
+  .slot__bars{display:flex;gap:4px;justify-content:center}
+  .slot__bars button{min-height:36px;min-width:36px;padding:0;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--muted);font-weight:800;font-size:12px;cursor:pointer}
+  .slot__bars button.is-active{background:var(--accent4);border-color:var(--accent4);color:#04121a}
+  .slot__gain{width:100%;accent-color:var(--accent2)}
+
+  /* crate */
+  .crate{border:1px solid var(--line);border-radius:18px;background:var(--card);padding:14px;margin:14px 0}
+  .crate__head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .crate__head h2{margin:0;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .crate__search{flex:1;min-width:180px}
+  .crate__search input{width:100%;min-height:44px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:rgba(0,0,0,0.25);color:var(--text);font-size:14px}
+  .crate__filters{display:flex;gap:6px;flex-wrap:wrap}
+  .crate__filters button{min-height:44px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,0.06);color:var(--muted);font-weight:800;font-size:12px;cursor:pointer}
+  .crate__filters button.is-active{background:var(--accent);border-color:var(--accent);color:#fff}
+  .crate__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+  .card{border:1px solid var(--line);border-radius:14px;padding:12px;background:rgba(0,0,0,0.2);cursor:grab;transition:.15s}
+  .card:active{cursor:grabbing}
+  .card.dragging{opacity:.5}
+  .card.reference{opacity:.6;cursor:default}
+  .card__top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+  .card__stem{font-size:12px;font-weight:800}
+  .card__method{font-size:10px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .card__method.demucs{color:var(--accent4);border-color:rgba(59,220,255,0.4)}
+  .card__method.ffmpeg{color:var(--warn);border-color:rgba(255,176,32,0.4)}
+  .card__track{font-size:12px;color:var(--muted);margin-bottom:4px}
+  .card__facts{font-size:11px;color:var(--muted);line-height:1.4}
+  .card__facts b{color:var(--text)}
+  .card__bleed{font-size:10px;color:var(--warn);margin-top:6px}
+  .card__hash{font-size:10px;color:var(--muted);font-family:ui-monospace,monospace;margin-top:4px}
+  .card__note{font-size:10px;color:var(--warn);margin-top:6px}
+  .card__actions{display:flex;gap:6px;margin-top:8px}
+  .card__actions button{flex:1;min-height:44px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,0.06);color:var(--text);font-weight:800;font-size:12px;cursor:pointer}
+  .card__actions button.place{background:var(--accent);border-color:var(--accent);color:#fff}
+  .card__actions button:disabled{opacity:.4;cursor:not-allowed;background:rgba(255,255,255,0.04);color:var(--muted);border-color:var(--line)}
+
+  /* fever room */
+  .fever{border:1px solid var(--line);border-radius:18px;background:var(--card);padding:14px;margin:14px 0}
+  .fever h2{margin:0 0 8px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .fever__trophies{display:flex;gap:10px;flex-wrap:wrap}
+  .trophy{min-width:150px;flex:1;border:1px solid var(--line);border-radius:12px;padding:10px;text-align:center}
+  .trophy.locked{opacity:.5}
+  .trophy.unlocked{border-color:rgba(46,229,168,0.6);box-shadow:0 6px 20px rgba(46,229,168,0.2)}
+  .trophy__icon{font-size:24px}
+  .trophy__name{font-size:12px;font-weight:800;margin:4px 0}
+  .trophy__recipe{font-size:10px;color:var(--muted);line-height:1.35}
+
+  /* bloom preview */
+  .bloom{border:1px solid var(--line);border-radius:18px;background:var(--card);padding:14px;margin:14px 0;display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center}
+  @media(max-width:640px){.bloom{grid-template-columns:1fr}}
+  .bloom__pad{position:relative;width:200px;height:200px;margin:0 auto;border-radius:50%;background:radial-gradient(circle at 50% 50%,rgba(138,92,255,0.25),transparent 70%);border:1px solid var(--line);touch-action:none;cursor:crosshair}
+  .bloom__pad:focus-visible{outline:2px solid var(--accent4);outline-offset:2px}
+  .bloom__dot{position:absolute;width:22px;height:22px;border-radius:50%;background:var(--accent4);border:2px solid #fff;transform:translate(-50%,-50%);left:50%;top:50%;pointer-events:none}
+  .bloom__axis{position:absolute;font-size:9px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+  .bloom__axis.x{left:50%;bottom:4px;transform:translateX(-50%)}
+  .bloom__axis.y{top:50%;left:4px;transform:translateY(-50%) rotate(-90deg)}
+  .bloom__readout{font-size:12px;color:var(--muted);line-height:1.5}
+  .bloom__readout b{color:var(--text)}
+  .bloom__ranges{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+  .bloom__ranges label{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:8px}
+  .bloom__ranges input[type=range]{flex:1;accent-color:var(--accent4)}
+  .bloom__ranges output{min-width:44px;text-align:right;font-weight:800;font-size:12px}
+  .bloom__controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .bloom__controls button{min-height:44px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,0.06);color:var(--text);font-weight:800;font-size:12px;cursor:pointer}
+  .bloom__controls button.release{background:var(--accent2);border-color:var(--accent2);color:#04120c}
+
+  .truth{font-size:11px;color:var(--muted);line-height:1.5;border:1px dashed var(--line);border-radius:12px;padding:10px 14px;margin:14px 0}
+  .truth b{color:var(--warn)}
+
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1>2become1 <i>·</i> FUN</h1>
+  <div class="deck-mode" role="group" aria-label="Deck view">
+    <button class="deck-mode__button" type="button" data-mode="dj" aria-pressed="false" disabled title="DJ view is out of scope for this prototype">◐ DJ</button>
+    <button class="deck-mode__button is-active" type="button" data-mode="fun" aria-pressed="true">◎ FUN</button>
+  </div>
+  <span class="pill">interaction prototype · no audio · no production API</span>
+</header>
+
+<div class="wrap">
+  <div class="status" id="statusBar" role="status" aria-live="polite">Ready. Place a stem into its matching role slot.</div>
+
+  <!-- master strip -->
+  <section class="master" aria-label="Master strip">
+    <div class="cell"><span class="label">Master BPM</span><span class="value" id="masterBpm">120</span></div>
+    <div class="cell grow"><span class="label">Master filter</span><input type="range" min="0" max="100" value="0" aria-label="Master filter"></div>
+    <div class="cell grow"><span class="label">Tape drive</span><input type="range" min="0" max="100" value="0" aria-label="Tape drive"></div>
+    <div class="cell"><span class="label">Global key</span><span class="value">A minor</span></div>
+    <button type="button" class="rec" disabled title="Future in prototype">● REC</button>
+    <button type="button" disabled title="Future in prototype">↶ Undo</button>
+  </section>
+
+  <!-- four role slots -->
+  <section class="slots" aria-label="Stem stack slots">
+    <div class="slot" data-role="beat" data-state="empty">
+      <div class="slot__role"><span>BEAT</span><span class="slot__state-label">empty</span></div>
+      <div class="slot__orb dim" aria-hidden="true">🥁</div>
+      <div class="slot__title">Drop a beat</div>
+      <div class="slot__meta"></div>
+      <div class="slot__compat"></div>
+      <div class="slot__bars" role="group" aria-label="Beat loop bars"></div>
+      <div class="slot__controls"></div>
+      <input class="slot__gain" type="range" min="0" max="100" value="80" aria-label="Beat gain" hidden>
+    </div>
+    <div class="slot" data-role="bass" data-state="empty">
+      <div class="slot__role"><span>BASS</span><span class="slot__state-label">empty</span></div>
+      <div class="slot__orb dim" aria-hidden="true">🎸</div>
+      <div class="slot__title">Drop a bass</div>
+      <div class="slot__meta"></div>
+      <div class="slot__compat"></div>
+      <div class="slot__bars" role="group" aria-label="Bass loop bars"></div>
+      <div class="slot__controls"></div>
+      <input class="slot__gain" type="range" min="0" max="100" value="80" aria-label="Bass gain" hidden>
+    </div>
+    <div class="slot" data-role="other" data-state="empty">
+      <div class="slot__role"><span>OTHER / MELODY</span><span class="slot__state-label">empty</span></div>
+      <div class="slot__orb dim" aria-hidden="true">🎹</div>
+      <div class="slot__title">Drop a melody</div>
+      <div class="slot__meta"></div>
+      <div class="slot__compat"></div>
+      <div class="slot__bars" role="group" aria-label="Melody loop bars"></div>
+      <div class="slot__controls"></div>
+      <input class="slot__gain" type="range" min="0" max="100" value="80" aria-label="Melody gain" hidden>
+    </div>
+    <div class="slot" data-role="voice" data-state="empty">
+      <div class="slot__role"><span>VOICE</span><span class="slot__state-label">empty</span></div>
+      <div class="slot__orb dim" aria-hidden="true">🎤</div>
+      <div class="slot__title">Drop a voice</div>
+      <div class="slot__meta"></div>
+      <div class="slot__compat"></div>
+      <div class="slot__bars" role="group" aria-label="Voice loop bars"></div>
+      <div class="slot__controls"></div>
+      <input class="slot__gain" type="range" min="0" max="100" value="80" aria-label="Voice gain" hidden>
+    </div>
+  </section>
+
+  <!-- crate -->
+  <section class="crate" aria-label="Stem crate">
+    <div class="crate__head">
+      <h2>Stem crate</h2>
+      <div class="crate__search"><input type="search" placeholder="Search stems…" aria-label="Search stems"></div>
+      <div class="crate__filters" role="group" aria-label="Filter by role">
+        <button type="button" data-filter="all" class="is-active" aria-pressed="true">All</button>
+        <button type="button" data-filter="beat" aria-pressed="false">Beat</button>
+        <button type="button" data-filter="bass" aria-pressed="false">Bass</button>
+        <button type="button" data-filter="other" aria-pressed="false">Melody</button>
+        <button type="button" data-filter="voice" aria-pressed="false">Voice</button>
+      </div>
+    </div>
+    <div class="crate__grid" id="crateGrid"></div>
+  </section>
+
+  <!-- fever room -->
+  <section class="fever" aria-label="Fever trophy room">
+    <h2>Fever drops</h2>
+    <div class="fever__trophies" id="feverRoom"></div>
+  </section>
+
+  <!-- bloom preview -->
+  <section class="bloom" aria-label="Bloom FX preview">
+    <div>
+      <div class="bloom__pad" id="bloomPad" tabindex="0" role="group" aria-label="Bloom pad. Arrow keys adjust pitch and gain; Home resets">
+        <div class="bloom__dot" id="bloomDot"></div>
+        <span class="bloom__axis x">pitch</span>
+        <span class="bloom__axis y">gain</span>
+      </div>
+    </div>
+    <div>
+      <div class="bloom__readout" id="bloomReadout">
+        <b>Bloom preview</b> — drag the pad, use the sliders, or focus the pad and use arrow keys. X = pitch, Y = gain/duck. Release queues the drop on the next beat.
+      </div>
+      <div class="bloom__ranges">
+        <label>Pitch <input type="range" id="bloomPitch" min="-12" max="12" step="1" value="0" aria-label="Bloom pitch in semitones"><output id="bloomPitchOut">0 st</output></label>
+        <label>Gain <input type="range" id="bloomGain" min="-50" max="50" step="1" value="0" aria-label="Bloom gain duck in percent"><output id="bloomGainOut">0%</output></label>
+      </div>
+      <div class="bloom__controls">
+        <button type="button" class="release" id="bloomRelease">Release → queue next beat</button>
+        <button type="button" id="bloomCancel">Cancel (Esc)</button>
+      </div>
+    </div>
+  </section>
+
+  <p class="truth"><b>Prototype only.</b> This simulates interaction state. It does not call production APIs, play uploaded music, or imply implemented DSP. Separated stems carry bleed; they are never clean multitracks. Compatibility is advice, not proof of musical quality.</p>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var statusBar = document.getElementById('statusBar');
+  function showStatus(msg, kind) {
+    statusBar.textContent = msg;
+    statusBar.className = 'status' + (kind ? ' is-' + kind : '');
+  }
+
+  // ---- prototype data (deterministic, representative) ----
+  var CRATE = [
+    { id:'c1', stem:'Drums', method:'demucs', track:'Vinyl Streetwear', bpm:120, key:'A minor', conf:'high', hash:'a3f9…c2', role:'beat', bleed:true },
+    { id:'c2', stem:'Bass', method:'demucs', track:'Vinyl Streetwear', bpm:120, key:'A minor', conf:'high', hash:'b7e1…4d', role:'bass', bleed:true },
+    { id:'c3', stem:'Other', method:'demucs', track:'Vinyl Streetwear', bpm:120, key:'A minor', conf:'med', hash:'c0d2…9a', role:'other', bleed:true },
+    { id:'c4', stem:'Vocals', method:'demucs', track:'Vinyl Streetwear', bpm:120, key:'A minor', conf:'high', hash:'d4a8…1f', role:'voice', bleed:true },
+    { id:'c5', stem:'Drums', method:'demucs', track:'West Coast 90s', bpm:94, key:'C major', conf:'high', hash:'e9b3…77', role:'beat', bleed:true },
+    { id:'c6', stem:'Bass', method:'demucs', track:'West Coast 90s', bpm:94, key:'C major', conf:'med', hash:'f2c6…0e', role:'bass', bleed:true },
+    { id:'c7', stem:'Vocals', method:'demucs', track:'Progressive Train', bpm:128, key:'E minor', conf:'high', hash:'1a5d…b3', role:'voice', bleed:true },
+    { id:'c8', stem:'Center', method:'ffmpeg', track:'First Love', bpm:null, key:'unknown', conf:'low', hash:'2b7f…e8', role:'other', bleed:true, reference:true },
+    { id:'c9', stem:'Sides', method:'ffmpeg', track:'First Love', bpm:null, key:'unknown', conf:'low', hash:'3c9a…d0', role:'other', bleed:true, reference:true },
+    { id:'c10', stem:'Drums', method:'demucs', track:'Lost Tape', bpm:null, key:'unknown', conf:'low', hash:'4d1e…a2', role:'beat', bleed:true },
+    { id:'c11', stem:'Bass', method:'demucs', track:'Corrupt File', bpm:120, key:'A minor', conf:'high', hash:'5e2f…b4', role:'bass', bleed:true, mediaMissing:true },
+  ];
+
+  var RECIPES = [
+    { name:'Master Drop', icon:'🏆', recipe:'BEAT + BASS + MELODY + VOICE, all compatible', unlocked:false },
+    { name:'Harmonic Blend', icon:'🎼', recipe:'BASS + VOICE in the same key', unlocked:false },
+    { name:'Tempo Match', icon:'⏱', recipe:'BEAT + BASS at the same BPM', unlocked:false },
+  ];
+
+  var MASTER = { bpm:120, key:'A minor' };
+
+  // ---- key / bpm relation math (truthful, signed) ----
+  var KEY_SEMITONES = { C:0, 'C#':1, Db:1, D:2, 'D#':3, Eb:3, E:4, F:5, 'F#':6, Gb:6, G:7, 'G#':8, Ab:8, A:9, 'A#':10, Bb:10, B:11 };
+  function parseKey(k) {
+    if (!k || k === 'unknown') return null;
+    var m = k.match(/^([A-G][#b]?)\s+(major|minor)$/);
+    if (!m) return null;
+    return { tonic: KEY_SEMITONES[m[1]], mode: m[2] };
+  }
+  function keyRelation(src, tgt) {
+    var s = parseKey(src), t = parseKey(tgt);
+    if (!s || !t) return { label: 'key unknown', shift: null };
+    if (s.tonic === t.tonic && s.mode === t.mode) return { label: 'same key', shift: 0 };
+    var rel = (s.mode === 'major' && t.mode === 'minor' && ((s.tonic - 3 + 12) % 12) === t.tonic)
+           || (s.mode === 'minor' && t.mode === 'major' && ((s.tonic + 3) % 12) === t.tonic);
+    if (rel) return { label: 'relative-key compatible', shift: 0 };
+    var diff = (t.tonic - s.tonic + 12) % 12;
+    if (diff > 6) diff -= 12;
+    return { label: 'tonic shift', shift: diff };
+  }
+  function bpmRelation(srcBpm, tgtBpm) {
+    var delta = tgtBpm - srcBpm; // signed: target minus source
+    var ratio = tgtBpm / srcBpm;
+    var pct = (ratio - 1) * 100;
+    return { delta: delta, ratio: ratio, pct: pct };
+  }
+  function fmtSigned(n) { return (n > 0 ? '+' : '') + n; }
+
+  function compatText(item) {
+    if (!item) return '';
+    if (item.mediaMissing) {
+      return '<b>Unavailable.</b> Stem media is missing or stale; it cannot be played.';
+    }
+    if (item.method === 'ffmpeg') {
+      return '<b>Reference only.</b> ffmpeg produces center/sides, not a musical stem. It cannot be placed as a ' + item.role + ' loop.';
+    }
+    if (item.bpm == null) {
+      return '<b>Unknown BPM.</b> Source-track inherited facts are missing; cannot advise compatibility.';
+    }
+    var b = bpmRelation(item.bpm, MASTER.bpm);
+    var k = keyRelation(item.key, MASTER.key);
+    var parts = [];
+    if (b.delta === 0) parts.push('BPM matches (' + item.bpm + ')');
+    else parts.push(item.bpm + '→' + MASTER.bpm + ' BPM (' + fmtSigned(b.delta) + ', ' + fmtSigned(Math.round(b.pct * 10) / 10) + '%)');
+    if (k.shift === 0) parts.push(k.label + '; 0 st pitch shift proposed');
+    else parts.push('key ' + item.key + ' → ' + MASTER.key + ' (' + fmtSigned(k.shift) + ' st)');
+    parts.push('source-track inherited');
+    var ok = b.delta === 0 && k.shift === 0;
+    return '<b>' + (ok ? 'Compatible' : 'Transform needed') + '.</b> ' + parts.join(' · ');
+  }
+
+  function slotState(item) {
+    if (!item) return 'empty';
+    if (item.mediaMissing) return 'unavailable';
+    if (item.method === 'ffmpeg') return 'unavailable';
+    if (item.bpm == null) return 'error';
+    var b = bpmRelation(item.bpm, MASTER.bpm);
+    var k = keyRelation(item.key, MASTER.key);
+    return (b.delta === 0 && k.shift === 0) ? 'compatible' : 'transform';
+  }
+
+  // ---- slot state ----
+  var slots = {};
+  document.querySelectorAll('.slot').forEach(function (el) {
+    slots[el.dataset.role] = { el:el, item:null, bars:4, gain:80, muted:false, solo:false };
+  });
+
+  var ROLE_LABEL = { beat:'Beat', bass:'Bass', other:'Melody', voice:'Voice' };
+
+  function renderSlot(role) {
+    var s = slots[role];
+    var el = s.el;
+    var item = s.item;
+    var label = ROLE_LABEL[role];
+    el.dataset.state = slotState(item);
+    el.classList.toggle('is-muted', s.muted);
+    el.classList.toggle('is-solo', s.solo);
+    el.querySelector('.slot__state-label').textContent = slotState(item);
+    var orb = el.querySelector('.slot__orb');
+    orb.classList.toggle('dim', !item);
+    orb.textContent = item ? (item.stem[0] || '·') : (role === 'beat' ? '🥁' : role === 'bass' ? '🎸' : role === 'other' ? '🎹' : '🎤');
+    el.querySelector('.slot__title').textContent = item ? item.stem : ('Drop a ' + label.toLowerCase());
+    el.querySelector('.slot__meta').textContent = item ? (item.track + ' · ' + (item.bpm != null ? item.bpm + ' BPM' : 'BPM unknown')) : '';
+    el.querySelector('.slot__compat').innerHTML = compatText(item);
+    el.querySelector('.slot__gain').hidden = !item;
+
+    // bars
+    var barsEl = el.querySelector('.slot__bars');
+    barsEl.innerHTML = '';
+    if (item) {
+      [1,2,4,8].forEach(function (b) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = b;
+        btn.className = s.bars === b ? 'is-active' : '';
+        btn.setAttribute('aria-pressed', s.bars === b ? 'true' : 'false');
+        btn.setAttribute('aria-label', label + ' loop ' + b + ' bars');
+        btn.onclick = function () { s.bars = b; renderSlot(role); showStatus(label + ' loop set to ' + b + ' bars.', 'ok'); };
+        barsEl.appendChild(btn);
+      });
+    }
+
+    // controls
+    var ctrl = el.querySelector('.slot__controls');
+    ctrl.innerHTML = '';
+    if (item) {
+      var mute = document.createElement('button');
+      mute.type = 'button'; mute.textContent = 'M'; mute.className = 'mute' + (s.muted ? ' is-active' : '');
+      mute.setAttribute('aria-pressed', s.muted ? 'true' : 'false');
+      mute.setAttribute('aria-label', (s.muted ? 'Unmute' : 'Mute') + ' ' + label);
+      mute.onclick = function () { s.muted = !s.muted; renderSlot(role); showStatus(label + (s.muted ? ' muted.' : ' unmuted.'), 'ok'); };
+      var solo = document.createElement('button');
+      solo.type = 'button'; solo.textContent = 'S'; solo.className = 'solo' + (s.solo ? ' is-active' : '');
+      solo.setAttribute('aria-pressed', s.solo ? 'true' : 'false');
+      solo.setAttribute('aria-label', (s.solo ? 'Unsolo' : 'Solo') + ' ' + label);
+      solo.onclick = function () { s.solo = !s.solo; renderSlot(role); showStatus(label + (s.solo ? ' soloed.' : ' unsoloed.'), 'ok'); };
+      var remove = document.createElement('button');
+      remove.type = 'button'; remove.textContent = '✕'; remove.className = 'remove';
+      remove.setAttribute('aria-label', 'Remove ' + label);
+      remove.onclick = function () { s.item = null; s.muted = false; s.solo = false; renderSlot(role); renderFever(); showStatus(label + ' removed.', 'ok'); };
+      ctrl.appendChild(mute); ctrl.appendChild(solo); ctrl.appendChild(remove);
+    }
+  }
+
+  function placeItem(item, targetRole) {
+    // Cross-role placement is rejected: a stem may only occupy its declared role.
+    if (item.role !== targetRole) {
+      var slot = slots[targetRole];
+      slot.el.classList.add('reject-flash');
+      setTimeout(function () { slot.el.classList.remove('reject-flash'); }, 600);
+      showStatus('Cannot place ' + item.stem + ' (a ' + item.role + ' stem) into ' + ROLE_LABEL[targetRole] + '.', 'error');
+      return;
+    }
+    if (item.reference) {
+      showStatus('Cannot place: ffmpeg center/sides is reference only, not a musical stem.', 'error');
+      return;
+    }
+    var s = slots[targetRole];
+    s.item = item;
+    s.muted = false;
+    renderSlot(targetRole);
+    renderFever();
+    showStatus(item.stem + ' from ' + item.track + ' placed in ' + ROLE_LABEL[targetRole] + '.', 'ok');
+  }
+
+  // ---- crate rendering ----
+  var filter = 'all';
+  var query = '';
+  function renderCrate() {
+    var grid = document.getElementById('crateGrid');
+    grid.innerHTML = '';
+    CRATE.filter(function (item) {
+      if (filter !== 'all' && item.role !== filter) return false;
+      if (query && (item.track + ' ' + item.stem).toLowerCase().indexOf(query) === -1) return false;
+      return true;
+    }).forEach(function (item) {
+      var card = document.createElement('div');
+      card.className = 'card' + (item.reference ? ' reference' : '');
+      card.dataset.id = item.id;
+
+      var methodCls = item.method === 'demucs' ? 'demucs' : 'ffmpeg';
+      var methodLabel = item.method === 'demucs' ? 'Demucs 4-stem' : 'ffmpeg center/sides';
+      var prov = item.bpm != null ? 'source-track inherited' : 'no analysis facts';
+
+      card.innerHTML =
+        '<div class="card__top"><span class="card__stem">' + item.stem + '</span>' +
+        '<span class="card__method ' + methodCls + '">' + methodLabel + '</span></div>' +
+        '<div class="card__track">' + item.track + '</div>' +
+        '<div class="card__facts"><b>' + (item.bpm != null ? item.bpm + ' BPM' : 'BPM unknown') + '</b> · ' +
+        (item.key || 'key unknown') + ' · conf ' + item.conf + '<br>' + prov + '</div>' +
+        (item.bleed ? '<div class="card__bleed">⚠ separated — bleed possible, not a clean multitrack</div>' : '') +
+        (item.mediaMissing ? '<div class="card__note">⚠ stem media missing — unavailable</div>' : '') +
+        '<div class="card__hash">sha ' + item.hash + '</div>' +
+        '<div class="card__actions"><button type="button" class="place"' + (item.reference ? ' disabled' : '') + '>' +
+        (item.reference ? 'Reference only' : 'Place') + '</button></div>';
+
+      if (item.reference) {
+        // Reference-only cards are non-interactive content: no button role,
+        // no focus, no drag, no click. The disabled Place button is the only
+        // (inert) control and is not announced as actionable.
+        card.draggable = false;
+      } else {
+        // One native Place button is the single interactive control. The card
+        // itself is a plain container (no role=button, no tabIndex) so it does
+        // not announce a second, non-functional action.
+        card.draggable = true;
+        var placeBtn = card.querySelector('.place');
+        placeBtn.setAttribute('aria-label', 'Place ' + item.stem + ' from ' + item.track);
+        placeBtn.onclick = function () { placeItem(item, item.role); };
+        card.addEventListener('dragstart', function (e) {
+          e.dataTransfer.setData('text/plain', item.id);
+          card.classList.add('dragging');
+        });
+        card.addEventListener('dragend', function () { card.classList.remove('dragging'); });
+      }
+      grid.appendChild(card);
+    });
+  }
+
+  document.querySelector('.crate__search input').addEventListener('input', function (e) {
+    query = e.target.value.trim().toLowerCase();
+    renderCrate();
+  });
+  document.querySelectorAll('.crate__filters button').forEach(function (btn) {
+    btn.onclick = function () {
+      document.querySelectorAll('.crate__filters button').forEach(function (b) { b.classList.remove('is-active'); b.setAttribute('aria-pressed','false'); });
+      btn.classList.add('is-active'); btn.setAttribute('aria-pressed','true');
+      filter = btn.dataset.filter;
+      renderCrate();
+    };
+  });
+
+  // drag/drop onto slots (cross-role rejected)
+  document.querySelectorAll('.slot').forEach(function (el) {
+    el.addEventListener('dragover', function (e) { e.preventDefault(); });
+    el.addEventListener('drop', function (e) {
+      e.preventDefault();
+      var id = e.dataTransfer.getData('text/plain');
+      var item = CRATE.find(function (c) { return c.id === id; });
+      if (item) placeItem(item, el.dataset.role);
+    });
+  });
+
+  // ---- fever room ----
+  // Shared eligibility predicate: a component only counts toward a recipe when
+  // it is actually usable AND compatible. Unavailable, error, and
+  // transform-needed components never unlock a recipe.
+  function feverEligible(role) {
+    var s = slots[role];
+    return Boolean(s.item) && slotState(s.item) === 'compatible';
+  }
+  function renderFever() {
+    var placed = Object.keys(slots).filter(function (r) { return slots[r].item; });
+    var allCompatible = placed.length === 4 && placed.every(function (r) { return feverEligible(r); });
+    var bassVoice = feverEligible('bass') && feverEligible('voice')
+      && slots.bass.item.key === slots.voice.item.key;
+    var beatBass = feverEligible('beat') && feverEligible('bass')
+      && slots.beat.item.bpm === slots.bass.item.bpm;
+    RECIPES[0].unlocked = allCompatible;
+    RECIPES[1].unlocked = bassVoice;
+    RECIPES[2].unlocked = beatBass;
+
+    var room = document.getElementById('feverRoom');
+    room.innerHTML = '';
+    RECIPES.forEach(function (r) {
+      var t = document.createElement('div');
+      t.className = 'trophy ' + (r.unlocked ? 'unlocked' : 'locked');
+      t.innerHTML = '<div class="trophy__icon">' + r.icon + '</div>' +
+        '<div class="trophy__name">' + r.name + '</div>' +
+        '<div class="trophy__recipe">' + r.recipe + '</div>';
+      room.appendChild(t);
+    });
+  }
+
+  // ---- bloom preview (pointer + keyboard + range parity) ----
+  var bloom = { pitch: 0, gain: 0, queued: false };
+  var pad = document.getElementById('bloomPad');
+  var dot = document.getElementById('bloomDot');
+  var readout = document.getElementById('bloomReadout');
+  var pitchInput = document.getElementById('bloomPitch');
+  var gainInput = document.getElementById('bloomGain');
+  var pitchOut = document.getElementById('bloomPitchOut');
+  var gainOut = document.getElementById('bloomGainOut');
+
+  function clampPitch(v) { return Math.max(-12, Math.min(12, v)); }
+  function clampGain(v) { return Math.max(-50, Math.min(50, v)); }
+
+  function updateBloom() {
+    bloom.pitch = clampPitch(bloom.pitch);
+    bloom.gain = clampGain(bloom.gain);
+    var x = (bloom.pitch + 12) / 24;
+    var y = (50 - bloom.gain) / 100;
+    dot.style.left = (x * 100) + '%';
+    dot.style.top = (y * 100) + '%';
+    pitchInput.value = bloom.pitch;
+    gainInput.value = bloom.gain;
+    pitchOut.textContent = fmtSigned(bloom.pitch) + ' st';
+    gainOut.textContent = fmtSigned(bloom.gain) + '%';
+    readout.innerHTML = '<b>Bloom preview</b> — pitch ' + fmtSigned(bloom.pitch) + ' st · gain ' + fmtSigned(bloom.gain) + '%' +
+      (bloom.queued ? ' · <b>queued for next beat</b>' : '');
+  }
+
+  function setBloomFromPointer(clientX, clientY) {
+    var r = pad.getBoundingClientRect();
+    var x = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+    var y = Math.max(0, Math.min(1, (clientY - r.top) / r.height));
+    bloom.pitch = Math.round(x * 24 - 12);
+    bloom.gain = Math.round(50 - y * 100);
+    updateBloom();
+  }
+
+  pad.addEventListener('pointerdown', function (e) { pad.setPointerCapture(e.pointerId); setBloomFromPointer(e.clientX, e.clientY); });
+  pad.addEventListener('pointermove', function (e) { if (e.buttons) setBloomFromPointer(e.clientX, e.clientY); });
+  pad.addEventListener('keydown', function (e) {
+    var handled = true;
+    if (e.key === 'ArrowLeft') bloom.pitch -= 1;
+    else if (e.key === 'ArrowRight') bloom.pitch += 1;
+    else if (e.key === 'ArrowUp') bloom.gain += 1;
+    else if (e.key === 'ArrowDown') bloom.gain -= 1;
+    else if (e.key === 'Home') { bloom.pitch = 0; bloom.gain = 0; }
+    else handled = false;
+    if (handled) { e.preventDefault(); updateBloom(); }
+  });
+  pitchInput.addEventListener('input', function () { bloom.pitch = Number(pitchInput.value); updateBloom(); });
+  gainInput.addEventListener('input', function () { bloom.gain = Number(gainInput.value); updateBloom(); });
+  document.getElementById('bloomRelease').onclick = function () { bloom.queued = true; updateBloom(); showStatus('Bloom drop queued for next beat.', 'ok'); };
+  document.getElementById('bloomCancel').onclick = function () { bloom.queued = false; bloom.pitch = 0; bloom.gain = 0; updateBloom(); showStatus('Bloom cancelled.', 'ok'); };
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { bloom.queued = false; bloom.pitch = 0; bloom.gain = 0; updateBloom(); showStatus('Bloom cancelled.', 'ok'); } });
+
+  // ---- init ----
+  Object.keys(slots).forEach(renderSlot);
+  renderCrate();
+  renderFever();
+  updateBloom();
+})();
+</script>
+</body>
+</html>
