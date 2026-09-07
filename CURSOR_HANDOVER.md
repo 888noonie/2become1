@@ -6,11 +6,15 @@ Prepared for Richard Noon on 2026-09-06. Repository: https://github.com/888nooni
 
 This section supersedes the older "Start here" below for the next session.
 
-- **main tip:** `f50dac1` — Phase 14A (FUN stem-crate interaction prototype) merged.
+- **roadmap checkpoint:** `230c640` added the durable Phase 14/15 plans and this
+  continuity section; Phase 14A itself merged immediately before it at
+  `f50dac1`. Check `git log -1` for the latest editorial tip.
 - **Phase 14A is COMPLETE and ACCEPTED.** Artifact `design/stem_crate_fun_mock.html`,
   17 jsdom contract tests at `tests/frontend/design/stem-crate-fun-mock.test.js`,
   decision record `PHASE_14_STEM_CRATE_DECISION.md`, audits
   `PHASE_14A_STEM_CRATE_AUDIT.md` / `PHASE_14A_STEM_CRATE_REAUDIT.md`.
+- **Post-merge/main CI is green:** run `34073887842` at roadmap checkpoint
+  `230c640`; both `test` and `browser-e2e` completed successfully.
 - **Stem-stack architecture APPROVED:** up to four stem loops → one prepared
   composite asset → one committed layer. Naming: "WaxDrop" is Loopit-mock-only;
   the feature lives in the existing FUN tab.

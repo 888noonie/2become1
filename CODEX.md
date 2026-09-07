@@ -1,19 +1,48 @@
 # Codex continuity handoff — 2BECOME1 V0.3
 
-Updated: 2026-09-05
+Updated: 2026-09-07
 
 Owner: Richard (`richardn`)
 
 Repository: `/home/richardn/2become1`
 
-Authoritative plan: `V0.3_IMPLEMENTATION_PLAN.md`
+Current roadmap plans: `PHASE_14_STEM_CRATE_TRI_PHASE_PLAN.md` and
+`PHASE_15_THREE_BUS_LIVE_MIXER_TRI_PHASE_PLAN.md`
 
 This file is the durable context for a fresh Codex/Hermes conversation. Read it
 before changing the repository. V0.3 implementation and its Phase 7 release
 tri-phase are accepted and closed. The `v0.3.0` tag is the authoritative
 release pointer after this checkpoint's CI is green.
 
-## Current branch and maintenance boundary
+## Current checkpoint — 2026-09-07
+
+This section supersedes the older maintenance boundary below.
+
+- Roadmap checkpoint `230c640` records the current plans and handover. Phase 14A
+  merged at `f50dac1` after Sol's final interaction audit passed. Check the live
+  branch rather than treating this documentation checkpoint as a permanent tip.
+- Main CI run `34073887842` is green at `230c640` for both required jobs.
+- Phase 14A delivers the FUN stem-crate interaction prototype, decision record,
+  and 17 jsdom contracts. It changes no production API, DSP, database or Action
+  contract.
+- The approved stack shape is no more than four prepared stem loops folded into
+  one composite asset and one committed layer. Separation provenance and bleed
+  remain explicit; ffmpeg center/sides are never relabeled as musical stems.
+- The current live engine does **not** play Foundation A and Lead B together.
+  `audio.js` still owns one active audio element and starting B stops A. A
+  prepared committed layer can play over the Lead, but that is not equivalent
+  to A+B+stack.
+- Richard's product acceptance requires three concurrent audible buses:
+  Foundation A, Lead B, and the prepared multi-stem stack. The planned order is
+  Phase 14B (persistent crate) → Phase 15A–B (dual decks + live crossfader) →
+  Phase 14C/15C convergence.
+- Phase 13 listener truth remains open for Class C loopback and human-agreed
+  tolerances. Do not turn scheduling receipts into audible-output claims.
+- Hermes B implements; Sol independently audits and authors preferably
+  tri-phase plans. No production phase, push or merge is implied without
+  Richard's explicit authorization.
+
+## Historical branch and maintenance boundary
 
 Richard authorized advancing `main` to the accepted Phase 12 checkpoint
 `95cbdc4` on 2026-09-05 and continuing fixes on

@@ -59,6 +59,26 @@ workflow, an injected Web Audio phrase scheduler, and the accepted Phase 12
 live committed-layer engine. One committed layer can play alongside the Lead.
 Producer access, live warping, and multiple committed layers remain deferred.
 
+## Current roadmap truth
+
+Phase 14A's audited FUN stem-crate interaction prototype is available at
+`design/stem_crate_fun_mock.html`. It demonstrates an honest four-role crate,
+loop-length controls, compatibility explanations, deterministic Fever recipes,
+and accessible pointer/keyboard/mobile interaction. It is a design prototype;
+it does not yet persist a crate or produce audio.
+
+The approved production shape is a **stem stack**: up to four separated stem
+loops become one server-prepared composite asset and one committed layer. See
+`PHASE_14_STEM_CRATE_TRI_PHASE_PLAN.md`.
+
+The current app still has singleton deck audition: starting Foundation A and
+then Lead B stops A. The saved render blend is not a live crossfader. Concurrent
+Foundation A + Lead B + stem-stack output is planned, not shipped, in
+`PHASE_15_THREE_BUS_LIVE_MIXER_TRI_PHASE_PLAN.md`. The intended order is Phase
+14B persistent crate, Phase 15A–B dual-deck/live-crossfader work, then Phase
+14C/15C stack convergence. Do not describe the current build as a simultaneous
+three-bus DJ mixer.
+
 ## CLI
 
 The underlying engine remains fully scriptable:

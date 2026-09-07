@@ -1,6 +1,7 @@
 # Phase 14A — Stem Crate (FUN) interaction decision record
 
-Status: CANDIDATE — awaiting Richard's acceptance and Sol's re-audit.
+Status: **ACCEPTED interaction prototype** — Sol final re-audit PASS; merged to
+`main` at `f50dac1`. Production Phase 14B remains separately authorized work.
 Branch: `phase14-stem-crate-fun` (from main `f9bd2592eae545120178a8f2aac7114c14cbdaf9`).
 
 ## Naming decision (Richard, 2026-09-07)
@@ -22,7 +23,7 @@ assumed; the audited Phase 14 handoff governs.
 - `design/stem_crate_fun_mock.html` — one self-contained HTML/CSS/JS file,
   no CDN, no dependencies, no copied Loopit assets. Inline JS extracted and
   `node --check` clean.
-- `tests/frontend/design/stem-crate-fun-mock.test.js` — 12 jsdom contract
+- `tests/frontend/design/stem-crate-fun-mock.test.js` — 17 jsdom contract
   tests driving the real DOM (cross-role drop rejection, ffmpeg reference-only,
   reachable error/unavailable states, signed compatibility math, Bloom
   pointer/keyboard/range parity, recipe unlock, aria-pressed, disabled no-ops).
@@ -94,9 +95,14 @@ assumed; the audited Phase 14 handoff governs.
 - REC gesture automation, live stutter/reverse, quantized Bloom FX, QR crate
   sharing, per-stem analysis, multiple committed layers, AI Producer bridges.
 
-## Open decision for Richard
+## Accepted architecture and remaining product condition
 
-The stem-stack decision (up to four stem loops → one prepared asset → one
-committed layer) is the architecture Phase 14B/14C will build on. This
-prototype assumes it. Richard confirms the interaction and the stem-stack
-decision before Phase 14B begins.
+The stem-stack decision is approved: up to four stem loops → one prepared asset
+→ one committed layer. It preserves the one-layer invariant without pretending
+that only one deck should be audible.
+
+The current engine still stops Foundation A when Lead B starts. Richard's product
+condition is simultaneous Foundation A + Lead B + multi-stem-stack output with a
+real live crossfader. Phase 14B may build persistence independently; Phase
+15A–B must establish simultaneous decks before Phase 14C/15C converges the stack
+onto the third bus. See `PHASE_15_THREE_BUS_LIVE_MIXER_TRI_PHASE_PLAN.md`.
