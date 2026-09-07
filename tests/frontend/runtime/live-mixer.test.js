@@ -6,12 +6,13 @@
 // MediaElementAudioSourceNode into an independent gain bus and a common
 // master. No DOM/window imports; everything is injected for Node tests.
 //
-// Sol hardening contract (re-audit): deferred-promise probes for the
-// pause race, stale non-AbortError rejection, and generation-safe ended/error
-// events; a serializable subscription contract; complete per-deck snapshot
-// shape (ownership generation, paused/context state, context clock, full
-// source identity); awaited/explicit context resume; complete shutdown with
-// media-source release; and stable table-backed media error codes.
+// Sol second-pass contract: generation/disposal checks across the awaited
+// context-resume boundary (pause/replacement/shutdown/stale-rejection races);
+// source replacement by element generation (a delayed old-source event is
+// attributed to its original generation, not the current one); explicit
+// failure on a closed AudioContext; and a canonical full-snapshot event
+// contract ({ type, deck, state }) for play/pause/stop/seek/ended/error/
+// timeupdate/durationchange/contextstatechange.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,7 +31,7 @@ class FakeMediaElement {
     this.duration = 0;
     this.src = '';
     this.crossOrigin = null;
-    this._listeners = {}; // type -> array of fns (supports stale-event simulation)
+    this._listeners = {}; // type -> array of fns (real EventTarget dispatch model)
     this._playImpl = null; // optional override: () => Promise
   }
   addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); }
@@ -45,7 +46,8 @@ class FakeMediaElement {
   pause() { this.paused = true; }
   load() {}
   removeAttribute() { this.src = ''; }
-  _emit(type) { for (const fn of (this._listeners[type] || [])) fn(); }
+  // Dispatches to the listeners registered AT DISPATCH TIME (browser model).
+  _emit(type) { for (const fn of [...(this._listeners[type] || [])]) fn(); }
 }
 
 class FakeAudioParam {
@@ -74,6 +76,7 @@ class FakeAudioContext {
     this._wrapped = new Set();
     this._closed = false;
     this._resumeReject = null;
+    this._resumeImpl = null; // optional override: () => Promise
   }
   createMediaElementSource(element) {
     if (this._wrapped.has(element)) {
@@ -90,6 +93,7 @@ class FakeAudioContext {
     return gain;
   }
   resume() {
+    if (this._resumeImpl) return this._resumeImpl();
     if (this._resumeReject) {
       const err = this._resumeReject;
       this._resumeReject = null;
@@ -102,8 +106,8 @@ class FakeAudioContext {
   close() { this._closed = true; this.state = 'closed'; return Promise.resolve(); }
 }
 
-function makeMixer({ elements = [] } = {}) {
-  const ctx = new FakeAudioContext();
+function makeMixer({ elements = [], ctx: injectedCtx } = {}) {
+  const ctx = injectedCtx || new FakeAudioContext();
   let idx = 0;
   const mixer = new LiveMixer({
     audioContextFactory: { create: () => ctx },
@@ -190,7 +194,9 @@ test('each element is wrapped by createMediaElementSource exactly once', async (
   await mixer.play('A', DESC_A);
   await mixer.play('B', DESC_B);
   await mixer.play('A', { ...DESC_A, trackId: 'A2', url: '/api/tracks/A2/audio' });
-  assert.equal(ctx._wrapped.size, 2, 'two elements wrapped, each once');
+  // Source replacement retires the old element and creates a fresh one, so
+  // three distinct elements are wrapped — each exactly once (no double-wrap).
+  assert.equal(ctx._wrapped.size, 3, 'three distinct elements, each wrapped once');
 });
 
 test('suspended context is never reported as playing', async () => {
@@ -223,7 +229,7 @@ test('invalid deck is rejected', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sol hardening contract (deferred-promise probes)
+// Sol first-pass contract (deferred-promise probes)
 // ---------------------------------------------------------------------------
 
 test('pause advances generation: a pending play() cannot publish playing:true', async () => {
@@ -235,35 +241,28 @@ test('pause advances generation: a pending play() cannot publish playing:true', 
     resolvePlay = () => { elA.paused = false; resolve(); };
   });
   const { mixer } = makeMixer({ elements: [elA] });
-  const playPromise = mixer.play('A', DESC_A); // will suspend at await element.play()
-  // Wait until element.play() has actually been invoked (past the context await).
+  const playPromise = mixer.play('A', DESC_A);
   while (!playCalled) await new Promise((r) => setImmediate(r));
-  mixer.pause('A'); // advances generation, invalidates the pending play
-  resolvePlay(); // the stale play() now resolves
+  mixer.pause('A');
+  resolvePlay();
   await playPromise;
   assert.equal(mixer.getDeck('A').playing, false, 'stale play must not publish playing');
 });
 
 test('stale non-AbortError rejection cannot overwrite a newer successful source', async () => {
-  const elA = new FakeMediaElement();
+  const elA1 = new FakeMediaElement();
   let rejectFirst = null;
-  let firstCalled = false;
-  let call = 0;
-  elA._playImpl = () => {
-    call += 1;
-    if (call === 1) {
-      firstCalled = true;
-      return new Promise((_resolve, reject) => { rejectFirst = reject; });
-    }
-    elA.paused = false;
-    return Promise.resolve();
-  };
-  const { mixer } = makeMixer({ elements: [elA] });
+  let firstPlayCalled = false;
+  elA1._playImpl = () => new Promise((_resolve, reject) => {
+    firstPlayCalled = true;
+    rejectFirst = reject;
+  });
+  const { mixer } = makeMixer({ elements: [elA1] });
   const first = mixer.play('A', { ...DESC_A, trackId: 'A1', url: '/a1' });
-  while (!firstCalled) await new Promise((r) => setImmediate(r));
+  // Wait until the first play reaches element.play() (past resume + graph).
+  while (!firstPlayCalled) await new Promise((r) => setImmediate(r));
   const second = mixer.play('A', { ...DESC_A, trackId: 'A2', url: '/a2' });
-  await second; // newer source succeeds
-  // The older source rejects with a non-AbortError AFTER the newer succeeded.
+  await second; // newer source succeeds on a fresh element
   rejectFirst(Object.assign(new Error('NotSupportedError'), { name: 'NotSupportedError' }));
   await first;
   assert.equal(mixer.getDeck('A').trackId, 'A2', 'newer source wins');
@@ -271,24 +270,23 @@ test('stale non-AbortError rejection cannot overwrite a newer successful source'
   assert.equal(mixer.getDeck('A').error, null, 'stale error must not surface');
 });
 
-test('delayed ended from a replaced source is ignored', async () => {
-  const elA = new FakeMediaElement();
-  const { mixer } = makeMixer({ elements: [elA] });
-  await mixer.play('A', DESC_A); // generation 1
-  const oldEnded = elA._listeners['ended'][0]; // capture the gen-1 ended handler
-  await mixer.play('A', { ...DESC_A, trackId: 'A2', url: '/a2' }); // generation 2
-  oldEnded(); // a delayed ended from the OLD source fires
+test('delayed ended from a retired element is ignored (real dispatch)', async () => {
+  const { mixer, elements } = makeMixer();
+  await mixer.play('A', DESC_A); // creates elements[0]
+  const oldEl = elements[0];
+  await mixer.play('A', { ...DESC_A, trackId: 'A2', url: '/a2' }); // creates elements[1]
+  oldEl._emit('ended'); // old element dispatches to its OWN (old-gen) handler
   assert.equal(mixer.getDeck('A').ended, false, 'stale ended must be ignored');
   assert.equal(mixer.getDeck('A').playing, true, 'replacement playback unaffected');
+  assert.equal(mixer.getDeck('A').trackId, 'A2');
 });
 
 test('natural ended on the current source is honored and emitted', async () => {
-  const elA = new FakeMediaElement();
-  const { mixer } = makeMixer({ elements: [elA] });
+  const { mixer, elements } = makeMixer();
   const events = [];
   const unsub = mixer.on((e) => events.push(e));
   await mixer.play('A', DESC_A);
-  elA._emit('ended');
+  elements[0]._emit('ended');
   assert.equal(mixer.getDeck('A').ended, true);
   assert.equal(mixer.getDeck('A').playing, false);
   assert.ok(events.some((e) => e.type === 'ended' && e.deck === 'A'), 'ended event emitted');
@@ -296,14 +294,14 @@ test('natural ended on the current source is honored and emitted', async () => {
 });
 
 test('on() returns an unsubscribe that stops delivery', async () => {
-  const elA = new FakeMediaElement();
-  const { mixer } = makeMixer({ elements: [elA] });
+  const { mixer, elements } = makeMixer();
   const events = [];
   const unsub = mixer.on((e) => events.push(e));
   await mixer.play('A', DESC_A);
   unsub();
-  elA._emit('ended');
-  assert.equal(events.length, 0, 'no events after unsubscribe');
+  const before = events.length;
+  elements[0]._emit('ended');
+  assert.equal(events.length, before, 'no events after unsubscribe');
 });
 
 test('media failure returns a stable table-backed error code', async () => {
@@ -341,14 +339,12 @@ test('snapshot carries ownership generation, paused, context state and clock', a
 });
 
 test('shutdown releases media sources and clears ownership', async () => {
-  const elA = new FakeMediaElement();
-  const { mixer } = makeMixer({ elements: [elA] });
+  const { mixer, elements } = makeMixer();
   await mixer.play('A', DESC_A);
   await mixer.shutdown();
   assert.equal(mixer.getDeck('A').trackId, null, 'ownership cleared');
   assert.equal(mixer.getDeck('A').playing, false);
-  assert.equal(elA.src, '', 'media source released');
-  // Post-shutdown operations are consistent no-ops/failures.
+  assert.equal(elements[0].src, '', 'media source released');
   const result = await mixer.play('A', DESC_A);
   assert.equal(result.ok, false);
 });
@@ -360,4 +356,138 @@ test('post-shutdown getDeck and snapshot remain serializable', async () => {
   const snap = mixer.snapshot();
   assert.doesNotThrow(() => JSON.parse(JSON.stringify(snap)));
   assert.equal(snap.decks.A.trackId, null);
+});
+
+// ---------------------------------------------------------------------------
+// Sol second-pass contract (resume-boundary races, element replacement,
+// closed context, canonical event contract)
+// ---------------------------------------------------------------------------
+
+test('pause during resume: stale play cannot start the element', async () => {
+  const ctx = new FakeAudioContext();
+  let resolveResume = null;
+  ctx._resumeImpl = () => new Promise((resolve) => {
+    resolveResume = () => { ctx.state = 'running'; resolve(); };
+  });
+  const elA = new FakeMediaElement();
+  const { mixer } = makeMixer({ ctx, elements: [elA] });
+  const playPromise = mixer.play('A', DESC_A); // suspends at await resume
+  mixer.pause('A'); // advances generation
+  resolveResume(); // resume completes
+  await playPromise;
+  assert.equal(mixer.getDeck('A').playing, false);
+  assert.equal(elA.paused, true, 'element must not be played after pause');
+});
+
+test('replacement during resume: stale A1 cannot retake ownership', async () => {
+  const ctx = new FakeAudioContext();
+  let call = 0;
+  let resolveFirst = null;
+  ctx._resumeImpl = () => {
+    call += 1;
+    if (call === 1) {
+      return new Promise((resolve) => { resolveFirst = () => { ctx.state = 'running'; resolve(); }; });
+    }
+    ctx.state = 'running';
+    return Promise.resolve();
+  };
+  const { mixer } = makeMixer({ ctx });
+  const first = mixer.play('A', { ...DESC_A, trackId: 'A1', url: '/a1' });
+  const second = mixer.play('A', { ...DESC_A, trackId: 'A2', url: '/a2' });
+  await second;
+  resolveFirst();
+  await first;
+  assert.equal(mixer.getDeck('A').trackId, 'A2', 'A2 keeps ownership');
+  assert.equal(mixer.getDeck('A').playing, true);
+});
+
+test('shutdown during resume: stale continuation cannot touch cleared ctx', async () => {
+  const ctx = new FakeAudioContext();
+  let resolveResume = null;
+  ctx._resumeImpl = () => new Promise((resolve) => {
+    resolveResume = () => { ctx.state = 'running'; resolve(); };
+  });
+  const { mixer } = makeMixer({ ctx });
+  const playPromise = mixer.play('A', DESC_A); // suspends at await resume
+  await mixer.shutdown(); // closes ctx, sets disposed
+  resolveResume(); // resume completes after shutdown
+  await playPromise; // must not throw
+  assert.equal(mixer.getDeck('A').playing, false);
+});
+
+test('stale resume rejection cannot overwrite newer successful playback', async () => {
+  const ctx = new FakeAudioContext();
+  let call = 0;
+  let rejectFirst = null;
+  ctx._resumeImpl = () => {
+    call += 1;
+    if (call === 1) {
+      return new Promise((_resolve, reject) => { rejectFirst = reject; });
+    }
+    ctx.state = 'running';
+    return Promise.resolve();
+  };
+  const { mixer } = makeMixer({ ctx });
+  const first = mixer.play('A', { ...DESC_A, trackId: 'A1', url: '/a1' });
+  const second = mixer.play('A', { ...DESC_A, trackId: 'A2', url: '/a2' });
+  await second;
+  rejectFirst(new Error('resume blocked'));
+  await first;
+  assert.equal(mixer.getDeck('A').trackId, 'A2');
+  assert.equal(mixer.getDeck('A').playing, true);
+  assert.equal(mixer.getDeck('A').error, null);
+});
+
+test('closed AudioContext fails explicitly, never false success', async () => {
+  const ctx = new FakeAudioContext();
+  ctx.state = 'closed';
+  const { mixer } = makeMixer({ ctx });
+  const result = await mixer.play('A', DESC_A);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'T_CONTEXT_CLOSED');
+  assert.equal(mixer.getDeck('A').playing, false);
+});
+
+test('canonical events carry { type, deck, state } for command completion', async () => {
+  const { mixer } = makeMixer();
+  const events = [];
+  mixer.on((e) => events.push(e));
+  await mixer.play('A', DESC_A);
+  mixer.pause('A');
+  mixer.seek('A', 5);
+  mixer.stop('A');
+  const types = events.map((e) => e.type);
+  assert.ok(types.includes('play'), 'play emitted');
+  assert.ok(types.includes('pause'), 'pause emitted');
+  assert.ok(types.includes('seek'), 'seek emitted');
+  assert.ok(types.includes('stop'), 'stop emitted');
+  for (const e of events) {
+    assert.equal(e.deck, 'A');
+    assert.ok(e.state && typeof e.state === 'object', 'state present');
+    assert.equal(typeof e.state.playing, 'boolean');
+  }
+});
+
+test('natural media transitions emit canonical events', async () => {
+  const { mixer, elements } = makeMixer();
+  const events = [];
+  mixer.on((e) => events.push(e));
+  await mixer.play('A', DESC_A);
+  elements[0]._emit('timeupdate');
+  elements[0]._emit('durationchange');
+  elements[0]._emit('ended');
+  const types = events.map((e) => e.type);
+  assert.ok(types.includes('timeupdate'), 'timeupdate emitted');
+  assert.ok(types.includes('durationchange'), 'durationchange emitted');
+  assert.ok(types.includes('ended'), 'ended emitted');
+});
+
+test('context state transitions emit canonical events', async () => {
+  const { mixer } = makeMixer();
+  const events = [];
+  mixer.on((e) => events.push(e));
+  await mixer.play('A', DESC_A); // resume: suspended -> running
+  await mixer.shutdown(); // close: running -> closed
+  const types = events.map((e) => e.type);
+  assert.ok(types.includes('contextstatechange'), 'contextstatechange emitted');
 });

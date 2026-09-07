@@ -80,6 +80,7 @@ export const ERROR_CODES = Object.freeze({
   T_TRANSPORT_NOT_PLAYING: 'T_TRANSPORT_NOT_PLAYING',
   T_MEDIA_UNAVAILABLE: 'T_MEDIA_UNAVAILABLE',
   T_CONTEXT_RESUME_FAILED: 'T_CONTEXT_RESUME_FAILED',
+  T_CONTEXT_CLOSED: 'T_CONTEXT_CLOSED',
 
   // --- Invariant ---
   X_INTERNAL: 'X_INTERNAL',
@@ -145,6 +146,7 @@ const MESSAGES = Object.freeze({
   T_TRANSPORT_NOT_PLAYING: 'destination deck transport is not playing',
   T_MEDIA_UNAVAILABLE: 'the media source could not be played',
   T_CONTEXT_RESUME_FAILED: 'the AudioContext could not be resumed',
+  T_CONTEXT_CLOSED: 'the AudioContext is closed',
 
   X_INTERNAL: 'Action dispatcher hit an invariant violation',
 });
