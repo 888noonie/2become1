@@ -25,10 +25,7 @@ export class LiveMixer {
     this._ctxFactory = deps.audioContextFactory;
     this._elementFactory = deps.mediaElementFactory;
     this._ctx = null;
-    this._decks = {
-      A: this._makeDeck('A'),
-      B: this._makeDeck('B'),
-    };
+    this._decks = { A: this._makeDeck('A'), B: this._makeDeck('B') };
     this._listeners = new Set();
     this._disposed = false;
   }
@@ -39,7 +36,7 @@ export class LiveMixer {
       element: null,
       sourceNode: null,
       gainNode: null,
-      descriptor: null, // { trackId, url, kind, variant, stemName, jobId, title }
+      descriptor: null,
       generation: 0,
       playing: false,
       paused: true,
@@ -48,7 +45,6 @@ export class LiveMixer {
     };
   }
 
-  // Canonical event contract: { type, deck, state: completeFrozenDeckSnapshot }.
   on(listener) {
     this._listeners.add(listener);
     return () => this._listeners.delete(listener);
@@ -57,12 +53,16 @@ export class LiveMixer {
   _emit(type, deckName) {
     const event = Object.freeze({ type, deck: deckName, state: this.getDeck(deckName) });
     for (const fn of this._listeners) {
-      try { fn(event); } catch { /* listener errors never break the mixer */ }
+      try { fn(event); } catch { /* no-op */ }
     }
   }
 
   _emitContext() {
-    const event = Object.freeze({ type: 'contextstatechange', deck: null, state: this._contextState() });
+    const event = Object.freeze({
+      type: 'contextstatechange',
+      deck: null,
+      state: Object.freeze({ contextState: this._contextState(), contextClock: this._ctx ? this._ctx.currentTime : 0 }),
+    });
     for (const fn of this._listeners) {
       try { fn(event); } catch { /* no-op */ }
     }
@@ -75,10 +75,9 @@ export class LiveMixer {
   async _ensureContext() {
     if (!this._ctx) {
       this._ctx = this._ctxFactory.create();
+      this._ctx.addEventListener('statechange', () => this._emitContext());
     }
-    if (this._ctx.state === 'closed') {
-      return buildFailure(ERROR_CODES.T_CONTEXT_CLOSED);
-    }
+    if (this._ctx.state === 'closed') return buildFailure(ERROR_CODES.T_CONTEXT_CLOSED);
     if (this._ctx.state === 'suspended') {
       try {
         await this._ctx.resume();
@@ -89,7 +88,6 @@ export class LiveMixer {
     return buildSuccess({ context: this._ctx });
   }
 
-  // Create a fresh private element for a deck and wrap it exactly once.
   _createElement(deck) {
     const ctx = this._ctx;
     const element = this._elementFactory.create();
@@ -107,7 +105,6 @@ export class LiveMixer {
     return element;
   }
 
-  // Retire the current element (detach/disconnect) before replacement.
   _retireElement(deck) {
     if (!deck.element) return;
     try { deck.element.pause(); } catch { /* no-op */ }
@@ -120,9 +117,6 @@ export class LiveMixer {
     deck.gainNode = null;
   }
 
-  // Bind media handlers to a SPECIFIC element; each source gets its own
-  // element, so a delayed event from a retired element hits its own
-  // (old-generation) handler and is ignored.
   _bindElement(deck, element, generation) {
     const ended = () => {
       if (deck.generation !== generation) return;
@@ -152,22 +146,17 @@ export class LiveMixer {
     element.addEventListener('durationchange', durationchange);
   }
 
-  // Load and play a source on the named deck. Does NOT touch the other deck.
+  _fail(deck, code) {
+    deck.error = { code, message: 'Audio is unavailable' };
+    deck.playing = false;
+    deck.paused = true;
+    this._emit('error', deck.name);
+  }
+
   async play(deckName, descriptor) {
     if (this._disposed) return buildFailure('X_INTERNAL');
     if (!DECKS.includes(deckName)) return buildFailure(ERROR_CODES.T_INVALID_DECK);
     const deck = this._decks[deckName];
-    const generation = ++deck.generation;
-
-    const ctxResult = await this._ensureContext();
-    if (this._disposed) return buildFailure('X_INTERNAL');
-    if (generation !== deck.generation) return buildSuccess({ aborted: true });
-    if (!ctxResult.ok) {
-      deck.error = { code: ctxResult.code, message: 'Audio is unavailable' };
-      deck.playing = false;
-      deck.paused = true;
-      return ctxResult;
-    }
 
     const normalized = {
       trackId: descriptor?.trackId || null,
@@ -180,37 +169,62 @@ export class LiveMixer {
     };
     if (!normalized.url) return buildFailure('V_MISSING_SOURCE');
 
-    // Source replacement by element generation: retire old, create fresh.
-    this._retireElement(deck);
-    const element = this._createElement(deck);
+    const generation = ++deck.generation;
 
+    const ctxResult = await this._ensureContext();
+    if (this._disposed) return buildFailure('X_INTERNAL');
+    if (generation !== deck.generation) return buildSuccess({ aborted: true });
+    if (!ctxResult.ok) {
+      this._fail(deck, ctxResult.code);
+      return ctxResult;
+    }
+
+    this._retireElement(deck);
     deck.descriptor = normalized;
     deck.ended = false;
     deck.error = null;
+    deck.playing = false;
+    deck.paused = true;
+
+    let element;
+    try {
+      element = this._createElement(deck);
+    } catch {
+      this._fail(deck, ERROR_CODES.T_MEDIA_UNAVAILABLE);
+      return buildFailure(ERROR_CODES.T_MEDIA_UNAVAILABLE);
+    }
     element.src = normalized.url;
 
     try {
       await element.play();
     } catch (err) {
       if (this._disposed) return buildFailure('X_INTERNAL');
-      if (generation !== deck.generation) return buildSuccess({ aborted: true });
+      if (generation !== deck.generation) {
+        try { element.pause(); } catch { /* no-op */ }
+        return buildSuccess({ aborted: true });
+      }
       if (err && err.name === 'AbortError') {
         deck.playing = false;
         deck.paused = true;
         return buildSuccess({ aborted: true });
       }
-      deck.error = { code: ERROR_CODES.T_MEDIA_UNAVAILABLE, message: 'Audio is unavailable' };
-      deck.playing = false;
-      deck.paused = true;
+      this._fail(deck, ERROR_CODES.T_MEDIA_UNAVAILABLE);
       return buildFailure(ERROR_CODES.T_MEDIA_UNAVAILABLE);
     }
 
     if (this._disposed) return buildFailure('X_INTERNAL');
-    if (generation === deck.generation) {
-      deck.playing = true;
-      deck.paused = false;
-      this._emit('play', deckName);
+    if (generation !== deck.generation) {
+      try { element.pause(); } catch { /* no-op */ }
+      return buildSuccess({ aborted: true });
     }
+    if (this._contextState() !== 'running') {
+      this._retireElement(deck);
+      this._fail(deck, ERROR_CODES.T_CONTEXT_CLOSED);
+      return buildFailure(ERROR_CODES.T_CONTEXT_CLOSED);
+    }
+    deck.playing = true;
+    deck.paused = false;
+    this._emit('play', deckName);
     return buildSuccess({ deck: deckName });
   }
 
@@ -244,15 +258,13 @@ export class LiveMixer {
   seek(deckName, seconds) {
     if (this._disposed) return buildFailure('X_INTERNAL');
     if (!DECKS.includes(deckName)) return buildFailure(ERROR_CODES.T_INVALID_DECK);
+    if (!Number.isFinite(seconds)) return buildFailure(ERROR_CODES.T_INVALID_TIME);
     const deck = this._decks[deckName];
-    if (deck.element && Number.isFinite(seconds)) {
-      deck.element.currentTime = Math.max(0, seconds);
-    }
+    if (deck.element) deck.element.currentTime = Math.max(0, seconds);
     this._emit('seek', deckName);
     return buildSuccess({ deck: deckName });
   }
 
-  // Read-only state (frozen, serializable)
   getDeck(deckName) {
     if (!DECKS.includes(deckName)) return null;
     const deck = this._decks[deckName];
@@ -277,17 +289,12 @@ export class LiveMixer {
     });
   }
 
-  // Frozen, JSON-serializable snapshot of both decks.
   snapshot() {
     return Object.freeze({
-      decks: Object.freeze({
-        A: this.getDeck('A'),
-        B: this.getDeck('B'),
-      }),
+      decks: Object.freeze({ A: this.getDeck('A'), B: this.getDeck('B') }),
     });
   }
 
-  // Hard teardown: stop/disconnect both decks, release sources, close ctx.
   async shutdown() {
     if (this._disposed) return;
     this._disposed = true;

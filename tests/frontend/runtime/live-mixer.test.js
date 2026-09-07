@@ -77,8 +77,13 @@ class FakeAudioContext {
     this._closed = false;
     this._resumeReject = null;
     this._resumeImpl = null; // optional override: () => Promise
+    this._throwOnCreateSource = false;
+    this._listeners = {}; // type -> array of fns (real EventTarget dispatch)
   }
+  addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); }
+  _emitStateChange() { for (const fn of [...(this._listeners['statechange'] || [])]) fn(); }
   createMediaElementSource(element) {
+    if (this._throwOnCreateSource) throw new Error('graph construction failed');
     if (this._wrapped.has(element)) {
       throw new Error('createMediaElementSource called twice on the same element');
     }
@@ -100,10 +105,11 @@ class FakeAudioContext {
       return Promise.reject(err);
     }
     this.state = 'running';
+    this._emitStateChange();
     return Promise.resolve();
   }
   suspend() { this.state = 'suspended'; return Promise.resolve(); }
-  close() { this._closed = true; this.state = 'closed'; return Promise.resolve(); }
+  close() { this._closed = true; this.state = 'closed'; this._emitStateChange(); return Promise.resolve(); }
 }
 
 function makeMixer({ elements = [], ctx: injectedCtx } = {}) {
@@ -461,7 +467,7 @@ test('canonical events carry { type, deck, state } for command completion', asyn
   assert.ok(types.includes('pause'), 'pause emitted');
   assert.ok(types.includes('seek'), 'seek emitted');
   assert.ok(types.includes('stop'), 'stop emitted');
-  for (const e of events) {
+  for (const e of events.filter((e) => e.deck === 'A')) {
     assert.equal(e.deck, 'A');
     assert.ok(e.state && typeof e.state === 'object', 'state present');
     assert.equal(typeof e.state.playing, 'boolean');
@@ -482,12 +488,147 @@ test('natural media transitions emit canonical events', async () => {
   assert.ok(types.includes('ended'), 'ended emitted');
 });
 
-test('context state transitions emit canonical events', async () => {
+test('real context statechange updates both deck states', async () => {
+  const { mixer, ctx } = makeMixer();
+  const events = [];
+  mixer.on((e) => events.push(e));
+  await mixer.play('A', DESC_A);
+  await mixer.play('B', DESC_B);
+  // External suspend (e.g. OS interrupt) fires a real statechange.
+  ctx.state = 'suspended';
+  ctx._emitStateChange();
+  const ctxEvents = events.filter((e) => e.type === 'contextstatechange');
+  assert.ok(ctxEvents.length >= 1, 'statechange emitted');
+  // Each deck's state reflects the suspended context.
+  assert.equal(mixer.getDeck('A').playing, false);
+  assert.equal(mixer.getDeck('B').playing, false);
+  assert.equal(mixer.getDeck('A').contextState, 'suspended');
+});
+
+test('resume failure emits complete canonical state', async () => {
+  const { mixer, ctx } = makeMixer();
+  const events = [];
+  mixer.on((e) => events.push(e));
+  ctx._resumeReject = new Error('resume blocked');
+  const result = await mixer.play('A', DESC_A);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'T_CONTEXT_RESUME_FAILED');
+  const errEvents = events.filter((e) => e.type === 'error');
+  assert.ok(errEvents.length >= 1, 'error emitted on resume failure');
+  assert.equal(errEvents[0].state.error.code, 'T_CONTEXT_RESUME_FAILED');
+});
+
+test('media play rejection emits complete canonical state', async () => {
+  const elA = new FakeMediaElement();
+  elA._playImpl = () => Promise.reject(Object.assign(new Error('NotSupportedError'), { name: 'NotSupportedError' }));
+  const { mixer } = makeMixer({ elements: [elA] });
+  const events = [];
+  mixer.on((e) => events.push(e));
+  const result = await mixer.play('A', DESC_A);
+  assert.equal(result.ok, false);
+  const errEvents = events.filter((e) => e.type === 'error');
+  assert.ok(errEvents.length >= 1, 'error emitted on media rejection');
+  assert.equal(errEvents[0].state.error.code, 'T_MEDIA_UNAVAILABLE');
+});
+
+test('graph-construction failure is caught, table-backed, emitted, coherent', async () => {
+  const ctx = new FakeAudioContext();
+  ctx._throwOnCreateSource = true;
+  const { mixer } = makeMixer({ ctx });
+  const events = [];
+  mixer.on((e) => events.push(e));
+  const result = await mixer.play('A', DESC_A);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'T_MEDIA_UNAVAILABLE');
+  assert.equal(mixer.getDeck('A').playing, false);
+  assert.equal(mixer.getDeck('A').error.code, 'T_MEDIA_UNAVAILABLE');
+  const errEvents = events.filter((e) => e.type === 'error');
+  assert.ok(errEvents.length >= 1, 'error emitted on graph failure');
+});
+
+test('context closes while element.play() is pending: no false success', async () => {
+  const ctx = new FakeAudioContext();
+  const elA = new FakeMediaElement();
+  let resolvePlay = null;
+  let playCalled = false;
+  elA._playImpl = () => new Promise((resolve) => {
+    playCalled = true;
+    resolvePlay = () => { elA.paused = false; resolve(); };
+  });
+  const { mixer } = makeMixer({ ctx, elements: [elA] });
+  const events = [];
+  mixer.on((e) => events.push(e));
+  const playPromise = mixer.play('A', DESC_A);
+  while (!playCalled) await new Promise((r) => setImmediate(r));
+  // Context closes while media play is unresolved.
+  ctx.state = 'closed';
+  ctx._emitStateChange();
+  resolvePlay();
+  const result = await playPromise;
+  assert.equal(result.ok, false, 'must not return ok:true');
+  assert.equal(mixer.getDeck('A').playing, false);
+  assert.equal(mixer.getDeck('A').contextState, 'closed');
+  assert.ok(!events.some((e) => e.type === 'play'), 'no play emitted');
+});
+
+test('missing source has zero generation/context/audio side effects', async () => {
+  const { mixer, ctx } = makeMixer();
+  const before = mixer.getDeck('A').generation;
+  const result = await mixer.play('A', { trackId: 'A', url: null });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'V_MISSING_SOURCE');
+  assert.equal(mixer.getDeck('A').generation, before, 'generation unchanged');
+  assert.equal(ctx._sources.length, 0, 'no element created');
+  assert.equal(ctx.state, 'suspended', 'context not resumed');
+});
+
+test('invalid seek fails without emitting success', async () => {
   const { mixer } = makeMixer();
   const events = [];
   mixer.on((e) => events.push(e));
-  await mixer.play('A', DESC_A); // resume: suspended -> running
-  await mixer.shutdown(); // close: running -> closed
-  const types = events.map((e) => e.type);
-  assert.ok(types.includes('contextstatechange'), 'contextstatechange emitted');
+  await mixer.play('A', DESC_A);
+  const result = mixer.seek('A', NaN);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'T_INVALID_TIME');
+  assert.ok(!events.some((e) => e.type === 'seek'), 'no seek emitted');
+});
+
+test('pending replacement never reports playing', async () => {
+  const elA2 = new FakeMediaElement();
+  let resolvePlay = null;
+  let playCalled = false;
+  elA2._playImpl = () => new Promise((resolve) => {
+    playCalled = true;
+    resolvePlay = () => { elA2.paused = false; resolve(); };
+  });
+  // Inject the deferred element as the next one the factory returns.
+  const { mixer: mixer2 } = makeMixer({ elements: [new FakeMediaElement(), elA2] });
+  await mixer2.play('A', DESC_A);
+  const replacement = mixer2.play('A', { ...DESC_A, trackId: 'A2', url: '/a2' });
+  while (!playCalled) await new Promise((r) => setImmediate(r));
+  // While the replacement play is pending, the deck must not report playing.
+  assert.equal(mixer2.getDeck('A').playing, false, 'pending replacement not playing');
+  resolvePlay();
+  await replacement;
+  assert.equal(mixer2.getDeck('A').playing, true);
+  assert.equal(mixer2.getDeck('A').trackId, 'A2');
+});
+
+test('pause followed by late play resolution leaves the element paused', async () => {
+  const elA = new FakeMediaElement();
+  let resolvePlay = null;
+  let playCalled = false;
+  elA._playImpl = () => new Promise((resolve) => {
+    playCalled = true;
+    resolvePlay = () => { elA.paused = false; resolve(); };
+  });
+  const { mixer } = makeMixer({ elements: [elA] });
+  const playPromise = mixer.play('A', DESC_A);
+  while (!playCalled) await new Promise((r) => setImmediate(r));
+  mixer.pause('A'); // pause lands after element.play() started
+  resolvePlay(); // late play resolution
+  await playPromise;
+  assert.equal(elA.paused, true, 'physical element must be re-paused');
+  assert.equal(mixer.getDeck('A').playing, false);
+  assert.equal(mixer.getDeck('A').paused, true);
 });
