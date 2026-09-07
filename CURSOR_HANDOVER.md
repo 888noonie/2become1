@@ -2,6 +2,31 @@
 
 Prepared for Richard Noon on 2026-09-06. Repository: https://github.com/888noonie/2become1.
 
+## Current state (2026-09-07) — read this first
+
+This section supersedes the older "Start here" below for the next session.
+
+- **main tip:** `f50dac1` — Phase 14A (FUN stem-crate interaction prototype) merged.
+- **Phase 14A is COMPLETE and ACCEPTED.** Artifact `design/stem_crate_fun_mock.html`,
+  17 jsdom contract tests at `tests/frontend/design/stem-crate-fun-mock.test.js`,
+  decision record `PHASE_14_STEM_CRATE_DECISION.md`, audits
+  `PHASE_14A_STEM_CRATE_AUDIT.md` / `PHASE_14A_STEM_CRATE_REAUDIT.md`.
+- **Stem-stack architecture APPROVED:** up to four stem loops → one prepared
+  composite asset → one committed layer. Naming: "WaxDrop" is Loopit-mock-only;
+  the feature lives in the existing FUN tab.
+- **Next authorized work (awaiting Richard's go):** Phase 14B (persistent stem
+  crate + loop specs), then Phase 15A–B (simultaneous DJ decks + live crossfader),
+  then Phase 14C/15C convergence. See the tracked plans:
+  - `PHASE_14_STEM_CRATE_TRI_PHASE_PLAN.md`
+  - `PHASE_15_THREE_BUS_LIVE_MIXER_TRI_PHASE_PLAN.md`
+- **Key audio truth:** the current `AudioController` owns ONE audio element and
+  stops deck A when deck B starts (pinned by `tests/frontend/audio.test.js:11`).
+  Simultaneous A + B + stem-stack audibility is NOT yet met — that is Phase 15.
+  Do not wire Phase 14C to the singleton player and claim the requirement is met.
+- **Phase 13 (listener-truth closure)** remains open: loopback (Class C) and
+  acceptance tolerances are still pending; see
+  `.hermes/plans/2026-09-07_000314-phase13-listener-truth-closure.md`.
+
 ## Start here
 
 The audio-correctness and hardening work is complete and merged into `main` through [PR #1](https://github.com/888noonie/2become1/pull/1). Merge commit: `d9f8f85f811db0036199ae276795670e0362b790`. Tested PR head: `8481fd9e395213df6bb48ef4de5f28f6913e5129`.
