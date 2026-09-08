@@ -1,19 +1,12 @@
 // js/runtime/live-mixer.js — Phase 15A: independent dual-deck live mixer.
-//
-// Retires the "one active HTMLAudioElement" policy: one shared AudioContext,
-// two deck buses (A/B), each a private media element wrapped once into an
-// independent gain node and the common master. Playing A never stops B.
-//
-// Hard-lines: no DOM/window imports (factories injected for Node tests); no
-// runtime object enters StateStore (snapshot() is frozen/serializable);
+// One shared AudioContext, two deck buses (A/B), each a private media element
+// wrapped once into an independent gain node and the common master. Playing A
+// never stops B. No DOM/window imports; snapshot() is frozen/serializable;
 // generation tokens guard every async boundary; source replacement retires the
-// old element and creates a fresh one so a delayed old-source event stays
-// attributable to its original generation; a closed context fails explicitly;
-// a canonical { type, deck, state } event contract is the single update path.
-//
-// The stem-stack bus (Phase 15C) is intentionally not here yet.
+// old element and creates a fresh one; a canonical { type, deck, state } event
+// contract is the single update path.
 
-import { buildFailure, buildSuccess, ERROR_CODES } from '../actions/errors.js';
+import { buildFailure, buildSuccess, ERROR_CODES, messageFor } from '../actions/errors.js';
 
 const DECKS = Object.freeze(['A', 'B']);
 
@@ -53,7 +46,7 @@ export class LiveMixer {
   _emit(type, deckName) {
     const event = Object.freeze({ type, deck: deckName, state: this.getDeck(deckName) });
     for (const fn of this._listeners) {
-      try { fn(event); } catch { /* no-op */ }
+      try { fn(event); } catch {}
     }
   }
 
@@ -64,7 +57,7 @@ export class LiveMixer {
       state: Object.freeze({ contextState: this._contextState(), contextClock: this._ctx ? this._ctx.currentTime : 0 }),
     });
     for (const fn of this._listeners) {
-      try { fn(event); } catch { /* no-op */ }
+      try { fn(event); } catch {}
     }
   }
 
@@ -75,7 +68,8 @@ export class LiveMixer {
   async _ensureContext() {
     if (!this._ctx) {
       this._ctx = this._ctxFactory.create();
-      this._ctx.addEventListener('statechange', () => this._emitContext());
+      this._onStateChange = () => this._emitContext();
+      this._ctx.addEventListener('statechange', this._onStateChange);
     }
     if (this._ctx.state === 'closed') return buildFailure(ERROR_CODES.T_CONTEXT_CLOSED);
     if (this._ctx.state === 'suspended') {
@@ -93,25 +87,25 @@ export class LiveMixer {
     const element = this._elementFactory.create();
     element.preload = 'metadata';
     element.crossOrigin = 'anonymous';
+    deck.element = element;
     const sourceNode = ctx.createMediaElementSource(element);
+    deck.sourceNode = sourceNode;
     const gainNode = ctx.createGain();
+    deck.gainNode = gainNode;
     gainNode.gain.value = 1;
     sourceNode.connect(gainNode);
     gainNode.connect(ctx.destination);
-    deck.element = element;
-    deck.sourceNode = sourceNode;
-    deck.gainNode = gainNode;
     this._bindElement(deck, element, deck.generation);
     return element;
   }
 
   _retireElement(deck) {
     if (!deck.element) return;
-    try { deck.element.pause(); } catch { /* no-op */ }
-    try { deck.element.removeAttribute('src'); } catch { /* no-op */ }
-    try { deck.element.load(); } catch { /* no-op */ }
-    if (deck.sourceNode) try { deck.sourceNode.disconnect(); } catch { /* no-op */ }
-    if (deck.gainNode) try { deck.gainNode.disconnect(); } catch { /* no-op */ }
+    try { deck.element.pause(); } catch {}
+    try { deck.element.removeAttribute('src'); } catch {}
+    try { deck.element.load(); } catch {}
+    if (deck.sourceNode) try { deck.sourceNode.disconnect(); } catch {}
+    if (deck.gainNode) try { deck.gainNode.disconnect(); } catch {}
     deck.element = null;
     deck.sourceNode = null;
     deck.gainNode = null;
@@ -127,7 +121,7 @@ export class LiveMixer {
     };
     const error = () => {
       if (deck.generation !== generation) return;
-      deck.error = { code: ERROR_CODES.T_MEDIA_UNAVAILABLE, message: 'Audio is unavailable' };
+      deck.error = { code: ERROR_CODES.T_MEDIA_UNAVAILABLE, message: messageFor(ERROR_CODES.T_MEDIA_UNAVAILABLE) };
       deck.playing = false;
       deck.paused = true;
       this._emit('error', deck.name);
@@ -147,7 +141,7 @@ export class LiveMixer {
   }
 
   _fail(deck, code) {
-    deck.error = { code, message: 'Audio is unavailable' };
+    deck.error = { code, message: messageFor(code) };
     deck.playing = false;
     deck.paused = true;
     this._emit('error', deck.name);
@@ -171,6 +165,14 @@ export class LiveMixer {
 
     const generation = ++deck.generation;
 
+    this._retireElement(deck);
+    deck.descriptor = normalized;
+    deck.ended = false;
+    deck.error = null;
+    deck.playing = false;
+    deck.paused = true;
+    this._emit('sourcechange', deckName);
+
     const ctxResult = await this._ensureContext();
     if (this._disposed) return buildFailure('X_INTERNAL');
     if (generation !== deck.generation) return buildSuccess({ aborted: true });
@@ -179,17 +181,11 @@ export class LiveMixer {
       return ctxResult;
     }
 
-    this._retireElement(deck);
-    deck.descriptor = normalized;
-    deck.ended = false;
-    deck.error = null;
-    deck.playing = false;
-    deck.paused = true;
-
     let element;
     try {
       element = this._createElement(deck);
     } catch {
+      this._retireElement(deck);
       this._fail(deck, ERROR_CODES.T_MEDIA_UNAVAILABLE);
       return buildFailure(ERROR_CODES.T_MEDIA_UNAVAILABLE);
     }
@@ -200,12 +196,13 @@ export class LiveMixer {
     } catch (err) {
       if (this._disposed) return buildFailure('X_INTERNAL');
       if (generation !== deck.generation) {
-        try { element.pause(); } catch { /* no-op */ }
+        try { element.pause(); } catch {}
         return buildSuccess({ aborted: true });
       }
       if (err && err.name === 'AbortError') {
         deck.playing = false;
         deck.paused = true;
+        this._emit('abort', deckName);
         return buildSuccess({ aborted: true });
       }
       this._fail(deck, ERROR_CODES.T_MEDIA_UNAVAILABLE);
@@ -214,13 +211,15 @@ export class LiveMixer {
 
     if (this._disposed) return buildFailure('X_INTERNAL');
     if (generation !== deck.generation) {
-      try { element.pause(); } catch { /* no-op */ }
+      try { element.pause(); } catch {}
       return buildSuccess({ aborted: true });
     }
-    if (this._contextState() !== 'running') {
+    const state = this._contextState();
+    if (state !== 'running') {
       this._retireElement(deck);
-      this._fail(deck, ERROR_CODES.T_CONTEXT_CLOSED);
-      return buildFailure(ERROR_CODES.T_CONTEXT_CLOSED);
+      const code = state === 'closed' ? ERROR_CODES.T_CONTEXT_CLOSED : ERROR_CODES.T_CONTEXT_SUSPENDED;
+      this._fail(deck, code);
+      return buildFailure(code);
     }
     deck.playing = true;
     deck.paused = false;
@@ -309,7 +308,10 @@ export class LiveMixer {
       deck.error = null;
     }
     if (this._ctx) {
-      try { await this._ctx.close(); } catch { /* already closed */ }
+      if (this._onStateChange) {
+        try { this._ctx.removeEventListener('statechange', this._onStateChange); } catch {}
+      }
+      try { await this._ctx.close(); } catch {}
       this._ctx = null;
     }
     this._emitContext();

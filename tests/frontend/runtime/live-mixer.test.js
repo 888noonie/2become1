@@ -55,14 +55,14 @@ class FakeAudioParam {
 }
 
 class FakeGainNode {
-  constructor() { this.gain = new FakeAudioParam(); this.connectedTo = null; this.disconnected = false; }
-  connect(node) { this.connectedTo = node; return node; }
+  constructor() { this.gain = new FakeAudioParam(); this.connectedTo = null; this.disconnected = false; this._throwOnConnect = false; }
+  connect(node) { if (this._throwOnConnect) throw new Error('gain connect failed'); this.connectedTo = node; return node; }
   disconnect() { this.disconnected = true; }
 }
 
 class FakeMediaElementSource {
-  constructor(element) { this.element = element; this.connectedTo = null; this.disconnected = false; }
-  connect(node) { this.connectedTo = node; return node; }
+  constructor(element) { this.element = element; this.connectedTo = null; this.disconnected = false; this._throwOnConnect = false; }
+  connect(node) { if (this._throwOnConnect) throw new Error('source connect failed'); this.connectedTo = node; return node; }
   disconnect() { this.disconnected = true; }
 }
 
@@ -78,9 +78,11 @@ class FakeAudioContext {
     this._resumeReject = null;
     this._resumeImpl = null; // optional override: () => Promise
     this._throwOnCreateSource = false;
+    this._throwOnGainConnect = false;
     this._listeners = {}; // type -> array of fns (real EventTarget dispatch)
   }
   addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); }
+  removeEventListener(type, fn) { this._listeners[type] = (this._listeners[type] || []).filter((f) => f !== fn); }
   _emitStateChange() { for (const fn of [...(this._listeners['statechange'] || [])]) fn(); }
   createMediaElementSource(element) {
     if (this._throwOnCreateSource) throw new Error('graph construction failed');
@@ -94,6 +96,7 @@ class FakeAudioContext {
   }
   createGain() {
     const gain = new FakeGainNode();
+    if (this._throwOnGainConnect) gain._throwOnConnect = true;
     this._gains.push(gain);
     return gain;
   }
@@ -631,4 +634,118 @@ test('pause followed by late play resolution leaves the element paused', async (
   assert.equal(elA.paused, true, 'physical element must be re-paused');
   assert.equal(mixer.getDeck('A').playing, false);
   assert.equal(mixer.getDeck('A').paused, true);
+});
+
+// ---------------------------------------------------------------------------
+// Sol fourth-pass contract (replacement publication, transactional retire,
+// partial-graph cleanup, terminal abort, table-backed messages, suspended≠closed)
+// ---------------------------------------------------------------------------
+
+test('subscriber sees pending replacement immediately', async () => {
+  const elA2 = new FakeMediaElement();
+  let resolvePlay = null;
+  let playCalled = false;
+  elA2._playImpl = () => new Promise((resolve) => {
+    playCalled = true;
+    resolvePlay = () => { elA2.paused = false; resolve(); };
+  });
+  const { mixer } = makeMixer({ elements: [new FakeMediaElement(), elA2] });
+  const events = [];
+  mixer.on((e) => events.push(e));
+  await mixer.play('A', DESC_A);
+  const replacement = mixer.play('A', { ...DESC_A, trackId: 'A2', url: '/a2' });
+  while (!playCalled) await new Promise((r) => setImmediate(r));
+  // Subscriber must already see the new pending source, not the old playing one.
+  const loading = events.filter((e) => e.type === 'sourcechange' || e.type === 'loading');
+  assert.ok(loading.length >= 1, 'sourcechange/loading emitted on replacement');
+  const last = loading[loading.length - 1];
+  assert.equal(last.state.trackId, 'A2', 'subscriber sees new track');
+  assert.equal(last.state.playing, false, 'subscriber sees pending, not playing');
+  resolvePlay();
+  await replacement;
+});
+
+test('failed replacement cannot leave the old element active', async () => {
+  const ctx = new FakeAudioContext();
+  const elA = new FakeMediaElement();
+  const { mixer } = makeMixer({ ctx, elements: [elA] });
+  await mixer.play('A', DESC_A);
+  assert.equal(elA.paused, false, 'old element playing');
+  // Suspend the context, then force the next resume to fail.
+  ctx.state = 'suspended';
+  ctx._resumeReject = new Error('resume blocked');
+  const result = await mixer.play('A', { ...DESC_A, trackId: 'A2', url: '/a2' });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'T_CONTEXT_RESUME_FAILED');
+  assert.equal(elA.paused, true, 'old element retired, cannot resume audibly');
+  assert.equal(elA.src, '', 'old element source released');
+  assert.equal(mixer.getDeck('A').playing, false);
+});
+
+test('current-generation AbortError publishes coherent terminal state', async () => {
+  const elA = new FakeMediaElement();
+  elA._playImpl = () => Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+  const { mixer } = makeMixer({ elements: [elA] });
+  const events = [];
+  mixer.on((e) => events.push(e));
+  const result = await mixer.play('A', DESC_A);
+  assert.equal(result.ok, true);
+  assert.equal(result.value.aborted, true);
+  const terminal = events.filter((e) => e.type === 'abort' || e.type === 'pause');
+  assert.ok(terminal.length >= 1, 'terminal abort/pause emitted');
+  assert.equal(terminal[terminal.length - 1].state.playing, false);
+});
+
+test('context failure event message matches its returned failure', async () => {
+  const { mixer, ctx } = makeMixer();
+  const events = [];
+  mixer.on((e) => events.push(e));
+  ctx._resumeReject = new Error('resume blocked');
+  const result = await mixer.play('A', DESC_A);
+  assert.equal(result.code, 'T_CONTEXT_RESUME_FAILED');
+  const errEvent = events.filter((e) => e.type === 'error').pop();
+  assert.equal(errEvent.state.error.code, 'T_CONTEXT_RESUME_FAILED');
+  assert.notEqual(errEvent.state.error.message, 'Audio is unavailable', 'message from frozen table');
+});
+
+test('suspended context after play is not labeled closed', async () => {
+  const ctx = new FakeAudioContext();
+  const elA = new FakeMediaElement();
+  let resolvePlay = null;
+  let playCalled = false;
+  elA._playImpl = () => new Promise((resolve) => {
+    playCalled = true;
+    resolvePlay = () => { elA.paused = false; resolve(); };
+  });
+  const { mixer } = makeMixer({ ctx, elements: [elA] });
+  const playPromise = mixer.play('A', DESC_A);
+  while (!playCalled) await new Promise((r) => setImmediate(r));
+  ctx.state = 'suspended';
+  ctx._emitStateChange();
+  resolvePlay();
+  const result = await playPromise;
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'T_CONTEXT_SUSPENDED', 'suspended is not closed');
+});
+
+test('partial graph failure disconnects every created node', async () => {
+  const ctx = new FakeAudioContext();
+  ctx._throwOnGainConnect = true;
+  const { mixer } = makeMixer({ ctx });
+  const result = await mixer.play('A', DESC_A);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'T_MEDIA_UNAVAILABLE');
+  // Both the source and the gain created before the throw must be disconnected.
+  for (const source of ctx._sources) assert.equal(source.disconnected, true, 'source disconnected');
+  for (const gain of ctx._gains) assert.equal(gain.disconnected, true, 'gain disconnected');
+});
+
+test('shutdown publishes one close transition', async () => {
+  const { mixer } = makeMixer();
+  const events = [];
+  mixer.on((e) => events.push(e));
+  await mixer.play('A', DESC_A);
+  await mixer.shutdown();
+  const closeEvents = events.filter((e) => e.type === 'contextstatechange' && e.state.contextState === 'closed');
+  assert.equal(closeEvents.length, 1, 'exactly one close transition');
 });
