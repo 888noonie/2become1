@@ -2,25 +2,37 @@
 
 Prepared for Richard Noon on 2026-09-06. Repository: https://github.com/888noonie/2become1.
 
-## Current state (2026-09-07) — read this first
+## Current state (2026-09-08) — read this first
 
 This section supersedes the older "Start here" below for the next session.
 
-- **roadmap checkpoint:** `230c640` added the durable Phase 14/15 plans and this
-  continuity section; Phase 14A itself merged immediately before it at
-  `f50dac1`. Check `git log -1` for the latest editorial tip.
+- **Phase 15A LiveMixer leaf is COMPLETE and Sol-PASSED** (`d8e59f7`), pushed on
+  branch `phase15-live-mixer` (tip `c0429a8`). The dual-deck runtime retires the
+  singleton-player invariant: one shared AudioContext, two deck buses (A/B),
+  generation tokens guarding every async boundary, element-replacement
+  attribution, a canonical `{ type, deck, state }` event contract, and
+  table-backed error codes. 43/43 focused + 388/388 frontend tests green.
+- **Six-file wiring is BLOCKED on budget.** `PHASE_15A_DELETION_INVENTORY.md`
+  shows the wiring is byte-neutral replacement (~4,865 B superseded, ~1,100 B
+  net additive), so it lands ~1.1 KB over the 500,000 ceiling on the current
+  12-byte headroom (static is 499,988/500,000). The 15–20 KB headroom target
+  needs a genuine dead-code removal or a Richard budget sign-off — not the
+  wiring's own supersession. Do not start wiring until that is resolved.
+- **Product decision (approved):** the `audioController` singleton stays as the
+  exclusive preview/audition channel (footer/library); deck pads show their own
+  A/B state. The committed layer already runs on its own AudioContext.
+- **roadmap checkpoint:** `230c640` added the durable Phase 14/15 plans; Phase
+  14A merged at `f50dac1`. Check `git log -1` for the latest editorial tip.
 - **Phase 14A is COMPLETE and ACCEPTED.** Artifact `design/stem_crate_fun_mock.html`,
   17 jsdom contract tests at `tests/frontend/design/stem-crate-fun-mock.test.js`,
   decision record `PHASE_14_STEM_CRATE_DECISION.md`, audits
   `PHASE_14A_STEM_CRATE_AUDIT.md` / `PHASE_14A_STEM_CRATE_REAUDIT.md`.
-- **Post-merge/main CI is green:** run `34073887842` at roadmap checkpoint
-  `230c640`; both `test` and `browser-e2e` completed successfully.
 - **Stem-stack architecture APPROVED:** up to four stem loops → one prepared
   composite asset → one committed layer. Naming: "WaxDrop" is Loopit-mock-only;
   the feature lives in the existing FUN tab.
 - **Next authorized work (awaiting Richard's go):** Phase 14B (persistent stem
-  crate + loop specs), then Phase 15A–B (simultaneous DJ decks + live crossfader),
-  then Phase 14C/15C convergence. See the tracked plans:
+  crate + loop specs), then Phase 15A–B wiring (simultaneous DJ decks + live
+  crossfader), then Phase 14C/15C convergence. See the tracked plans:
   - `PHASE_14_STEM_CRATE_TRI_PHASE_PLAN.md`
   - `PHASE_15_THREE_BUS_LIVE_MIXER_TRI_PHASE_PLAN.md`
 - **Key audio truth:** the current `AudioController` owns ONE audio element and
