@@ -78,6 +78,10 @@ export const ERROR_CODES = Object.freeze({
   T_INVALID_TIME: 'T_INVALID_TIME',
   T_INVALID_GRID_REVISION: 'T_INVALID_GRID_REVISION',
   T_TRANSPORT_NOT_PLAYING: 'T_TRANSPORT_NOT_PLAYING',
+  T_MEDIA_UNAVAILABLE: 'T_MEDIA_UNAVAILABLE',
+  T_CONTEXT_RESUME_FAILED: 'T_CONTEXT_RESUME_FAILED',
+  T_CONTEXT_CLOSED: 'T_CONTEXT_CLOSED',
+  T_CONTEXT_SUSPENDED: 'T_CONTEXT_SUSPENDED',
 
   // --- Invariant ---
   X_INTERNAL: 'X_INTERNAL',
@@ -141,9 +145,17 @@ const MESSAGES = Object.freeze({
   T_INVALID_GRID_REVISION: 'gridRevision must be a non-empty string',
 
   T_TRANSPORT_NOT_PLAYING: 'destination deck transport is not playing',
+  T_MEDIA_UNAVAILABLE: 'the media source could not be played',
+  T_CONTEXT_RESUME_FAILED: 'the AudioContext could not be resumed',
+  T_CONTEXT_CLOSED: 'the AudioContext is closed',
+  T_CONTEXT_SUSPENDED: 'the AudioContext is suspended',
 
   X_INTERNAL: 'Action dispatcher hit an invariant violation',
 });
+
+export function messageFor(code) {
+  return MESSAGES[code] || MESSAGES[ERROR_CODES.X_INTERNAL];
+}
 
 export function buildFailure(code, details = undefined) {
   if (!Object.prototype.hasOwnProperty.call(ERROR_CODES, code)) {
