@@ -348,7 +348,7 @@ class TestDurableTransitions:
                 ).fetchall()
             }
             assert "idx_lifecycle_facts_one_per_state" in idx
-            assert latest_version() == 10
+            assert latest_version() == 11
 
     def test_migration_is_idempotent(self, tmp_path):
         svc = StudioService(tmp_path / "data")

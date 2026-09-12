@@ -148,6 +148,60 @@ class SeparationBody(BaseModel):
     method: Literal["auto", "demucs", "ffmpeg"] = "auto"
 
 
+class StemCrateCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    track_id: str = Field(min_length=1)
+    stem_set_id: str = Field(min_length=1)
+    stem_name: str = Field(min_length=1)
+    role: Literal["beat", "bass", "other", "voice"]
+    loop_bars: Literal[1, 2, 4, 8] = 4
+    region_start_beat: float = Field(default=0.0, ge=0)
+    region_end_beat: float | None = Field(default=None, gt=0)
+    label: str | None = None
+    gain_db: float | None = Field(default=None, ge=-24, le=12)
+
+    @field_validator("region_start_beat", "region_end_beat", mode="before")
+    @classmethod
+    def reject_coerced_numbers(cls, value, info):
+        if value is None and info.field_name == "region_end_beat":
+            return value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{info.field_name} must be a number")
+        return value
+
+    @field_validator("gain_db", mode="before")
+    @classmethod
+    def reject_coerced_gain(cls, value):
+        if value is None:
+            return value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("gain_db must be a number")
+        return value
+
+
+class StemCratePatchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str | None = None
+    role: Literal["beat", "bass", "other", "voice"] | None = None
+    loop_bars: Literal[1, 2, 4, 8] | None = None
+    region_start_beat: float | None = Field(default=None, ge=0)
+    region_end_beat: float | None = Field(default=None, gt=0)
+    gain_db: float | None = Field(default=None, ge=-24, le=12)
+
+    @field_validator(
+        "region_start_beat", "region_end_beat", "gain_db", mode="before",
+    )
+    @classmethod
+    def reject_coerced_numbers(cls, value, info):
+        if value is None:
+            return value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{info.field_name} must be a number")
+        return value
+
+
 class RenderResultPatchBody(BaseModel):
     display_name: str = Field(min_length=1, max_length=200)
 
@@ -326,6 +380,33 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
             path, media_type=media_type, filename=path.name,
             content_disposition_type="attachment" if download else "inline",
         )
+
+    # ------------------------------------------------------------------
+    # Stem crate (Phase 14B.1)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/stem-crate")
+    def list_stem_crate(
+        limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        q: str | None = Query(default=None),
+        role: Literal["beat", "bass", "other", "voice"] | None = Query(default=None),
+    ):
+        return service.list_stem_crate_items(limit=limit, offset=offset, query=q, role=role)
+
+    @app.post("/api/stem-crate", status_code=201)
+    def create_stem_crate_item(body: StemCrateCreateBody):
+        return service.create_stem_crate_item(**body.model_dump())
+
+    @app.patch("/api/stem-crate/{item_id}")
+    def patch_stem_crate_item(item_id: str, body: StemCratePatchBody):
+        fields = body.model_dump(exclude_unset=True)
+        return service.update_stem_crate_item(item_id, **fields)
+
+    @app.delete("/api/stem-crate/{item_id}", status_code=204)
+    def delete_stem_crate_item(item_id: str):
+        service.delete_stem_crate_item(item_id)
+        return None
 
     # ------------------------------------------------------------------
     # Projects

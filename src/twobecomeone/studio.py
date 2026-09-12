@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from . import __version__, analyzer, assembler, beatgrid, ghost_assets, media, migrations, projects, separator, sources
+from . import __version__, analyzer, assembler, beatgrid, ghost_assets, media, migrations, projects, separator, sources, stem_crate
 from .action_store import ActionStore
 from .common import (
     MAX_MEDIA_BYTES,
@@ -230,6 +230,7 @@ class StudioService:
         self._store = JobStore(self._connect)
         self._engine = JobEngine(self._store, error_formatter=self._public_job_error)
         self._projects = projects.ProjectStore(self._connect)
+        self._stem_crate = stem_crate.StemCrateStore(self._connect)
         self._ghost_assets = ghost_assets.GhostAssetStore(
             self._connect,
             self.data_dir,
@@ -2278,6 +2279,185 @@ class StudioService:
         if resolved is None:
             raise UserError(f"stem media is unavailable or corrupt: {name}")
         return resolved
+
+    # ------------------------------------------------------------------
+    # Stem crate (Phase 14B.1)
+    # ------------------------------------------------------------------
+
+    def _track_grid_revision(self, track: dict) -> str:
+        row = self._get_track_row(track["id"])
+        bpm = row["bpm_override"] if row["bpm_override"] is not None else row["bpm"]
+        track_for_grid = dict(track)
+        track_for_grid["content_sha256"] = row["content_sha256"]
+        return ghost_assets.GhostAssetStore._server_grid_facts(track_for_grid, float(bpm))["revision"]
+
+    def _track_overrides_active(self, track_id: str) -> bool:
+        row = self._get_track_row(track_id)
+        return any(
+            row[field] is not None
+            for field in (
+                "bpm_override",
+                "tonic_override",
+                "mode_override",
+                "first_beat_override",
+                "downbeat_override",
+            )
+        )
+
+    def _stem_set_row(self, stem_set_id: str) -> sqlite3.Row:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM stem_sets WHERE id = ?", (stem_set_id,)
+            ).fetchone()
+        if row is None:
+            raise UserError(f"unknown stem set: {stem_set_id}")
+        return row
+
+    def _validate_stem_crate_source(
+        self,
+        *,
+        track_id: str,
+        stem_set_id: str,
+        stem_name: str,
+    ) -> sqlite3.Row:
+        self._validate_project_track(track_id, "track_id")
+        track_sha256 = self._track_content_hash(track_id)
+        row = self._stem_set_row(stem_set_id)
+        if row["track_sha256"] != track_sha256 or row["track_id"] != track_id:
+            raise UserError("stem set does not belong to this track")
+        if row["status"] != "complete":
+            raise UserError("stem set is not complete")
+        stem_name = stem_crate.validate_stem_name(stem_name)
+        paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+        rel = paths.get(stem_name)
+        if rel is None:
+            raise UserError(f"stem '{stem_name}' not found in stem set {stem_set_id}")
+        if self._validated_stem_path(rel, stem_name) is None:
+            raise UserError(f"stem media is unavailable or corrupt: {stem_name}")
+        return row
+
+    def _enrich_stem_crate_item(self, item: dict) -> dict:
+        enriched = dict(item)
+        try:
+            current_hash = self._track_content_hash(item["track_id"])
+        except NotFoundError:
+            enriched["media_status"] = "unavailable"
+            enriched["audio_url"] = None
+            return enriched
+
+        if current_hash != item["content_sha256"]:
+            enriched["media_status"] = "stale_hash"
+            enriched["audio_url"] = None
+            return enriched
+
+        try:
+            row = self._stem_set_row(item["stem_set_id"])
+            paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+            rel = paths.get(item["stem_name"])
+            if rel is None or self._validated_stem_path(rel, item["stem_name"]) is None:
+                enriched["media_status"] = "unavailable"
+                enriched["audio_url"] = None
+                return enriched
+        except UserError:
+            enriched["media_status"] = "unavailable"
+            enriched["audio_url"] = None
+            return enriched
+
+        enriched["media_status"] = "available"
+        enriched["audio_url"] = (
+            f"/api/stems/{item['stem_set_id']}/audio?name={item['stem_name']}"
+        )
+        return enriched
+
+    def create_stem_crate_item(
+        self,
+        *,
+        track_id: str,
+        stem_set_id: str,
+        stem_name: str,
+        role: str,
+        loop_bars: int = 4,
+        region_start_beat: float = 0.0,
+        region_end_beat: float | None = None,
+        label: str | None = None,
+        gain_db: float | None = None,
+    ) -> dict:
+        stem_row = self._validate_stem_crate_source(
+            track_id=track_id,
+            stem_set_id=stem_set_id,
+            stem_name=stem_name,
+        )
+        role = stem_crate.validate_role(role)
+        loop_bars = stem_crate.validate_loop_bars(loop_bars)
+        if region_end_beat is None:
+            region_end_beat = region_start_beat + loop_bars * 4.0
+        start, end = stem_crate.validate_region(region_start_beat, region_end_beat)
+        gain_db = stem_crate.validate_gain_db(gain_db)
+        if label is not None:
+            label = media.sanitize_text(label, stem_crate.MAX_LABEL_LEN) or None
+
+        track = self.get_track(track_id)
+        row = self._get_track_row(track_id)
+        effective_bpm = float(track["bpm"])
+        record = {
+            "schema_version": stem_crate.SCHEMA_VERSION,
+            "track_id": track_id,
+            "content_sha256": row["content_sha256"],
+            "stem_set_id": stem_set_id,
+            "stem_name": stem_crate.validate_stem_name(stem_name),
+            "method": stem_row["method"],
+            "model_name": stem_row["model_name"],
+            "device": stem_row["device"],
+            "role": role,
+            "provenance": stem_crate.PROVENANCE,
+            "effective_bpm": effective_bpm,
+            "effective_tonic": track["key"]["tonic"],
+            "effective_mode": track["key"]["mode"],
+            "grid_revision": self._track_grid_revision(track),
+            "analysis_confidence": track["key"]["confidence"],
+            "overrides_active": self._track_overrides_active(track_id),
+            "region_start_beat": start,
+            "region_end_beat": end,
+            "loop_bars": loop_bars,
+            "label": label,
+            "gain_db": gain_db,
+        }
+        item = self._stem_crate.insert(record)
+        return self._enrich_stem_crate_item(item)
+
+    def get_stem_crate_item(self, item_id: str) -> dict:
+        item = self._stem_crate.get(item_id)
+        return self._enrich_stem_crate_item(item)
+
+    def list_stem_crate_items(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        query: str | None = None,
+        role: str | None = None,
+    ) -> dict:
+        limit = max(1, min(stem_crate.MAX_LIST_LIMIT, limit))
+        offset = max(0, offset)
+        items, total = self._stem_crate.list(
+            limit=limit,
+            offset=offset,
+            query=query,
+            role=role,
+        )
+        return {
+            "items": [self._enrich_stem_crate_item(item) for item in items],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def update_stem_crate_item(self, item_id: str, **fields: Any) -> dict:
+        item = self._stem_crate.update(item_id, **fields)
+        return self._enrich_stem_crate_item(item)
+
+    def delete_stem_crate_item(self, item_id: str) -> None:
+        self._stem_crate.delete(item_id)
 
     def _resolve_stem_variant(self, track_id: str, variant: str | None) -> Path:
         """Resolve a requested stem variant to a concrete audio path.

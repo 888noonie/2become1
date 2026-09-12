@@ -230,6 +230,45 @@ MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
             " ON proposal_lifecycle_facts(project_id, proposal_id, recorded_at)",
         ],
     ),
+    (
+        11,
+        "stem crate items (Phase 14B.1)",
+        [
+            "CREATE TABLE stem_crate_items ("
+            " id TEXT PRIMARY KEY,"
+            " schema_version INTEGER NOT NULL DEFAULT 1,"
+            " track_id TEXT NOT NULL,"
+            " content_sha256 TEXT NOT NULL,"
+            " stem_set_id TEXT NOT NULL,"
+            " stem_name TEXT NOT NULL,"
+            " method TEXT NOT NULL,"
+            " model_name TEXT NOT NULL,"
+            " device TEXT,"
+            " role TEXT NOT NULL,"
+            " provenance TEXT NOT NULL DEFAULT 'source_track_inherited',"
+            " effective_bpm REAL,"
+            " effective_tonic TEXT,"
+            " effective_mode TEXT,"
+            " grid_revision TEXT NOT NULL,"
+            " analysis_confidence REAL,"
+            " overrides_active INTEGER NOT NULL DEFAULT 0,"
+            " region_start_beat REAL NOT NULL,"
+            " region_end_beat REAL NOT NULL,"
+            " loop_bars INTEGER NOT NULL,"
+            " label TEXT,"
+            " gain_db REAL,"
+            " created_at REAL NOT NULL,"
+            " updated_at REAL NOT NULL"
+            ")",
+            "CREATE INDEX idx_stem_crate_items_created"
+            " ON stem_crate_items(created_at DESC)",
+            "CREATE INDEX idx_stem_crate_items_role"
+            " ON stem_crate_items(role, created_at DESC)",
+            "CREATE UNIQUE INDEX idx_stem_crate_items_source_region"
+            " ON stem_crate_items(track_id, stem_set_id, stem_name,"
+            " region_start_beat, region_end_beat)",
+        ],
+    ),
 ]
 
 
