@@ -97,7 +97,7 @@ export function beatSeconds(track) {
  * { ok: true } or { ok: false, message, action? } where action names the
  * honest fix chosen by the user (never automatic).
  */
-export function checkGhostPreconditions({ project, anchorTrack, leadTrack, playback, session }) {
+export function checkGhostPreconditions({ project, anchorTrack, leadTrack, playback, decks, session }) {
   if (!project?.id) {
     return { ok: false, message: 'Create a mix first.' };
   }
@@ -136,7 +136,11 @@ export function checkGhostPreconditions({ project, anchorTrack, leadTrack, playb
   if (ratio < MIN_TEMPO_RATIO || ratio > MAX_TEMPO_RATIO) {
     return { ok: false, message: FRIENDLY_ERRORS.S_TEMPO_RATIO_OUT_OF_RANGE };
   }
-  if (!playback?.playing) {
+  const leadDeckPlaying = decks?.B?.playing === true && decks.B.trackId === leadTrack.id;
+  const previewLeadPlaying = playback?.playing === true && (
+    playback.source?.trackId === leadTrack.id || playback.trackId === leadTrack.id
+  );
+  if (!leadDeckPlaying && !previewLeadPlaying) {
     return { ok: false, message: FRIENDLY_ERRORS.T_TRANSPORT_NOT_PLAYING };
   }
   return { ok: true };

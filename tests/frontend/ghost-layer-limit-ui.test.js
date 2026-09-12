@@ -19,10 +19,14 @@ async function loadModule() {
 const project = { id: 'p-1' };
 const anchorTrack = { id: 't-a', name: 'Anchor', bpm: 120, duration: 60, beat_grid: { first_beat: 0, interval: 0.5 } };
 const leadTrack = { id: 't-b', name: 'Lead', bpm: 120, duration: 60, beat_grid: { first_beat: 0, interval: 0.5 } };
-const playback = { playing: true };
+const playback = { playing: false };
+const decks = {
+  A: { playing: false, trackId: null },
+  B: { playing: true, trackId: 't-b' },
+};
 
 function baseArgs(session) {
-  return { project, anchorTrack, leadTrack, playback, session };
+  return { project, anchorTrack, leadTrack, playback, decks, session };
 }
 
 test('preview entry is allowed while no committed layer exists', async () => {
@@ -49,6 +53,26 @@ test('preview entry is allowed again after the layer is reverted', async () => {
 test('missing session shape never blocks the preview entry', async () => {
   // Defensive: an absent session (older hydration) must not throw or block.
   const { checkGhostPreconditions } = await loadModule();
-  const result = checkGhostPreconditions({ project, anchorTrack, leadTrack, playback });
+  const result = checkGhostPreconditions({ project, anchorTrack, leadTrack, playback, decks });
   assert.equal(result.ok, true);
+});
+
+test('preview entry requires Lead deck B transport, not library playback alone', async () => {
+  const { checkGhostPreconditions } = await loadModule();
+  const stopped = checkGhostPreconditions({
+    project, anchorTrack, leadTrack,
+    playback: { playing: false },
+    decks: { A: { playing: false, trackId: null }, B: { playing: false, trackId: null } },
+    session: { committedLayers: [] },
+  });
+  assert.equal(stopped.ok, false);
+  assert.match(stopped.message, /Start Lead playback/i);
+
+  const playing = checkGhostPreconditions({
+    project, anchorTrack, leadTrack,
+    playback: { playing: false },
+    decks: { A: { playing: false, trackId: null }, B: { playing: true, trackId: 't-b' } },
+    session: { committedLayers: [] },
+  });
+  assert.equal(playing.ok, true);
 });
