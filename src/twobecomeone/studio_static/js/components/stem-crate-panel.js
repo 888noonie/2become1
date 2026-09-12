@@ -49,6 +49,8 @@ export function mountStemCratePanel({
   store,
   onAnnounce,
   stackController,
+  ghostController = null,
+  liveMixer = null,
 } = {}) {
   if (!container) throw new Error('mountStemCratePanel requires a container');
 
@@ -108,6 +110,30 @@ export function mountStemCratePanel({
     text: 'Undo stack',
     disabled: 'true',
   });
+  const muteBtn = createElement('button', {
+    class: 'button button--sm stem-crate__mute',
+    type: 'button',
+    text: 'Mute stack',
+    'aria-pressed': 'false',
+  });
+  const gainSlider = createElement('input', {
+    class: 'stem-crate__gain',
+    type: 'range',
+    min: '-24',
+    max: '6',
+    step: '1',
+    value: '0',
+    'aria-label': 'Stem stack gain',
+  });
+  muteBtn.addEventListener('click', () => {
+    if (!liveMixer) return;
+    const muted = !liveMixer.getMixerState().stack?.muted;
+    liveMixer.muteStack(muted);
+    onAnnounce?.(muted ? 'Stem stack muted.' : 'Stem stack unmuted.');
+  });
+  gainSlider.addEventListener('input', (event) => {
+    liveMixer?.setStackGain(event.target.value);
+  });
   const grid = createElement('div', { class: 'stem-crate__grid' });
   const addBtn = createElement('button', {
     class: 'button',
@@ -122,6 +148,11 @@ export function mountStemCratePanel({
   let disposed = false;
   const slots = { beat: null, bass: null, other: null, voice: null };
   let lastCommitActionId = null;
+  if (stackController) {
+    stackController.onPhaseChange = () => {
+      if (!disposed) refreshStackChrome();
+    };
+  }
 
   function setFilter(nextRole) {
     role = nextRole;
@@ -189,6 +220,7 @@ export function mountStemCratePanel({
       const result = await stackController.commit();
       const projectId = store.getState().currentProject?.id;
       if (projectId) await hydrateProjection(projectId);
+      if (ghostController?.syncCommittedLayers) await ghostController.syncCommittedLayers();
       const layers = store.getState().session?.committedLayers || [];
       if (layers.length) lastCommitActionId = layers[layers.length - 1].actionId;
       onAnnounce?.('Stem stack committed.');
@@ -207,6 +239,7 @@ export function mountStemCratePanel({
       await stackController.revert(commitActionId);
       const projectId = store.getState().currentProject?.id;
       if (projectId) await hydrateProjection(projectId);
+      if (ghostController?.syncCommittedLayers) await ghostController.syncCommittedLayers();
       lastCommitActionId = null;
     } catch (err) {
       showToast(err.message, 'danger');
@@ -222,6 +255,13 @@ export function mountStemCratePanel({
     feverEl,
     stackStatusEl,
     createElement('div', { class: 'stem-crate__stack-actions' }, [previewBtn, commitBtn, undoBtn]),
+    createElement('div', { class: 'stem-crate__bus', role: 'group', 'aria-label': 'Stem stack bus' }, [
+      muteBtn,
+      createElement('label', { class: 'stem-crate__gain-label' }, [
+        createElement('span', { text: 'Stack gain' }),
+        gainSlider,
+      ]),
+    ]),
     createElement('div', { class: 'stem-crate__toolbar' }, [search, filters]),
     grid,
     addBtn,
@@ -305,15 +345,21 @@ export function mountStemCratePanel({
   }
 
   function refreshStackChrome() {
-    const recipe = feverRecipe(slots);
+    const mixerStack = liveMixer?.getMixerState?.()?.stack || store.getState().mixer?.stack || null;
+    const recipe = feverRecipe(slots, mixerStack);
     feverEl.textContent = recipe.label;
     feverEl.dataset.unlocked = recipe.unlocked ? 'true' : 'false';
     const snap = stackController?.snapshot?.() || { phase: 'idle' };
-    stackStatusEl.textContent = `Stack ${stackStateLabel(snap.phase)}`;
+    stackStatusEl.textContent = `Stack ${stackStateLabel(snap.phase, mixerStack)}`;
     previewBtn.disabled = placedCount() < 1 || !stackController;
     commitBtn.disabled = snap.phase !== 'auditioning';
     const hasLayer = (store.getState().session?.committedLayers || []).length > 0;
     undoBtn.disabled = !hasLayer && !lastCommitActionId;
+    muteBtn.setAttribute('aria-pressed', mixerStack?.muted ? 'true' : 'false');
+    muteBtn.textContent = mixerStack?.muted ? 'Unmute stack' : 'Mute stack';
+    if (gainSlider.value !== String(mixerStack?.gainDb ?? 0)) {
+      gainSlider.value = String(mixerStack?.gainDb ?? 0);
+    }
     renderSlots();
   }
 
@@ -495,11 +541,16 @@ export function mountStemCratePanel({
   const unsub = store.subscribeSlice
     ? store.subscribeSlice('currentProject', () => { refreshOutcome(); refreshStackChrome(); })
     : store.subscribe(() => { refreshOutcome(); refreshStackChrome(); });
+  const unsubMixer = store.subscribeSlice
+    ? store.subscribeSlice('mixer', () => refreshStackChrome())
+    : null;
 
   return function dispose() {
     disposed = true;
     window.clearTimeout(searchTimer);
     unsub?.();
+    unsubMixer?.();
+    if (stackController && stackController.onPhaseChange) stackController.onPhaseChange = null;
     container.replaceChildren();
   };
 }

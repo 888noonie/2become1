@@ -67,6 +67,7 @@ export const stemStackController = new StemStackController({
     buildRevertAction,
     buildLifecycleBody,
   },
+  liveMixer,
   audioContextFactory: {
     create: () => new AudioContext(),
   },

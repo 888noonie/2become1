@@ -32,7 +32,7 @@ export function destinationBarsFromSlots(slots) {
   return bars.length ? Math.max(...bars) : 4;
 }
 
-export function feverRecipe(slots) {
+export function feverRecipe(slots, mixerStack) {
   const filled = CRATE_ROLES.filter((role) => slots[role]);
   if (filled.length !== 4) {
     return {
@@ -47,13 +47,26 @@ export function feverRecipe(slots) {
   if (stale) {
     return { unlocked: false, label: 'Fever blocked: a slot is stale or unavailable' };
   }
+  if (mixerStack?.error) {
+    return { unlocked: false, label: 'Fever blocked: stack bus unavailable' };
+  }
+  if (mixerStack?.muted) {
+    return { unlocked: false, label: 'Fever blocked: stack bus is muted' };
+  }
   return {
     unlocked: true,
     label: 'Fever recipe: beat + bass + other + voice',
   };
 }
 
-export function stackStateLabel(phase) {
+export function stackStateLabel(phase, mixerStack) {
+  if (mixerStack?.error) return 'error';
+  if (mixerStack?.state && mixerStack.state !== 'empty') {
+    if (mixerStack.muted && (mixerStack.state === 'live' || mixerStack.state === 'scheduled')) {
+      return 'muted';
+    }
+    return mixerStack.state;
+  }
   if (phase === 'preparing') return 'loading';
   if (phase === 'armed') return 'scheduled';
   if (phase === 'auditioning') return 'live';

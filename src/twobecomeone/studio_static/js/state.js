@@ -70,6 +70,19 @@ function emptyMixerState() {
       clipping: false,
       attenuationRecommended: false,
     },
+    stack: {
+      layerId: null,
+      actionId: null,
+      assetId: null,
+      contentHash: null,
+      state: 'empty',
+      muted: false,
+      gainDb: 0,
+      playing: false,
+      audible: false,
+      receipt: null,
+      error: null,
+    },
   };
 }
 

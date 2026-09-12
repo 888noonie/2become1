@@ -69,6 +69,9 @@ export class CommittedLayerEngine {
     this.clearTimer = deps.clearTimer;
     this.onStateChange = deps.onStateChange || (() => {});
     this._resolvePlacement = deps.resolvePlacement || resolveLivePlacement;
+    // Phase 15C: stem-stack instances route into LiveMixer.stemStack, not
+    // the context destination. Ghost vocal layers keep the default.
+    this._outputNode = deps.outputNode || null;
 
     // One live layer at most (fixed musical policy).
     this._entry = null;          // { layer, state, buffer, controller, sources:Set,
@@ -273,7 +276,7 @@ export class CommittedLayerEngine {
     const gainNode = this.ctx.createGain();
     gainNode.gain.value = receipt.gainLinear;
     source.connect(gainNode);
-    gainNode.connect(this.ctx.destination);
+    gainNode.connect(this._outputNode || this.ctx.destination);
     // Track BOTH the source and its gain node so teardown disconnects the
     // gain from the destination too — otherwise every phrase leaks a
     // connected GainNode that keeps the graph alive after suspension.

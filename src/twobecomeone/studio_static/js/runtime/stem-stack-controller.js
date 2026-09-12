@@ -1,9 +1,9 @@
 // js/runtime/stem-stack-controller.js — FUN stem-stack preview/commit runtime.
 //
-// Schedules one server-prepared stereo asset on a controller-owned AudioContext.
-// Does not use the footer audioController singleton and does not require Lead
-// deck ownership (that bus is Phase 15C). GhostScheduler is reused as the
-// one-buffer scheduler.
+// Schedules one server-prepared stereo asset. Prefers the LiveMixer AudioContext
+// when one is already running so preview shares the three-bus graph clock.
+// Does not use the footer audioController singleton. GhostScheduler is reused
+// as the one-buffer scheduler; commit hydrates into LiveMixer.stemStack.
 
 import { GhostScheduler } from './ghost-scheduler.js';
 import { preparedAssetAudioUrl } from '../stem-stack.js';
@@ -18,6 +18,8 @@ export class StemStackController {
     this.api = deps.api;
     this.onAnnounce = deps.onAnnounce || (() => {});
     this._ctxFactory = deps.audioContextFactory;
+    this.liveMixer = deps.liveMixer || null;
+    this.onPhaseChange = deps.onPhaseChange || null;
     this._schedulerFactory = deps.schedulerFactory || ((d) => new GhostScheduler(d));
     this._disposed = false;
     this._ctx = null;
@@ -32,7 +34,13 @@ export class StemStackController {
       phase: this._phase,
       proposalId: this._gen?.proposalId || null,
       assetId: this._gen?.asset?.id || null,
+      launchAudioTime: this._gen?.receipt?.launchAudioTime ?? null,
     };
+  }
+
+  _setPhase(phase) {
+    this._phase = phase;
+    try { this.onPhaseChange?.(this.snapshot()); } catch { /* chrome refresh is best-effort */ }
   }
 
   async preview({ projectId, action, outcome }) {
@@ -41,7 +49,8 @@ export class StemStackController {
     const proposal = outcome?.proposal || outcome?.outcome?.proposal;
     const asset = outcome?.asset || outcome?.outcome?.asset;
     if (!proposal || !asset) throw new Error('stem stack preview returned no asset');
-    this._phase = 'preparing';
+    this._setPhase('preparing');
+    if (this.liveMixer?.ensureGraph) await this.liveMixer.ensureGraph();
     const ctx = this._ensureContext();
     if (ctx.resume) await ctx.resume().catch(() => {});
     this._gen = { projectId, proposal, asset, proposalId: proposal.id };
@@ -57,11 +66,11 @@ export class StemStackController {
       audioUrl: preparedAssetAudioUrl(asset),
     });
     if (!scheduled.ok) {
-      this._phase = 'failed';
+      this._setPhase('failed');
       throw new Error(scheduled.code || 'stack schedule failed');
     }
     this._gen.receipt = scheduled.receipt;
-    this._phase = 'armed';
+    this._setPhase('armed');
     this._watchLaunch(scheduled.receipt);
     this.onAnnounce('Stem stack scheduled for the next phrase.');
   }
@@ -71,10 +80,12 @@ export class StemStackController {
     if (!gen || this._phase !== 'auditioning') {
       throw new Error('Commit needs an auditioning stem stack');
     }
-    this._phase = 'committing';
+    this._setPhase('committing');
     const action = this.api.buildCommitStemStackAction(gen.proposalId, gen.asset);
     const result = await this.api.postProjectAction(gen.projectId, action);
-    this._phase = 'committed';
+    this._stopObserver();
+    if (this._scheduler && gen.proposalId) this._scheduler.cancel(gen.proposalId);
+    this._setPhase('committed');
     this.onAnnounce('Stem stack committed.');
     return result;
   }
@@ -93,7 +104,7 @@ export class StemStackController {
       this._scheduler.cancel(this._gen.proposalId);
     }
     this._gen = null;
-    this._phase = 'idle';
+    this._setPhase('idle');
   }
 
   dispose() {
@@ -103,6 +114,11 @@ export class StemStackController {
   }
 
   _ensureContext() {
+    const shared = this.liveMixer?.audioContext?.();
+    if (shared) {
+      this._ctx = shared;
+      return this._ctx;
+    }
     if (!this._ctx) this._ctx = this._ctxFactory.create();
     return this._ctx;
   }
@@ -143,7 +159,7 @@ export class StemStackController {
       if (this._ctx.currentTime + 1e-9 < receipt.launchAudioTime) return;
       this._stopObserver();
       this._recordAuditioning(receipt).catch((err) => {
-        this._phase = 'failed';
+        this._setPhase('failed');
         this.onAnnounce(err.message || 'Could not record stack auditioning');
       });
     }, LAUNCH_OBSERVER_INTERVAL_MS);
@@ -162,7 +178,7 @@ export class StemStackController {
         launchBeat: receipt.resolvedBeat ?? receipt.launchBeat ?? 0,
       }),
     );
-    this._phase = 'auditioning';
+    this._setPhase('auditioning');
     this.onAnnounce('Stem stack is auditioning.');
   }
 

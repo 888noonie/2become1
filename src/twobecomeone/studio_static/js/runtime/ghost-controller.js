@@ -647,10 +647,17 @@ export class GhostController {
     if (this._disposed || this._liveEngineTornDown) return { ok: false, code: 'DISPOSED' };
     const session = this.store.getState().session || {};
     const committed = Array.isArray(session.committedLayers) ? session.committedLayers : [];
+    const stackLayers = committed.filter((layer) => layer?.kind === 'stem_stack');
+    const ghostLayers = committed.filter((layer) => layer?.kind !== 'stem_stack');
+    if (this.liveMixer && typeof this.liveMixer.syncStemStack === 'function') {
+      await this.liveMixer.syncStemStack(stackLayers[0] || null, {
+        transportProvider: (layer) => this._stackTransportProvider(layer),
+      });
+    }
     // Seed/trim the controller-owned per-layer records from authority, then
     // converge the engine. Engine state events refine the seeded records.
     const nextIds = new Set();
-    for (const layer of committed) {
+    for (const layer of ghostLayers) {
       const layerId = layer?.layerId || layer?.actionId;
       if (!layerId) continue;
       nextIds.add(layerId);
@@ -667,7 +674,7 @@ export class GhostController {
     for (const layerId of [...this._liveLayerStates.keys()]) {
       if (!nextIds.has(layerId)) this._liveLayerStates.delete(layerId);
     }
-    if (committed.length === 0) {
+    if (ghostLayers.length === 0) {
       // Nothing to play: clear any suspended engine state honestly.
       if (this._liveEngine) await this._liveEngine.sync([]);
       this._publishLiveSlice();
@@ -678,9 +685,46 @@ export class GhostController {
       this._publishLiveSlice();
       return { ok: false, code: 'NO_ENGINE' };
     }
-    const result = await engine.sync(committed);
+    const result = await engine.sync(ghostLayers);
     this._publishLiveSlice();
     return result;
+  }
+
+  /** Public seam for crate commit/undo hydration to converge the live mixer. */
+  syncCommittedLayers() {
+    return this._syncLiveEngine();
+  }
+
+  /**
+   * Quantize the committed stack against the selected master deck. Stack
+   * destination-grid identity is baked into the prepared asset; live timing
+   * follows the master's clock, not Ghost Lead-only ownership.
+   */
+  _stackTransportProvider(layer) {
+    if (!this.liveMixer) {
+      throw Object.assign(new Error('live mixer unavailable'), { code: 'T_TRANSPORT_UNAVAILABLE' });
+    }
+    const masterName = this.liveMixer.getMixerState()?.masterDeck || 'A';
+    const deck = this.liveMixer.getDeck(masterName) || { playing: false, time: 0, contextClock: 0 };
+    const state = this.store.getState();
+    const project = state.currentProject || {};
+    const trackId = masterName === 'B' ? project.lead_track_id : project.anchor_track_id;
+    const track = trackId ? (state.deckTracks[trackId] ?? null) : null;
+    if (!deck.playing) {
+      throw Object.assign(new Error('master deck is not playing'), { code: 'T_TRANSPORT_NOT_PLAYING' });
+    }
+    const result = buildDeckTransport({
+      deck: masterName,
+      track,
+      elementSeconds: deck.time,
+      playing: true,
+      audioClockNow: deck.contextClock || 0,
+      expectTrackId: trackId,
+    });
+    if (!result.ok) {
+      throw Object.assign(new Error(`stack transport unavailable: ${result.code}`), { code: result.code });
+    }
+    return result.value;
   }
 
   /**
@@ -1320,6 +1364,9 @@ export class GhostController {
     }
     this._liveEngine = null;
     this._liveEngineTornDown = true;
+    if (this.liveMixer && typeof this.liveMixer.stopStemStack === 'function') {
+      this.liveMixer.stopStemStack();
+    }
   }
 
   _cancelGenerationRuntime() {
