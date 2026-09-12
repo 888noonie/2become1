@@ -391,8 +391,18 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
         offset: int = Query(default=0, ge=0),
         q: str | None = Query(default=None),
         role: Literal["beat", "bass", "other", "voice"] | None = Query(default=None),
+        against: str | None = Query(default=None),
     ):
-        return service.list_stem_crate_items(limit=limit, offset=offset, query=q, role=role)
+        return service.list_stem_crate_items(
+            limit=limit, offset=offset, query=q, role=role, against_id=against
+        )
+
+    @app.get("/api/stem-crate/compatibility")
+    def stem_crate_compatibility(
+        source: str = Query(min_length=1),
+        against: str = Query(min_length=1),
+    ):
+        return service.stem_crate_compatibility(source, against)
 
     @app.post("/api/stem-crate", status_code=201)
     def create_stem_crate_item(body: StemCrateCreateBody):
