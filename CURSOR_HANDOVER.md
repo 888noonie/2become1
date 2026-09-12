@@ -20,10 +20,10 @@ This section supersedes the older "Start here" below for the next session.
   minify merely to pass the number. After Phase 16, replace this allowance
   with measured initial-load, startup, memory, and audio-performance budgets.
   CI does not yet enforce the ceiling; add that check later.
-- **Six-file wiring is no longer blocked by the old 500,000 ceiling.**
-  `PHASE_15A_DELETION_INVENTORY.md` still projects ~501,100 bytes after
-  wiring (~1.1 KB net). That fits the new hard ceiling. Wiring remains
-  **unauthorized this cycle** (held with 14B.2/14B.3) until Richard names it.
+- **Phase 15A wiring is on `main` at `2a4ccce`** (Zeus PASS `faea508..2a4ccce`,
+  Gate A+B demo, Richard merge 2026-09-12). Decks A/B play together via
+  LiveMixer. Footer/library preview remains `audioController`. Static at that
+  tip: **504,050** bytes. Remaining 14/15 work and bot rules: `GROUNDWORK.md`.
 - **Product decision (approved):** the `audioController` singleton stays as the
   exclusive preview/audition channel (footer/library); deck pads show their own
   A/B state. The committed layer already runs on its own AudioContext.
@@ -36,15 +36,15 @@ This section supersedes the older "Start here" below for the next session.
 - **Stem-stack architecture APPROVED:** up to four stem loops → one prepared
   composite asset → one committed layer. Naming: "WaxDrop" is Loopit-mock-only;
   the feature lives in the existing FUN tab.
-- **Next authorized work (awaiting Richard's go):** Phase 14B (persistent stem
-  crate + loop specs), then Phase 15A–B wiring (simultaneous DJ decks + live
-  crossfader), then Phase 14C/15C convergence. See the tracked plans:
+- **Next authorized work:** `GROUNDWORK.md` order — 15B live crossfader, then
+  14B.2 loop truth, 14B.3 crate UI, 14C stem stack, 15C A+B+stack. Richard
+  still merges `main`. See:
   - `PHASE_14_STEM_CRATE_TRI_PHASE_PLAN.md`
   - `PHASE_15_THREE_BUS_LIVE_MIXER_TRI_PHASE_PLAN.md`
-- **Key audio truth:** the current `AudioController` owns ONE audio element and
-  stops deck A when deck B starts (pinned by `tests/frontend/audio.test.js:11`).
-  Simultaneous A + B + stem-stack audibility is NOT yet met — that is Phase 15.
-  Do not wire Phase 14C to the singleton player and claim the requirement is met.
+- **Key audio truth:** decks A/B are LiveMixer transports (15A). The footer
+  singleton `audioController` still owns one HTML audio element for library
+  preview (`tests/frontend/audio.test.js`). Simultaneous A+B+stem-stack is
+  **not** met until 14C+15C. Do not wire Phase 14C to the singleton player.
 - **Phase 13 (listener-truth closure)** remains open: loopback (Class C) and
   acceptance tolerances are still pending; see
   `.hermes/plans/2026-09-07_000314-phase13-listener-truth-closure.md`.
