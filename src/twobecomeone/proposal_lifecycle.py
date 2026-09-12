@@ -28,6 +28,7 @@ from typing import Any
 
 from .common import ConflictError, NotFoundError, UserError
 from .ghost_assets import ASSET_ID_RE
+from .stem_stack import STACK_ID_RE
 
 # Frozen V1 lifecycle states (mirrors js/actions/lifecycle.js).
 LIFECYCLE_READY = "ready"
@@ -110,8 +111,8 @@ def scrub_fact(raw_fact) -> dict:
     scrubbed: dict = {}
     if "assetId" in raw_fact:
         value = raw_fact["assetId"]
-        if not isinstance(value, str) or not ASSET_ID_RE.match(value):
-            _fail("V_LIFECYCLE_FACT_INVALID", "assetId must be an opaque ga-<32 hex> identifier")
+        if not isinstance(value, str) or not (ASSET_ID_RE.match(value) or STACK_ID_RE.match(value)):
+            _fail("V_LIFECYCLE_FACT_INVALID", "assetId must be an opaque ga-<32 hex> or ss-<32 hex> identifier")
         scrubbed["assetId"] = value
     if "contentHash" in raw_fact:
         if not isinstance(raw_fact["contentHash"], str) or not CONTENT_HASH_RE.match(raw_fact["contentHash"]):

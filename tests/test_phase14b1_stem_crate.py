@@ -96,7 +96,7 @@ class TestMigration11StemCrate:
                 assert "idx_stem_crate_items_created" in idx
                 assert "idx_stem_crate_items_role" in idx
                 assert "idx_stem_crate_items_source_region" in idx
-                assert latest_version() == 11
+                assert latest_version() == 12
         finally:
             service.close()
 

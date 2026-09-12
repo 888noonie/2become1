@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from . import __version__, analyzer, assembler, beatgrid, ghost_assets, media, migrations, projects, separator, sources, stem_crate, stem_crate_truth
+from . import __version__, analyzer, assembler, beatgrid, ghost_assets, media, migrations, projects, separator, sources, stem_crate, stem_crate_truth, stem_stack
 from .action_store import ActionStore
 from .common import (
     MAX_MEDIA_BYTES,
@@ -235,11 +235,12 @@ class StudioService:
             self._connect,
             self.data_dir,
         )
+        self._stem_stack = stem_stack.StemStackStore(self._connect, self.data_dir)
         self._actions = ActionStore(
             self._connect,
             asset_preparer=self._prepare_preview_asset,
-            asset_registrar=self._ghost_assets.register_prepared,
-            asset_discarder=self._ghost_assets.discard_prepared,
+            asset_registrar=self._register_prepared_asset,
+            asset_discarder=self._discard_prepared_asset,
             asset_verifier=self._verify_and_pin_asset,
         )
         self._closed = False
@@ -247,6 +248,14 @@ class StudioService:
     def _prepare_preview_asset(self, project_id: str, validated_action: dict) -> dict:
         """Prepare managed bytes before the short append transaction begins."""
         project = self.get_project(project_id)
+        if validated_action["type"] == "preview_stem_stack":
+            return self._stem_stack.prepare(
+                project,
+                validated_action,
+                get_crate_item=self._stack_crate_item,
+                resolve_stem_path=self._stack_stem_path,
+                ffmpeg_version=self._ffmpeg_version(),
+            )
         return self._ghost_assets.prepare_for_preview(
             project,
             validated_action,
@@ -256,9 +265,41 @@ class StudioService:
             ffmpeg_version=self._ffmpeg_version,
         )
 
+    def _register_prepared_asset(self, preparation: dict, conn) -> None:
+        if preparation.get("kind") == "stem_stack":
+            self._stem_stack.register_prepared(preparation, conn)
+            return
+        self._ghost_assets.register_prepared(preparation, conn)
+
+    def _discard_prepared_asset(self, preparation: dict) -> None:
+        if preparation.get("kind") == "stem_stack":
+            self._stem_stack.discard_prepared(preparation)
+            return
+        self._ghost_assets.discard_prepared(preparation)
+
     def _verify_and_pin_asset(self, project_id: str, proposal_id: str, claimed_asset: dict, conn=None) -> dict:
-        """Phase 9B hook: verify + pin the commit's accepted asset."""
+        """Phase 9B/14C hook: verify + pin the commit's accepted asset."""
+        claimed_id = claimed_asset.get("id") or ""
+        if isinstance(claimed_id, str) and claimed_id.startswith("ss-"):
+            return self._stem_stack.verify_and_pin(project_id, proposal_id, claimed_asset, conn)
         return self._ghost_assets.verify_and_pin(project_id, proposal_id, claimed_asset, conn)
+
+    def _stack_crate_item(self, item_id: str) -> dict:
+        item = self.get_stem_crate_item(item_id)
+        if item.get("media_status") != "available":
+            raise stem_stack.StemStackError(
+                "S_STEM_UNAVAILABLE", "crate stem media is unavailable or stale"
+            )
+        return item
+
+    def _stack_stem_path(self, stem_set_id: str, stem_name: str) -> Path:
+        row = self._stem_set_row(stem_set_id)
+        paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+        rel = paths.get(stem_name)
+        resolved = self._validated_stem_path(rel, stem_name)
+        if resolved is None:
+            raise stem_stack.StemStackError("S_STEM_UNAVAILABLE", "crate stem media is unavailable")
+        return resolved
 
     def _ffmpeg_version(self) -> str:
         """First line of `ffmpeg -version` for provenance (no path)."""
@@ -2652,6 +2693,10 @@ class StudioService:
         """Resolve a Ghost asset by opaque ID through the managed root only."""
         return self._ghost_assets.asset_path(asset_id)
 
+    def stem_stack_audio_path(self, asset_id: str) -> Path:
+        """Resolve a stem-stack asset by opaque ID through the managed root only."""
+        return self._stem_stack.audio_path(asset_id)
+
     def cleanup_ghost_assets(self) -> int:
         """Explicit, test-covered GC of expired/unpinned preview assets."""
         return self._ghost_assets.cleanup_expired()
@@ -2745,14 +2790,19 @@ class StudioService:
         # Amendment 2: verify existence/pin/hash/decode before any render.
         if not project_id:
             raise UserError("committed layer requires a project scope to render")
+        layer_id = layer.get("layerId") or layer.get("actionId") or "unknown"
         try:
-            asset_path = self._ghost_assets.verify_committed_asset(
-                project_id, asset_id, content_hash
-            )
-        except ghost_assets.GhostAssetPreparationError as exc:
-            layer_id = layer.get("layerId") or layer.get("actionId") or "unknown"
+            if layer.get("kind") == "stem_stack" or str(asset_id).startswith("ss-"):
+                asset_path = self._stem_stack.verify_committed_asset(
+                    project_id, asset_id, content_hash
+                )
+            else:
+                asset_path = self._ghost_assets.verify_committed_asset(
+                    project_id, asset_id, content_hash
+                )
+        except (ghost_assets.GhostAssetPreparationError, stem_stack.StemStackError) as exc:
             raise ghost_assets.GhostAssetPreparationError(
-                exc.code or "S_ASSET_UNAVAILABLE",
+                getattr(exc, "code", None) or "S_ASSET_UNAVAILABLE",
                 f"committed layer {layer_id}: {exc}",
             ) from exc
 

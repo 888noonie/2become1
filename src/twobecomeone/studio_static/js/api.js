@@ -559,6 +559,42 @@ export function buildCommitAction(proposalId, acceptedAsset, acceptedAt = null) 
   };
 }
 
+export function buildPreviewStemStackAction({ components, destinationBars, actorId = 'local-human', timestamp = null }) {
+  return {
+    id: crypto.randomUUID(),
+    schemaVersion: 1,
+    type: 'preview_stem_stack',
+    actor: { type: 'human', id: actorId },
+    requestedAt: timestamp || new Date().toISOString(),
+    idempotencyKey: crypto.randomUUID(),
+    payload: {
+      components,
+      destinationBars,
+      timing: { launch: 'next_phrase', quantize: true },
+    },
+  };
+}
+
+export function buildCommitStemStackAction(proposalId, acceptedAsset, acceptedAt = null) {
+  return {
+    id: crypto.randomUUID(),
+    schemaVersion: 1,
+    type: 'commit_stem_stack',
+    actor: { type: 'human', id: 'local-human' },
+    requestedAt: new Date().toISOString(),
+    idempotencyKey: crypto.randomUUID(),
+    payload: {
+      proposalId,
+      acceptedAt: acceptedAt || new Date().toISOString(),
+      acceptedAsset: {
+        id: acceptedAsset.id,
+        contentHash: acceptedAsset.contentHash,
+        transformSpec: acceptedAsset.transformSpec,
+      },
+    },
+  };
+}
+
 /**
  * Build the human revert_commit Action envelope for one committed layer
  * (Phase 11C). Append-only reversal; never deletes the commit row or asset.

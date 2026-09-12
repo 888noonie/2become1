@@ -19,6 +19,11 @@ function formatBeat(value) {
 }
 
 function layerSummary(layer) {
+  if (layer?.kind === 'stem_stack') {
+    const count = (layer?.placement?.components || layer?.transformSpec?.components || []).length;
+    const launch = layer?.launchReceipt?.launchBeat;
+    return `Stem stack · ${count} component${count === 1 ? '' : 's'} · launch beat ${formatBeat(launch)}`;
+  }
   const region = layer?.sourceRegionRef || layer?.transformSpec?.semanticRegion || {};
   const gain = layer?.placement?.gainDb;
   const launch = layer?.launchReceipt?.launchBeat;

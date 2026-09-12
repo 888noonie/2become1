@@ -28,7 +28,14 @@ from .common import UserError
 
 SCHEMA_VERSION = 1
 
-ACTION_TYPES = ("preview_layer", "commit_layer", "reject_proposal", "revert_commit")
+ACTION_TYPES = (
+    "preview_layer",
+    "commit_layer",
+    "reject_proposal",
+    "revert_commit",
+    "preview_stem_stack",
+    "commit_stem_stack",
+)
 
 ACTOR_TYPES = ("human", "producer")
 
@@ -43,6 +50,15 @@ ALLOWED_ACCEPTED_ASSET_KEYS = ("id", "contentHash", "transformSpec")
 ALLOWED_REJECT_KEYS = ("proposalId", "rejectedAt", "reason")
 ALLOWED_REVERT_KEYS = ("commitActionId", "revertedAt", "reason")
 ALLOWED_REGION_KEYS = ("id", "label", "startBeat", "endBeat", "gridRevision")
+ALLOWED_STACK_PREVIEW_KEYS = ("components", "destinationBars", "timing")
+ALLOWED_STACK_COMPONENT_KEYS = ("crateItemId", "expected", "role", "loopBars", "gainDb", "transform")
+ALLOWED_STACK_EXPECTED_KEYS = ("contentSha256", "gridRevision", "stemName", "stemSetId")
+ALLOWED_STACK_TRANSFORM_KEYS = ("tempoRatio", "semitoneShift")
+STACK_ROLES = ("beat", "bass", "other", "voice")
+STACK_LOOP_BARS = (1, 2, 4, 8)
+MIN_TEMPO_RATIO = 0.25
+MAX_TEMPO_RATIO = 4.0
+MAX_SEMITONE = 12
 
 GAIN_MIN_DB = -24.0
 GAIN_MAX_DB = 12.0
@@ -119,6 +135,90 @@ def _validate_region(region: Any) -> None:
         _fail("V_REGION_INVALID_BOUNDS", "region endBeat must be strictly greater than startBeat")
     if "gridRevision" in region and not _non_empty_string(region.get("gridRevision")):
         _fail("V_REGION_INVALID_BOUNDS", "region.gridRevision must be a non-empty string")
+
+
+def _validate_stack_transform(transform: Any) -> None:
+    if transform is None:
+        return
+    if not _plain_object(transform):
+        _fail("V_INVALID_SHIFT", "component.transform must be an object when present")
+    for key in transform:
+        if key not in ALLOWED_STACK_TRANSFORM_KEYS:
+            _fail("V_UNEXPECTED_PAYLOAD_KEY", f"unknown transform key '{key}'", unexpectedKey=key)
+    if "tempoRatio" in transform:
+        ratio = transform.get("tempoRatio")
+        if not _finite_number(ratio) or ratio < MIN_TEMPO_RATIO or ratio > MAX_TEMPO_RATIO:
+            _fail("V_INVALID_SHIFT", "tempoRatio must be a finite number in [0.25, 4]")
+    if "semitoneShift" in transform:
+        shift = transform.get("semitoneShift")
+        if not isinstance(shift, int) or isinstance(shift, bool) or abs(shift) > MAX_SEMITONE:
+            _fail("V_INVALID_SHIFT", "semitoneShift must be an integer within [-12, 12]")
+
+
+def _validate_stack_component(component: Any, *, roles_seen: set[str], ids_seen: set[str]) -> None:
+    if not _plain_object(component):
+        _fail("V_MISSING_COMPONENTS", "each stack component must be an object")
+    for key in component:
+        if key not in ALLOWED_STACK_COMPONENT_KEYS:
+            _fail("V_UNEXPECTED_PAYLOAD_KEY", f"unknown component key '{key}'", unexpectedKey=key)
+    crate_id = component.get("crateItemId")
+    if not _non_empty_string(crate_id):
+        _fail("V_MISSING_CRATE_ITEM", "component.crateItemId is required")
+    if crate_id in ids_seen:
+        _fail("V_DUPLICATE_COMPONENT", "each crate item may appear at most once")
+    ids_seen.add(crate_id)
+    role = component.get("role")
+    if role not in STACK_ROLES:
+        _fail("V_INVALID_ROLE", "stack role must be beat, bass, other, or voice")
+    if role in roles_seen:
+        _fail("V_DUPLICATE_ROLE", f"duplicate stack role {role}")
+    roles_seen.add(role)
+    loop_bars = component.get("loopBars")
+    if not isinstance(loop_bars, int) or isinstance(loop_bars, bool) or loop_bars not in STACK_LOOP_BARS:
+        _fail("V_INVALID_LOOP_BARS", "loopBars must be 1, 2, 4, or 8")
+    gain = component.get("gainDb")
+    if not _finite_number(gain) or gain < GAIN_MIN_DB or gain > GAIN_MAX_DB:
+        _fail("V_INVALID_GAIN", "gainDb must be a finite number within [-24, 12] dB", value=gain)
+    expected = component.get("expected")
+    if not _plain_object(expected):
+        _fail("V_MISSING_EXPECTED", "each component.expected identity is required")
+    for key in expected:
+        if key not in ALLOWED_STACK_EXPECTED_KEYS:
+            _fail("V_UNEXPECTED_PAYLOAD_KEY", f"unknown expected key '{key}'", unexpectedKey=key)
+    for field in ALLOWED_STACK_EXPECTED_KEYS:
+        if not _non_empty_string(expected.get(field)):
+            _fail("V_MISSING_EXPECTED", f"component.expected.{field} is required")
+    _validate_stack_transform(component.get("transform"))
+
+
+def _validate_stack_preview_payload(payload: Any) -> None:
+    if not _plain_object(payload):
+        _fail("V_MISSING_PAYLOAD", "preview_stem_stack payload must be an object")
+    for key in payload:
+        if key not in ALLOWED_STACK_PREVIEW_KEYS:
+            _fail("V_UNEXPECTED_PAYLOAD_KEY", f"unknown payload key '{key}'", unexpectedKey=key)
+    components = payload.get("components")
+    if not isinstance(components, list):
+        _fail("V_MISSING_COMPONENTS", "preview_stem_stack payload.components is required")
+    if len(components) < 1 or len(components) > 4:
+        _fail("V_INVALID_COMPONENT_COUNT", "preview_stem_stack requires 1 to 4 components")
+    roles_seen: set[str] = set()
+    ids_seen: set[str] = set()
+    for component in components:
+        _validate_stack_component(component, roles_seen=roles_seen, ids_seen=ids_seen)
+    dest_bars = payload.get("destinationBars")
+    if not isinstance(dest_bars, int) or isinstance(dest_bars, bool) or dest_bars not in STACK_LOOP_BARS:
+        _fail("V_INVALID_DESTINATION_BARS", "destinationBars must be 1, 2, 4, or 8")
+    timing = payload.get("timing")
+    if not _plain_object(timing):
+        _fail("V_MISSING_TIMING", "preview_stem_stack payload.timing is required")
+    for key in timing:
+        if key not in ALLOWED_PREVIEW_TIMING_KEYS:
+            _fail("V_UNEXPECTED_PAYLOAD_KEY", f"unknown timing key '{key}'", unexpectedKey=key)
+    if timing.get("launch") != "next_phrase":
+        _fail("V_INVALID_LAUNCH", 'timing.launch must be exactly "next_phrase"', value=timing.get("launch"))
+    if not isinstance(timing.get("quantize"), bool):
+        _fail("V_INVALID_QUANTIZE", "timing.quantize must be a boolean")
 
 
 def _validate_preview_payload(payload: Any) -> None:
@@ -275,7 +375,9 @@ def validate_action(raw: Any) -> dict:
     payload = raw.get("payload")
     if raw["type"] == "preview_layer":
         _validate_preview_payload(payload)
-    elif raw["type"] == "commit_layer":
+    elif raw["type"] == "preview_stem_stack":
+        _validate_stack_preview_payload(payload)
+    elif raw["type"] in ("commit_layer", "commit_stem_stack"):
         _validate_commit_payload(payload)
     elif raw["type"] == "revert_commit":
         _validate_revert_payload(payload)
@@ -342,28 +444,42 @@ def make_projection_record(action: dict, lifecycle: str) -> dict:
 def make_committed_layer(commit_action: dict, proposal: dict, launch_receipt: dict | None = None) -> dict:
     payload = commit_action["payload"]
     proposal_payload = proposal["payload"]
+    kind = "stem_stack" if commit_action["type"] == "commit_stem_stack" else None
+    if kind == "stem_stack":
+        placement = {
+            "components": proposal_payload.get("components"),
+            "destinationBars": proposal_payload.get("destinationBars"),
+            "timing": proposal_payload.get("timing"),
+            "gainDb": 0,
+        }
+        source_region_ref = None
+    else:
+        placement = {
+            "source": proposal_payload.get("source"),
+            "destination": proposal_payload.get("destination"),
+            "timing": proposal_payload.get("timing"),
+            "gainDb": proposal_payload.get("gainDb"),
+        }
+        source_region_ref = proposal_payload.get("source", {}).get("region")
     layer = {
         "layerId": f"layer-{commit_action['id']}",
         "actionId": commit_action["id"],
         "actionType": commit_action["type"],
         "actionSchemaVersion": SCHEMA_VERSION,
         "proposalId": proposal["id"],
-        "sourceRegionRef": proposal_payload.get("source", {}).get("region"),
+        "sourceRegionRef": source_region_ref,
         "acceptedAsset": {
             "id": payload["acceptedAsset"]["id"],
             "contentHash": payload["acceptedAsset"]["contentHash"],
             "transformSpec": payload["acceptedAsset"]["transformSpec"],
         },
         "transformSpec": payload["acceptedAsset"]["transformSpec"],
-        "placement": {
-            "source": proposal_payload.get("source"),
-            "destination": proposal_payload.get("destination"),
-            "timing": proposal_payload.get("timing"),
-            "gainDb": proposal_payload.get("gainDb"),
-        },
+        "placement": placement,
         "acceptedAt": payload.get("acceptedAt"),
         "acceptedBy": {"type": commit_action["actor"]["type"], "id": commit_action["actor"]["id"]},
     }
+    if kind:
+        layer["kind"] = kind
     # Phase 11 (Sol amendment 6): retain the render-relevant launch receipt so
     # the committed layer's placement is immutable and rebuildable without
     # mutable analysis. launchAudioTime is NOT render authority and is omitted.

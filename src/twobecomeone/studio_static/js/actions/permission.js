@@ -36,7 +36,9 @@ export function checkPermission(action, context) {
   if (!action || action.type !== ACTION_TYPES.PREVIEW_LAYER
       && action.type !== ACTION_TYPES.COMMIT_LAYER
       && action.type !== ACTION_TYPES.REJECT_PROPOSAL
-      && action.type !== ACTION_TYPES.REVERT_COMMIT) {
+      && action.type !== ACTION_TYPES.REVERT_COMMIT
+      && action.type !== ACTION_TYPES.PREVIEW_STEM_STACK
+      && action.type !== ACTION_TYPES.COMMIT_STEM_STACK) {
     return buildFailure(ERROR_CODES.V_UNKNOWN_TYPE, { type: action && action.type });
   }
 
@@ -54,6 +56,7 @@ export function checkPermission(action, context) {
   const ctx = normalizeContext(context);
 
   if (action.type === ACTION_TYPES.COMMIT_LAYER
+      || action.type === ACTION_TYPES.COMMIT_STEM_STACK
       || action.type === ACTION_TYPES.REVERT_COMMIT) {
     if (!isHuman) {
       return buildFailure(ERROR_CODES.P_ACTOR_NOT_ALLOWED, {

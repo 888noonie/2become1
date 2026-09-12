@@ -10,7 +10,7 @@
 import { createElement, replaceChildren } from '../dom.js';
 import { confirmDialog, openDialog } from '../components/dialog.js';
 import { showToast } from '../components/toast.js';
-import { store, projectManager, ghostController } from '../app-context.js';
+import { store, projectManager, ghostController, stemStackController } from '../app-context.js';
 import { mountDeck } from '../components/deck.js';
 import { mountPlan } from '../components/plan.js';
 import { mountRenderActions } from '../components/render-actions.js';
@@ -295,7 +295,9 @@ export function mountStudio({ container }) {
       studioRoot.dataset.deckMode = mode;
     },
   });
-  crateDisposer = mountStemCratePanel({ container: crateMount, store, onAnnounce });
+  crateDisposer = mountStemCratePanel({
+    container: crateMount, store, onAnnounce, stackController: stemStackController,
+  });
   planDisposer = mountPlan({ container: planContainer, store, projectManager });
   renderActionsDisposer = mountRenderActions({
     container: renderActionsContainer, store, projectManager,

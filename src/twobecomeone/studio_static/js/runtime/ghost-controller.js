@@ -45,6 +45,7 @@
 import { GhostScheduler } from './ghost-scheduler.js';
 import { buildDeckTransport, checkGridParity } from './transport-bridge.js';
 import { CommittedLayerEngine } from './committed-layer-engine.js';
+import { preparedAssetAudioUrl } from '../stem-stack.js';
 
 const LAUNCH_OBSERVER_INTERVAL_MS = 150;
 
@@ -64,6 +65,11 @@ export const GHOST_PHASES = Object.freeze({
 });
 
 const ACTIVE_LIFECYCLES = Object.freeze(['ready', 'scheduled', 'auditioning']);
+
+function isGhostProposal(proposal) {
+  const type = proposal?.actionType;
+  return !type || type === 'preview_layer';
+}
 
 // Phase 12: live committed-layer engine wake cadence is injected by the
 // controller so Node tests and the browser share one deterministic policy.
@@ -538,8 +544,7 @@ export class GhostController {
     this._liveEngine = factory({
       audioContext: this._ensureContext(),
       loadAsset: async (asset, signal) => {
-        const audioUrl = asset?.audioUrl
-          || (asset?.id ? `/api/ghost-assets/${asset.id}/audio` : null);
+        const audioUrl = preparedAssetAudioUrl(asset);
         if (!audioUrl) throw new Error('committed asset has no audio URL');
         const response = await fetch(audioUrl, { signal });
         if (!response.ok) throw new Error(`committed asset fetch failed: ${response.status}`);
@@ -1182,7 +1187,7 @@ export class GhostController {
     const state = this.store.getState();
     return (state.proposals?.activeIds || []).some((id) => {
       const proposal = state.proposals?.byId?.[id];
-      return proposal && ACTIVE_LIFECYCLES.includes(proposal.lifecycle);
+      return proposal && isGhostProposal(proposal) && ACTIVE_LIFECYCLES.includes(proposal.lifecycle);
     });
   }
 
@@ -1190,7 +1195,7 @@ export class GhostController {
     const state = this.store.getState();
     const actives = (state.proposals?.activeIds || [])
       .map((id) => state.proposals?.byId?.[id])
-      .filter((p) => p && ACTIVE_LIFECYCLES.includes(p.lifecycle));
+      .filter((p) => p && isGhostProposal(p) && ACTIVE_LIFECYCLES.includes(p.lifecycle));
     return actives.length > 1;
   }
 
@@ -1198,7 +1203,7 @@ export class GhostController {
     const state = this.store.getState();
     return (state.proposals?.activeIds || []).filter((id) => {
       const proposal = state.proposals?.byId?.[id];
-      return proposal && ACTIVE_LIFECYCLES.includes(proposal.lifecycle);
+      return proposal && isGhostProposal(proposal) && ACTIVE_LIFECYCLES.includes(proposal.lifecycle);
     });
   }
 
@@ -1239,7 +1244,7 @@ export class GhostController {
     if (this._gen) return [this._gen.proposalId || 'pending'];
     return (state.proposals?.activeIds || []).filter((id) => {
       const proposal = state.proposals?.byId?.[id];
-      return proposal && ACTIVE_LIFECYCLES.includes(proposal.lifecycle);
+      return proposal && isGhostProposal(proposal) && ACTIVE_LIFECYCLES.includes(proposal.lifecycle);
     });
   }
 
@@ -1265,7 +1270,7 @@ export class GhostController {
     const byId = projection?.proposals?.byId || this.store.getState().proposals?.byId || {};
     const activeIds = (projection?.proposals?.activeIds
       || this.store.getState().proposals?.activeIds || [])
-      .filter((id) => byId[id] && ACTIVE_LIFECYCLES.includes(byId[id].lifecycle));
+      .filter((id) => byId[id] && isGhostProposal(byId[id]) && ACTIVE_LIFECYCLES.includes(byId[id].lifecycle));
 
     // Any previous generation is gone: the old project's clock is dead (A8).
     this._cancelGenerationRuntime();

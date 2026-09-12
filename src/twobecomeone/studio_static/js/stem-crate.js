@@ -1,7 +1,7 @@
 // js/stem-crate.js — Phase 14B.3 crate presentation helpers.
 // No DOM, fetch, or StateStore. ffmpeg center/sides stay center/sides.
 
-export const PLACE_STACK_COPY = 'Stem stack arrives in Phase 14C';
+export const PLACE_STACK_COPY = 'Place into slot';
 export const LOOP_BARS = Object.freeze([1, 2, 4, 8]);
 export const CRATE_ROLES = Object.freeze(['beat', 'bass', 'other', 'voice']);
 
