@@ -338,6 +338,32 @@ test('stale decode never starts after a cancel', async () => {
   engine.shutdown();
 });
 
+test('seek suspension invalidates an in-flight decode before any later authoritative sync', async () => {
+  const { ctx, timers, states, engine } = makeEngine();
+  let finishDecode;
+  let enteredDecode;
+  const decoding = new Promise((resolve) => { enteredDecode = resolve; });
+  ctx.decodeAudioData = () => {
+    enteredDecode();
+    return new Promise((resolve) => { finishDecode = resolve; });
+  };
+  try {
+    const syncing = engine.sync([committedLayer()]);
+    await decoding;
+    // Seeking can leave transport playing. Cancellation must invalidate the
+    // already-started decode independently of that transport's playing flag.
+    engine.suspend('lead-seek');
+    assert.equal(engine.snapshot().layers[0].state, ENGINE_STATES.IDLE);
+    finishDecode({ duration: 8 });
+    await syncing;
+    assert.equal(ctx.starts.length, 0, 'cancelled decode must not schedule a source');
+    assert.equal(timers.pending, 0, 'cancelled decode must not rearm a timer');
+    assert.equal(states.at(-1).state, ENGINE_STATES.IDLE);
+  } finally {
+    engine.shutdown();
+  }
+});
+
 test('suspend aborts an in-flight asset fetch without publishing an error', async () => {
   const ctx = new FakeAudioContext();
   const states = [];

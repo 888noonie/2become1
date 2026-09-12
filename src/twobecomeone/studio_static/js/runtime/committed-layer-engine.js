@@ -222,9 +222,9 @@ export class CommittedLayerEngine {
       const buffer = await this.loadAsset(
         layer.asset || layer.acceptedAsset || {}, entry.controller.signal,
       );
-      if (this._entry !== entry || this._shutdown) return { ok: false, code: 'STALE' };
+      if (this._entry !== entry || this._shutdown || entry.controller.signal.aborted) return { ok: false, code: 'STALE' };
       const audioBuffer = await this.ctx.decodeAudioData(buffer);
-      if (this._entry !== entry || this._shutdown) return { ok: false, code: 'STALE' };
+      if (this._entry !== entry || this._shutdown || entry.controller.signal.aborted) return { ok: false, code: 'STALE' };
       entry.buffer = audioBuffer;
       const scheduled = this._scheduleInstance(entry);
       if (!scheduled) return { ok: false, code: entry.error?.code || 'IDLE' };
