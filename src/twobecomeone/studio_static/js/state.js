@@ -43,11 +43,33 @@ function emptyDeckState() {
     playing: false,
     paused: true,
     ended: false,
+    syncPending: false,
+    tempoRatio: 1,
     contextState: 'closed',
     contextClock: 0,
     error: null,
     time: 0,
     duration: 0,
+  };
+}
+
+function emptyMixerState() {
+  return {
+    crossfaderPosition: 50,
+    masterDeck: 'A',
+    gainA: Math.SQRT1_2,
+    gainB: Math.SQRT1_2,
+    tempoRatioA: 1,
+    tempoRatioB: 1,
+    pitchPreserveSupported: null,
+    pitchPreserveActive: false,
+    syncReceipt: null,
+    headroom: {
+      peak: 0,
+      headroomDb: 0,
+      clipping: false,
+      attenuationRecommended: false,
+    },
   };
 }
 
@@ -109,6 +131,8 @@ const INITIAL_STATE = {
     A: emptyDeckState(),
     B: emptyDeckState(),
   },
+  // Phase 15B: serializable live mixer controls (crossfader, master, sync).
+  mixer: emptyMixerState(),
   ui: {
     toast: null,
   },
@@ -442,6 +466,15 @@ export function registerReducers(store) {
     return {
       ...state,
       decks: { ...state.decks, [deck]: structuredClone(deckState) },
+    };
+  });
+
+  store.register('mixer/set', (state, action) => {
+    const mixer = action.mixer;
+    if (!mixer || !isPlainJson(mixer)) return state;
+    return {
+      ...state,
+      mixer: structuredClone(mixer),
     };
   });
 

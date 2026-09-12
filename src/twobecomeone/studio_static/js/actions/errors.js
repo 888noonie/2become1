@@ -97,6 +97,8 @@ export const ERROR_CODES = Object.freeze({
   T_CONTEXT_RESUME_FAILED: 'T_CONTEXT_RESUME_FAILED',
   T_CONTEXT_CLOSED: 'T_CONTEXT_CLOSED',
   T_CONTEXT_SUSPENDED: 'T_CONTEXT_SUSPENDED',
+  T_TEMPO_RATIO_OUT_OF_RANGE: 'T_TEMPO_RATIO_OUT_OF_RANGE',
+  T_SYNC_LEAD_TOO_SHORT: 'T_SYNC_LEAD_TOO_SHORT',
 
   // --- Invariant ---
   X_INTERNAL: 'X_INTERNAL',
@@ -179,6 +181,8 @@ const MESSAGES = Object.freeze({
   T_CONTEXT_RESUME_FAILED: 'the AudioContext could not be resumed',
   T_CONTEXT_CLOSED: 'the AudioContext is closed',
   T_CONTEXT_SUSPENDED: 'the AudioContext is suspended',
+  T_TEMPO_RATIO_OUT_OF_RANGE: 'tempo ratio is outside the allowed playback-rate bounds',
+  T_SYNC_LEAD_TOO_SHORT: 'the next beat boundary is too soon for a safe sync launch',
 
   X_INTERNAL: 'Action dispatcher hit an invariant violation',
 });

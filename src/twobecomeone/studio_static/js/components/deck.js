@@ -123,7 +123,10 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
         error: deck.error,
         generation: deck.generation,
         contextState: deck.contextState,
+        syncPending: deck.syncPending,
+        tempoRatio: deck.tempoRatio,
       },
+      masterDeck: state.mixer?.masterDeck,
       regionArmed: deckState.regionArmed,
       committedCount,
     });
@@ -333,7 +336,57 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
       },
     });
 
-    const transport = createElement('div', { class: 'deck__transport' }, [playBtn, stopBtn]);
+    const masterDeck = state.mixer?.masterDeck || 'A';
+    const otherDeck = deckName === 'A' ? 'B' : 'A';
+    const masterTrack = otherDeck === 'A'
+      ? (project.anchor_track_id ? state.deckTracks[project.anchor_track_id] : null)
+      : (project.lead_track_id ? state.deckTracks[project.lead_track_id] : null);
+    const masterPlaying = state.decks?.[masterDeck]?.playing;
+    const canSync = masterDeck !== deckName && masterPlaying && masterTrack && track?.beat_grid;
+    const syncPending = deckPlayback.syncPending;
+
+    const syncBtn = createElement('button', {
+      class: `button ${syncPending ? 'button--primary' : ''}`,
+      type: 'button',
+      text: syncPending ? 'Syncing…' : 'Sync',
+      disabled: canSync ? null : 'true',
+      title: canSync
+        ? `Beat-sync to master deck ${masterDeck}`
+        : `Set deck ${masterDeck} playing as master first`,
+      'aria-label': `Beat-sync ${role === 'anchor' ? 'Foundation' : 'Lead'} to master deck ${masterDeck}`,
+      onclick: async () => {
+        if (!canSync) return;
+        const cueKey = role === 'anchor' ? 'anchor_start' : 'lead_start';
+        const cueSeconds = (project.settings || {})[cueKey] ?? 0;
+        let url = track.audio_url;
+        if (variant !== 'full') {
+          const variantUrl = getVariantAudioUrl(store.getState(), track.id, variant);
+          if (!variantUrl) {
+            showToast?.(`Variant "${variant}" is not available for sync playback.`, 'danger');
+            return;
+          }
+          url = variantUrl;
+        }
+        const result = await liveMixer.playSynced(deckName, {
+          trackId: track.id,
+          url,
+          kind: variant === 'full' ? 'track' : 'stem',
+          stemName: variant === 'full' ? null : variant,
+          variant,
+        }, {
+          masterTrack,
+          followerTrack: track,
+          cueSeconds,
+        });
+        if (!result.ok) {
+          showToast?.(`Beat sync failed: ${result.message || result.code}`, 'danger');
+        } else if (result.value?.receipt) {
+          onAnnounce?.(`Synced to master at beat ${result.value.receipt.launchBeat}.`);
+        }
+      },
+    });
+
+    const transport = createElement('div', { class: 'deck__transport' }, [playBtn, syncBtn, stopBtn]);
 
     // Actions bar
     const actionsBar = createElement('div', { class: 'deck__actions' }, [

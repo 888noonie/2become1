@@ -18,6 +18,7 @@ import { mountGhostCard } from '../components/ghost-card.js';
 import { mountCommittedLayers } from '../components/committed-layers.js';
 import { mountPerformanceDeck } from '../components/performance-deck.js';
 import { mountStemCratePanel } from '../components/stem-crate-panel.js';
+import { mountLiveCrossfader } from '../components/live-crossfader.js';
 import {
   checkGhostPreconditions,
   ensureVocalsStemKnown,
@@ -155,6 +156,7 @@ export function mountStudio({ container }) {
   let committedLayersDisposer = null;
   let performanceDeckDisposer = null;
   let crateDisposer = null;
+  let liveCrossfaderDisposer = null;
 
   const studioRoot = createElement('div', { class: 'studio' });
   container.replaceChildren(studioRoot);
@@ -175,6 +177,7 @@ export function mountStudio({ container }) {
   const crateMount = createElement('div', { class: 'studio__stem-crate', hidden: 'true' });
   const decksContainer = createElement('div', { class: 'studio__decks' });
   const swapBar = createElement('div', { class: 'studio__swap-bar' });
+  const crossfaderContainer = createElement('div', { class: 'studio__crossfader-container' });
   // Phase 10C: the Ghost status card sits between decks and plan so the
   // truthful state is visible in the natural flow.
   const ghostCardContainer = createElement('div', { class: 'studio__ghost-card-container' });
@@ -194,6 +197,7 @@ export function mountStudio({ container }) {
   studioRoot.appendChild(performanceDeckContainer);
   studioRoot.appendChild(crateMount);
   studioRoot.appendChild(swapBar);
+  studioRoot.appendChild(crossfaderContainer);
   studioRoot.appendChild(decksContainer);
   studioRoot.appendChild(ghostCardContainer);
   studioRoot.appendChild(committedLayersContainer);
@@ -281,6 +285,11 @@ export function mountStudio({ container }) {
     onRegionSelected: ({ startSeconds, endSeconds }) => openGhostFlow({ startSeconds, endSeconds }),
   });
   leadDisposer = mountDeck({ container: leadDeckMount, role: 'lead', onAnnounce, store, projectManager });
+  liveCrossfaderDisposer = mountLiveCrossfader({
+    container: crossfaderContainer,
+    store,
+    onAnnounce,
+  });
   performanceDeckDisposer = mountPerformanceDeck({
     container: performanceDeckContainer,
     store,
@@ -290,6 +299,7 @@ export function mountStudio({ container }) {
       const isFun = mode === 'fun';
       decksContainer.hidden = isFun;
       swapBar.hidden = isFun;
+      crossfaderContainer.hidden = isFun;
       planContainer.hidden = isFun;
       crateMount.hidden = !isFun;
       studioRoot.dataset.deckMode = mode;
@@ -352,6 +362,7 @@ export function mountStudio({ container }) {
     if (committedLayersDisposer) committedLayersDisposer();
     if (performanceDeckDisposer) performanceDeckDisposer();
     if (crateDisposer) crateDisposer();
+    if (liveCrossfaderDisposer) liveCrossfaderDisposer();
     projectManager.flushNow();
   };
 }
