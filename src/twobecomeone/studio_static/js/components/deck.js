@@ -6,11 +6,10 @@
 // Clear actions.
 
 import { createElement, replaceChildren } from '../dom.js';
-import { audioController } from '../audio.js';
 import { openSourcePicker } from './source-picker.js';
 import { mountWaveform } from '../waveform.js';
 import { formatBpm, formatKey, formatTime, sourceLabel } from '../format.js';
-import { store as globalStore, projectManager as globalProjectManager } from '../app-context.js';
+import { store as globalStore, projectManager as globalProjectManager, liveMixer as globalLiveMixer } from '../app-context.js';
 import { openAnalysisDialog } from './analysis-dialog.js';
 import { openStemDialog } from './stem-dialog.js';
 import { showToast } from './toast.js';
@@ -18,6 +17,15 @@ import { listStems } from '../api.js';
 
 // Module cache for per-track variant URL lookups used by deck playback.
 const stemFetchControllers = new Map();
+
+function readDeckState(state, deckName) {
+  const deck = state.decks?.[deckName];
+  if (deck) return deck;
+  return {
+    trackId: null, playing: false, paused: true, ended: false, error: null,
+    generation: 0, contextState: 'closed',
+  };
+}
 
 function getVariantAudioUrl(state, trackId, variant) {
   if (variant === 'full') return null;
@@ -49,10 +57,11 @@ async function loadStemsForTrack(trackId, store) {
   }
 }
 
-export function mountDeck({ container, role, onAnnounce, store = globalStore, projectManager = globalProjectManager, onSelectPhrase = null, onRegionSelected = null }) {
+export function mountDeck({ container, role, onAnnounce, store = globalStore, projectManager = globalProjectManager, liveMixer = globalLiveMixer, onSelectPhrase = null, onRegionSelected = null }) {
   if (!container) {
     throw new Error('mountDeck requires a container');
   }
+  const deckName = role === 'anchor' ? 'A' : 'B';
   const disposers = [];
   let waveformDisposer = null;
   let currentTrackId = null;
@@ -91,9 +100,38 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
   container.replaceChildren(root);
 
   let lastState = null;
+  let lastRenderSignature = null;
+
+  function deckRenderSignature(state) {
+    const project = state.currentProject || {};
+    const trackId = role === 'anchor' ? project.anchor_track_id : project.lead_track_id;
+    const variant = (role === 'anchor' ? project.anchor_variant : project.lead_variant) || 'full';
+    const track = trackId ? (state.deckTracks[trackId] ?? null) : null;
+    const deck = readDeckState(state, deckName);
+    const committedCount = Array.isArray(state.session?.committedLayers)
+      ? state.session.committedLayers.length
+      : 0;
+    return JSON.stringify({
+      trackId,
+      track,
+      variant,
+      deck: {
+        trackId: deck.trackId,
+        playing: deck.playing,
+        paused: deck.paused,
+        ended: deck.ended,
+        error: deck.error,
+        generation: deck.generation,
+        contextState: deck.contextState,
+      },
+      regionArmed: deckState.regionArmed,
+      committedCount,
+    });
+  }
 
   function render(state) {
     lastState = state;
+    lastRenderSignature = deckRenderSignature(state);
     const project = state.currentProject || {};
     const trackId = role === 'anchor' ? project.anchor_track_id : project.lead_track_id;
     const variant = (role === 'anchor' ? project.anchor_variant : project.lead_variant) || 'full';
@@ -238,12 +276,9 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
       }),
     ]);
 
-    // Transport (Play / Pause / Stop)
-    const playback = state.playback;
-    const isThisPlaying = playback.playing && (
-      (playback.source && playback.source.trackId === track.id) ||
-      (playback.trackId === track.id)
-    );
+    // Transport (Play / Pause / Stop) — Phase 15A: independent deck buses A/B.
+    const deckPlayback = readDeckState(state, deckName);
+    const isThisPlaying = deckPlayback.playing && deckPlayback.trackId === track.id;
 
     const playBtn = createElement('button', {
       class: `button ${isThisPlaying ? 'button--primary' : ''}`,
@@ -252,21 +287,18 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
       'aria-label': `${isThisPlaying ? 'Pause' : 'Play'} ${role === 'anchor' ? 'Foundation' : 'Lead'}`,
       onclick: () => {
         if (isThisPlaying) {
-          audioController.pause();
+          liveMixer.pause(deckName);
         } else {
-          // Use the structured server-authored audio URL. For full mix it is
-          // the track audio endpoint; for stems it comes from the stem tray.
           let url = track.audio_url;
           if (variant !== 'full') {
             const variantUrl = getVariantAudioUrl(store.getState(), track.id, variant);
             if (variantUrl) {
               url = variantUrl;
             } else {
-              // Load stems once, then retry the click by re-rendering.
               loadStemsForTrack(track.id, store).then(() => {
                 const freshUrl = getVariantAudioUrl(store.getState(), track.id, variant);
                 if (freshUrl) {
-                  audioController.play({
+                  liveMixer.play(deckName, {
                     trackId: track.id,
                     url: freshUrl,
                     kind: 'stem',
@@ -280,7 +312,7 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
               return;
             }
           }
-          audioController.play({
+          liveMixer.play(deckName, {
             trackId: track.id,
             url,
             kind: variant === 'full' ? 'track' : 'stem',
@@ -297,7 +329,7 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
       text: 'Stop',
       'aria-label': `Stop ${role === 'anchor' ? 'Foundation' : 'Lead'} playback`,
       onclick: () => {
-        audioController.stop();
+        liveMixer.stop(deckName);
       },
     });
 
@@ -422,17 +454,17 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
     };
 
     const getTime = () => {
-      const p = store.getState().playback;
-      if (p.playing && ((p.source && p.source.trackId === track.id) || p.trackId === track.id)) {
-        return audioController.time;
+      const deck = readDeckState(store.getState(), deckName);
+      if (deck.playing && deck.trackId === track.id) {
+        return deck.time;
       }
       return getCue() || 0;
     };
 
     const onSeek = (seconds) => {
-      const p = store.getState().playback;
-      if (p.playing && ((p.source && p.source.trackId === track.id) || p.trackId === track.id)) {
-        audioController.seek(seconds);
+      const deck = readDeckState(store.getState(), deckName);
+      if (deck.playing && deck.trackId === track.id) {
+        liveMixer.seek(deckName, seconds);
       }
     };
 
@@ -482,20 +514,25 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
     }
   }
   const unsubscribe = store.subscribe((state) => {
+    const signature = deckRenderSignature(state);
+    if (signature === lastRenderSignature) return;
     render(state);
   });
   disposers.push(unsubscribe);
 
-  // Audio timeupdate -> tick active waveform playhead
-  const audioUnsub = audioController.on((type, payload) => {
-    if (type === 'time') {
-      const waveformRoot = root.querySelector('.waveform');
-      if (waveformRoot && typeof waveformRoot.__tick === 'function') {
-        waveformRoot.__tick();
-      }
+  // Live deck time ticks -> active waveform playhead (not full re-mount).
+  let lastDeckTick = -1;
+  const decksUnsub = store.subscribeSlice('decks', (decks) => {
+    const deck = readDeckState({ decks }, deckName);
+    if (!deck.playing || deck.trackId !== currentTrackId) return;
+    if (deck.time === lastDeckTick) return;
+    lastDeckTick = deck.time;
+    const waveformRoot = root.querySelector('.waveform');
+    if (waveformRoot && typeof waveformRoot.__tick === 'function') {
+      waveformRoot.__tick();
     }
   });
-  disposers.push(audioUnsub);
+  disposers.push(decksUnsub);
 
   render(store.getState());
 

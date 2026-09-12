@@ -142,6 +142,17 @@ test('playback actions do not leak the action type into state', async () => {
   assert.equal(Object.hasOwn(store.getState().playback, 'type'), false);
 });
 
+test('decks slice subscription fires only on decks changes', async () => {
+  const { StateStore, registerReducers } = await loadState();
+  const store = registerReducers(new StateStore());
+  let deckCalls = 0;
+  store.subscribeSlice('decks', () => { deckCalls += 1; });
+  const empty = store.getState().decks.A;
+  store.dispatch({ type: 'decks/set', deck: 'A', deckState: { ...empty, trackId: 't1', playing: true } });
+  store.dispatch({ type: 'route/set', route: 'library' });
+  assert.equal(deckCalls, 1);
+});
+
 test('ghostStatus accepts only plain semantic JSON', async () => {
   const { StateStore, registerReducers } = await loadState();
   const store = registerReducers(new StateStore());

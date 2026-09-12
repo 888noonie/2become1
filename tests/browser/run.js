@@ -354,6 +354,41 @@ async function journeyRender(page) {
   record('render settings create a new mix', true, (await page.locator('.project-title').textContent()).trim());
 }
 
+async function journeyDualDeckConcurrent(page) {
+  await page.goto(`${BASE}/#/studio`);
+  await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'anchor present' });
+
+  await page.locator('.deck-slot--anchor button[aria-label="Play Foundation"]').click();
+  await waitFor(async () => (
+    await page.locator('.deck-slot--anchor button[aria-label^="Pause Foundation"]').count()
+  ) === 1, { label: 'foundation playing' });
+  await page.locator('.deck-slot--lead button[aria-label="Play Lead"]').click();
+  await waitFor(async () => (
+    await page.locator('.deck-slot--lead button[aria-label^="Pause Lead"]').count()
+  ) === 1, { label: 'lead playing' });
+
+  const bothPlaying = await page.evaluate(() => {
+    const foundation = document.querySelector('.deck-slot--anchor button[aria-label^="Pause Foundation"]');
+    const lead = document.querySelector('.deck-slot--lead button[aria-label^="Pause Lead"]');
+    return Boolean(foundation && lead);
+  });
+  record('A+B decks play concurrently', bothPlaying === true);
+
+  await page.locator('.deck-slot--lead button[aria-label^="Pause Lead"]').click();
+  await waitFor(async () => (
+    await page.locator('.deck-slot--lead button[aria-label="Play Lead"]').count()
+  ) === 1, { label: 'lead paused' });
+  const foundationStillPlaying = await page.evaluate(() => Boolean(
+    document.querySelector('.deck-slot--anchor button[aria-label^="Pause Foundation"]'),
+  ));
+  record('pausing Lead does not stop Foundation', foundationStillPlaying === true);
+
+  await page.locator('.deck-slot--anchor button[aria-label^="Pause Foundation"]').click();
+  await waitFor(async () => (
+    await page.locator('.deck-slot--anchor button[aria-label="Play Foundation"]').count()
+  ) === 1, { label: 'foundation paused' });
+}
+
 async function journeyRecovery(page) {
   await page.goto(`${BASE}/#/activity`);
   await waitFor(async () => (await page.locator('.job-item button', { hasText: 'Retry' }).count()) >= 1, { label: 'retryable failed job' });
@@ -451,6 +486,7 @@ async function main() {
     await journeyAssignAndSwap(page);
     await journeySeparation(page);
     await journeyRender(page);
+    await journeyDualDeckConcurrent(page);
     await journeyKeyboard(page);
     await journeyRecovery(page);
 

@@ -127,9 +127,13 @@ function makeController({ leadBpm = 120, apiOverrides = {} } = {}) {
     postProposalLifecycle: async () => ({ outcome: 'lifecycle_recorded' }),
     ...apiOverrides,
   };
+  const liveMixer = {
+    getDeck: () => ({ trackId: 'lead-1', playing: true, time: 4 }),
+  };
   const controller = new GhostController({
     store,
     api,
+    liveMixer,
     audioController: { current: { trackId: 'lead-1' }, playing: true, time: 4 },
     audioContextFactory: { create: () => ctx },
     liveEngineFactory: () => liveEngine,

@@ -195,6 +195,16 @@ function makeController({ currentTime = 0, leadPlaying = true, leadOwned = true 
       return { outcome: 'lifecycle_recorded', lifecycle: body.to };
     },
   };
+  const liveMixer = {
+    getDeck(name) {
+      if (name !== 'B') return { trackId: null, playing: false, time: 0 };
+      return {
+        trackId: leadOwned ? 'lead-1' : 'anchor-1',
+        playing: leadPlaying,
+        time: 4.0,
+      };
+    },
+  };
   const audioController = {
     current: leadOwned ? { trackId: 'lead-1' } : { trackId: 'anchor-1' },
     playing: leadPlaying,
@@ -203,11 +213,12 @@ function makeController({ currentTime = 0, leadPlaying = true, leadOwned = true 
   const controller = new GhostController({
     store,
     api,
+    liveMixer,
     audioController,
     audioContextFactory: { create: () => ctx },
     schedulerFactory: (d) => { scheduler.deps = d; return scheduler; },
   });
-  return { store, ctx, scheduler, controller, api };
+  return { store, ctx, scheduler, controller, api, liveMixer };
 }
 
 
@@ -317,11 +328,11 @@ test('A2: auditioning is NOT recorded early even after many ticks', async () => 
 });
 
 test('A2: boundary observer verifies destination ownership at the boundary', async () => {
-  const { controller, api, ctx } = makeController({ currentTime: 0 });
+  const { controller, api, ctx, liveMixer } = makeController({ currentTime: 0 });
   const result = await controller.invoke(region(), -3);
   assert.ok(result.ok);
   // Ownership is lost BEFORE the boundary is crossed.
-  controller.audioController.playing = false;
+  liveMixer.getDeck = () => ({ trackId: 'lead-1', playing: false, time: 4.0 });
   ctx.currentTime = 15;
   await waitForCondition(() => {
     const phase = controller.store.getState().ghostStatus.phase;

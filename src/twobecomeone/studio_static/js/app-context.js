@@ -9,6 +9,7 @@ import { ProjectManager } from './project.js';
 import { JobCoordinator } from './job-coordinator.js';
 import { GhostController } from './runtime/ghost-controller.js';
 import { CommittedLayerEngine } from './runtime/committed-layer-engine.js';
+import { LiveMixer } from './runtime/live-mixer.js';
 import { audioController } from './audio.js';
 import {
   postProjectAction,
@@ -22,6 +23,10 @@ import {
 } from './api.js';
 
 export const store = registerReducers(new StateStore());
+export const liveMixer = new LiveMixer({
+  audioContextFactory: { create: () => new AudioContext() },
+  mediaElementFactory: { create: () => new Audio() },
+});
 // Phase 10B: app-scoped Ghost preview controller, constructed BEFORE the
 // ProjectManager (which receives it for the A8 hydration/switch boundaries).
 // Views never import it directly; the visible Ghost card reads the store's
@@ -39,8 +44,9 @@ export const ghostController = new GhostController({
     buildRevertAction,
     buildLifecycleBody,
   },
-  // A7 ownership proof: the controller reads the REAL singleton player so it
-  // can verify the current track is the project's Lead and is audibly playing.
+  // A7 ownership proof: Lead deck B transport is read from the LiveMixer, not
+  // the library preview singleton.
+  liveMixer,
   audioController,
   audioContextFactory: {
     create: () => new AudioContext(),

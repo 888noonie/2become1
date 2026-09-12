@@ -25,8 +25,8 @@
 //       transformSpec.destinationGridRevision and live Lead facts are
 //       compared against transformSpec.destinationGrid before scheduling.
 //   A7  Ownership proof: every transport read and boundary check requires
-//       audioController.current.trackId === current project lead_track_id and
-//       audioController.playing. Store playback ticks are display state only.
+//       liveMixer deck B trackId === current project lead_track_id and
+//       deck B playing. Store decks/playback ticks are display state only.
 //       Pause/stop/natural-ended/re-seek/source-replacement cancel the Ghost
 //       runtime (no machine reject — the human still Releases).
 //   A8  Project switch and hydration are hard cancellation boundaries.
@@ -90,7 +90,8 @@ function scrubError(err) {
  * @param {object} deps
  * @param {import('../state.js').StateStore} deps.store
  * @param {object} deps.api — { postProjectAction, postProposalLifecycle, buildPreviewAction, buildRejectAction, buildLifecycleBody }
- * @param {object} [deps.audioController] — singleton player; defaults to a stub
+ * @param {object} [deps.liveMixer] — dual-deck live mixer; Lead ownership reads deck B
+ * @param {object} [deps.audioController] — library preview singleton (not deck transport)
  * @param {() => string|null} [deps.leadTrackId]
  * @param {() => object|null} [deps.leadTrack]
  * @param {(message: string) => void} [deps.onAnnounce]
@@ -104,6 +105,7 @@ export class GhostController {
     }
     this.store = deps.store;
     this.api = deps.api;
+    this.liveMixer = deps.liveMixer || null;
     this.audioController = deps.audioController || { current: null, playing: false, time: 0 };
     this.getLeadTrackId = deps.leadTrackId
       || (() => this.store.getState().currentProject?.lead_track_id ?? null);
@@ -147,20 +149,33 @@ export class GhostController {
     try { this.onAnnounce(message); } catch { /* announcer failures never break the Ghost */ }
   }
 
-  /** A7 ownership proof: the singleton player currently owns LEAD and plays. */
+  /** A7 ownership proof: Lead deck B transport currently owns and plays. */
+  _leadDeckState() {
+    if (this.liveMixer) {
+      return this.liveMixer.getDeck('B') || { trackId: null, playing: false, time: 0 };
+    }
+    const current = this.audioController.current;
+    return {
+      trackId: current?.trackId ?? null,
+      playing: this.audioController.playing === true,
+      time: this.audioController.time ?? 0,
+    };
+  }
+
   _destinationOwnedAndPlaying() {
     const leadId = this.getLeadTrackId();
-    const current = this.audioController.current;
-    if (!leadId || !current || current.trackId !== leadId) return false;
-    return this.audioController.playing === true;
+    const deck = this._leadDeckState();
+    if (!leadId || !deck || deck.trackId !== leadId) return false;
+    return deck.playing === true;
   }
 
   _transportProvider() {
     const leadTrack = this.getLeadTrack();
+    const deck = this._leadDeckState();
     const result = buildDeckTransport({
       deck: 'B',
       track: leadTrack,
-      elementSeconds: this.audioController.time,
+      elementSeconds: deck.time,
       playing: this._destinationOwnedAndPlaying(),
       audioClockNow: this._ctx ? this._ctx.currentTime : 0,
       serverGridRevision: this._gen?.asset?.transformSpec?.destinationGridRevision || null,
@@ -571,10 +586,11 @@ export class GhostController {
         code: 'GHOST_GRID_STALE',
       });
     }
+    const deck = this._leadDeckState();
     const result = buildDeckTransport({
       deck: 'B',
       track: leadTrack,
-      elementSeconds: this.audioController.time,
+      elementSeconds: deck.time,
       playing: this._destinationOwnedAndPlaying(),
       audioClockNow: this._ctx ? this._ctx.currentTime : 0,
       serverGridRevision: gridRevision,

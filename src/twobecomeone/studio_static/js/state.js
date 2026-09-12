@@ -31,6 +31,26 @@ const INITIAL_GHOST_STATUS = Object.freeze({
   hydrating: false, // once Ghost UI exists, hydration failure is visible (A8)
 });
 
+function emptyDeckState() {
+  return {
+    trackId: null,
+    kind: null,
+    variant: null,
+    stemName: null,
+    jobId: null,
+    title: null,
+    generation: 0,
+    playing: false,
+    paused: true,
+    ended: false,
+    contextState: 'closed',
+    contextClock: 0,
+    error: null,
+    time: 0,
+    duration: 0,
+  };
+}
+
 const INITIAL_STATE = {
   route: 'studio',
   // V1 additive slices. Frozen-by-clone on first read; reducers in
@@ -82,6 +102,12 @@ const INITIAL_STATE = {
     time: 0,
     duration: 0,
     error: null,
+  },
+  // Phase 15A: serializable LiveMixer deck snapshots (A/B). Runtime objects
+  // stay in liveMixer; this slice is display/ownership truth for the UI.
+  decks: {
+    A: emptyDeckState(),
+    B: emptyDeckState(),
   },
   ui: {
     toast: null,
@@ -396,6 +422,26 @@ export function registerReducers(store) {
     return {
       ...state,
       playback: { ...state.playback, ...updates },
+    };
+  });
+
+  store.register('decks/set', (state, action) => {
+    if (action.decks && typeof action.decks === 'object') {
+      if (!isPlainJson(action.decks)) return state;
+      const { A, B } = action.decks;
+      if (!A || !B || !isPlainJson(A) || !isPlainJson(B)) return state;
+      return {
+        ...state,
+        decks: { A: structuredClone(A), B: structuredClone(B) },
+      };
+    }
+    const deck = action.deck;
+    const deckState = action.deckState;
+    if (deck !== 'A' && deck !== 'B') return state;
+    if (!deckState || !isPlainJson(deckState)) return state;
+    return {
+      ...state,
+      decks: { ...state.decks, [deck]: structuredClone(deckState) },
     };
   });
 

@@ -6,7 +6,7 @@
 import { Router } from './router.js';
 import { audioController } from './audio.js';
 import { closeAllMonitors, getHealth, listJobs, listTracks } from './api.js';
-import { jobCoordinator, store, projectManager, ghostController } from './app-context.js';
+import { jobCoordinator, store, projectManager, ghostController, liveMixer } from './app-context.js';
 import { mountStudio } from './views/studio.js';
 import { mountLibrary } from './views/library.js';
 import { mountActivity } from './views/activity.js';
@@ -56,11 +56,8 @@ function updateNowPlaying() {
   }
 }
 
-// ---- Audio events -> store ----
+// ---- Library/preview audio events -> playback slice (footer only) ----
 audioController.on((type, payload) => {
-  // Phase 10B (A7): the Ghost controller re-proves destination ownership on
-  // every play/pause/stop/ended; display state below is unchanged.
-  ghostController.handleAudioEvent(type, payload);
   if (type === 'play') {
     store.dispatch({
       type: 'playback/set',
@@ -95,6 +92,22 @@ audioController.on((type, payload) => {
       playing: false,
       time: 0,
     });
+  }
+});
+
+// ---- LiveMixer deck events -> decks slice + Ghost Lead ownership ----
+const GHOST_DECK_EVENTS = new Set(['play', 'pause', 'stop', 'ended', 'seek']);
+liveMixer.on((event) => {
+  const { type, deck, state: deckState } = event;
+  if (type === 'contextstatechange') {
+    const snap = liveMixer.snapshot().decks;
+    store.dispatch({ type: 'decks/set', decks: snap });
+    return;
+  }
+  if (deck !== 'A' && deck !== 'B') return;
+  store.dispatch({ type: 'decks/set', deck, deckState });
+  if (deck === 'B' && GHOST_DECK_EVENTS.has(type)) {
+    ghostController.handleAudioEvent(type);
   }
 });
 
@@ -144,6 +157,7 @@ function teardown() {
   jobCoordinator.dispose();
   closeAllMonitors();
   audioController.stop();
+  liveMixer.shutdown().catch((err) => console.error('liveMixer shutdown failed', err));
   ghostController.shutdown(); // Phase 10B: cancel runtime machinery, close ctx
 }
 
