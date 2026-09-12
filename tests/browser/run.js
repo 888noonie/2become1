@@ -354,6 +354,19 @@ async function journeyRender(page) {
   record('render settings create a new mix', true, (await page.locator('.project-title').textContent()).trim());
 }
 
+async function readDeckClocks(page) {
+  return page.evaluate(async () => {
+    const { store } = await import('/assets/js/app-context.js');
+    const { A, B } = store.getState().decks;
+    return {
+      a: A.time,
+      b: B.time,
+      aPlaying: A.playing,
+      bPlaying: B.playing,
+    };
+  });
+}
+
 async function journeyDualDeckConcurrent(page) {
   await page.goto(`${BASE}/#/studio`);
   await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'anchor present' });
@@ -373,6 +386,19 @@ async function journeyDualDeckConcurrent(page) {
     return Boolean(foundation && lead);
   });
   record('A+B decks play concurrently', bothPlaying === true);
+
+  const t0 = await readDeckClocks(page);
+  await sleep(500);
+  const t1 = await readDeckClocks(page);
+  const clocksAdvance = t0.aPlaying && t0.bPlaying
+    && t1.aPlaying && t1.bPlaying
+    && t1.a > t0.a
+    && t1.b > t0.b;
+  record(
+    'A+B deck clocks advance concurrently',
+    clocksAdvance,
+    `A ${t0.a.toFixed(3)}→${t1.a.toFixed(3)} B ${t0.b.toFixed(3)}→${t1.b.toFixed(3)}`,
+  );
 
   await page.locator('.deck-slot--lead button[aria-label^="Pause Lead"]').click();
   await waitFor(async () => (
