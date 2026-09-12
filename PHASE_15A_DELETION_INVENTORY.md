@@ -13,8 +13,11 @@ find src/twobecomeone/studio_static -type f \
   -printf '%s\n' | awk '{t+=$1} END {print t}'
 ```
 
-Result: **499,988 / 500,000 bytes** (12 bytes headroom, not ~148 — Sol's
-numerical correction is accepted).
+Result at `e39898f`: **499,988 uncompressed bytes**. The 500,000-byte ceiling
+that made this 12 bytes of headroom is **retired** (Richard, 2026-09-12).
+Through Phases 14–16: soft checkpoint **600,000**, hard ceiling **650,000**.
+Report the total on every frontend-bearing PR. Do not delete behaviour,
+compress readability, or minify merely to pass the number.
 
 ## What the wiring actually supersedes (measured, not estimated)
 
@@ -49,8 +52,10 @@ superseded deck path (~4,865 B) is rewritten to equivalent mixer calls, and
 the genuinely new surface (the `decks` slice + mixer construction) is ~1,100 B
 of net growth.
 
-Projected post-wiring payload: **~501,100 bytes — over the 500,000 ceiling by
-~1,100 bytes.**
+Projected post-wiring payload: **~501,100 bytes** (~1,100 net additive). That
+fits the Phases 14–16 hard ceiling of 650,000. It would have missed the retired
+500,000 ceiling; that is why wiring was held, not because the mixer itself is
+too large.
 
 ## The 15–20 KB headroom target is not achievable from the wiring alone
 
@@ -70,10 +75,15 @@ Reaching 15–20 KB headroom requires one of:
 2. **A budget decision from Richard** to raise the ceiling, or to authorize a
    specific, behavior-bearing deletion with replacement-test coverage.
 
+Richard signed off on (2) on 2026-09-12: hard ceiling 650,000 through Phases
+14–16, soft checkpoint 600,000. The 15–20 KB headroom hunt is no longer a
+precondition for wiring. After Phase 16, replace byte-counting with measured
+initial-load, startup, memory, and audio-performance budgets.
+
 ## Recommendation
 
-Do not begin the six-file wiring on the current 12-byte headroom. The wiring
-will land ~1.1 KB over budget. Before wiring, either (a) identify and remove a
-genuinely dead ~16–21 KB of static code with replacement tests, or (b) obtain
-Richard's sign-off on a budget change. This is a decision for Richard/Sol, not
-a silent coder override.
+The old 12-byte headroom is not a reason to withhold wiring. The projected
+~501,100-byte tree is inside the new ceiling. Six-file wiring is still a
+separate authorization: do not start it in the 14B.1 cycle (held with 14B.2,
+14B.3, Producer UI, and audible Wax work). When Richard names wiring, do not
+delete behaviour or minify to "make room."

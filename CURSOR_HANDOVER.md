@@ -12,12 +12,18 @@ This section supersedes the older "Start here" below for the next session.
   generation tokens guarding every async boundary, element-replacement
   attribution, a canonical `{ type, deck, state }` event contract, and
   table-backed error codes. 43/43 focused + 388/388 frontend tests green.
-- **Six-file wiring is BLOCKED on budget.** `PHASE_15A_DELETION_INVENTORY.md`
-  shows the wiring is byte-neutral replacement (~4,865 B superseded, ~1,100 B
-  net additive), so it lands ~1.1 KB over the 500,000 ceiling on the current
-  12-byte headroom (static is 499,988/500,000). The 15–20 KB headroom target
-  needs a genuine dead-code removal or a Richard budget sign-off — not the
-  wiring's own supersession. Do not start wiring until that is resolved.
+- **Static budget (Richard, 2026-09-12):** the 500,000-byte ceiling is retired.
+  Measured payload at `e39898f` is 499,988 uncompressed HTML/CSS/JS bytes
+  (~144 KB gzip). Through Phases 14–16: **soft checkpoint 600,000** (explain
+  meaningful growth) and **hard ceiling 650,000**. Report the total on every
+  frontend-bearing PR. Do not delete behaviour, compress readability, or
+  minify merely to pass the number. After Phase 16, replace this allowance
+  with measured initial-load, startup, memory, and audio-performance budgets.
+  CI does not yet enforce the ceiling; add that check later.
+- **Six-file wiring is no longer blocked by the old 500,000 ceiling.**
+  `PHASE_15A_DELETION_INVENTORY.md` still projects ~501,100 bytes after
+  wiring (~1.1 KB net). That fits the new hard ceiling. Wiring remains
+  **unauthorized this cycle** (held with 14B.2/14B.3) until Richard names it.
 - **Product decision (approved):** the `audioController` singleton stays as the
   exclusive preview/audition channel (footer/library); deck pads show their own
   A/B state. The committed layer already runs on its own AudioContext.
@@ -81,7 +87,7 @@ uv build --wheel --sdist
 git diff --check
 ```
 
-Run the workflow's desktop/mobile browser commands for changes affecting playback, requests, or UI. Use actual installed Chromium or the workflow's pinned installation. Report skipped optional tests explicitly. Keep frontend static assets below the existing 500,000-byte ceiling. Do not bump versions or create release tags as a side effect of maintenance.
+Run the workflow's desktop/mobile browser commands for changes affecting playback, requests, or UI. Use actual installed Chromium or the workflow's pinned installation. Report skipped optional tests explicitly. Keep frontend static assets at or under 650,000 uncompressed bytes (soft checkpoint 600,000: explain meaningful growth). Do not bump versions or create release tags as a side effect of maintenance.
 
 ## What just shipped
 

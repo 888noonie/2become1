@@ -38,6 +38,13 @@ This section supersedes the older maintenance boundary below.
   Phase 14C/15C convergence.
 - Phase 13 listener truth remains open for Class C loopback and human-agreed
   tolerances. Do not turn scheduling receipts into audible-output claims.
+- **Static budget (Richard, 2026-09-12):** the 500,000-byte ceiling is retired.
+  Through Phases 14–16 the uncompressed HTML/CSS/JS tree may reach 650,000
+  bytes (hard) with a 600,000-byte soft checkpoint that needs an explanation
+  of meaningful growth. Historical phase evidence below still cites the old
+  500,000-byte allowance as what those slices were measured against. Do not
+  delete behaviour, compress readability, or minify merely to pass the
+  number. Review after Phase 16.
 - Hermes B implements; Sol independently audits and authors preferably
   tri-phase plans. No production phase, push or merge is implied without
   Richard's explicit authorization.

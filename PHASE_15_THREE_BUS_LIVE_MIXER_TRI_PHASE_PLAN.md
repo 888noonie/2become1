@@ -101,7 +101,7 @@ lifecycle cleanup.
 - Existing library/render preview behavior has an explicit tested policy.
 - No autoplay; context starts only after a user gesture.
 - Full frontend/browser gates pass at both viewports and static bytes stay within
-  500,000.
+  650,000 (soft checkpoint 600,000: explain meaningful growth).
 
 # Phase 15B — Beat sync and live crossfader
 
@@ -179,7 +179,8 @@ simultaneously and stop cleanly.
 - Independent deck controls and crossfader remain correct while stack plays.
 - One committed stack limit, Undo, reload and render parity remain intact.
 - Full pytest/npm/browser/ghost/live-mixer gates pass; CI runs deterministic
-  dual-viewport journeys; static assets remain <= 500,000 bytes.
+  dual-viewport journeys; static assets remain <= 650,000 bytes (soft
+  checkpoint 600,000: explain meaningful growth).
 - Independent Sol audit maps every simultaneous-output claim to evidence before
   merge or product-closure language.
 

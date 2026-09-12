@@ -111,7 +111,10 @@ browser assertion that all three buses contribute non-silent output together.
   buffers, timers, requests and abort controllers remain runtime-owned.
 - Mobile/accessibility cannot depend on drag, colour, hover, radial gestures, or
   sound alone.
-- No new runtime or build dependency. Static frontend remains <= 500,000 bytes.
+- No new runtime or build dependency. Static frontend remains <= 650,000
+  uncompressed bytes (soft checkpoint 600,000: explain meaningful growth).
+  Do not delete behaviour, compress readability, or minify merely to pass
+  the number. Report the total on every frontend-bearing PR.
 - No Producer/AI generation, bridge generation, QR networking, multi-user sync,
   multiple committed layers, or unrestricted user sample filesystem paths.
 
@@ -248,7 +251,8 @@ missing files and traversal attempts.
   the grid revision changes.
 - Search, keyboard/mobile selection and stale/unavailable states work at both
   viewports.
-- Full Python/frontend/browser gates pass and static bytes remain <= 500,000.
+- Full Python/frontend/browser gates pass and static bytes remain <= 650,000
+  (soft checkpoint 600,000: explain meaningful growth).
 
 # Phase 14C — One committed stem stack, production playback and parity
 
@@ -334,8 +338,8 @@ and Richard.
   expected-value assertions; audible claims remain classified A/B/C.
 - Existing single-vocal Ghost ledgers continue to hydrate/play/render.
 - Full gates pass, new browser journey runs at 1280x800 and 390x844 in CI, static
-  bytes remain <= 500,000, and the feature branch receives independent Sol audit
-  before merge.
+  bytes remain <= 650,000 (soft checkpoint 600,000: explain meaningful growth),
+  and the feature branch receives independent Sol audit before merge.
 
 # Explicit deferrals after this tri-phase
 
