@@ -155,7 +155,7 @@ class ActionStore:
         project_id = str(project_id)
 
         prepared_preview = None
-        if validated["type"] == "preview_layer" and self._asset_preparer is not None:
+        if validated["type"] in ("preview_layer", "preview_stem_stack") and self._asset_preparer is not None:
             # Avoid rendering ordinary retries or requests that already fail
             # permission/lifecycle checks. This connection never starts a
             # write transaction and is closed before ffmpeg is invoked.
@@ -450,7 +450,7 @@ class ActionStore:
 
         # Constitutional permission gate (mirrors permission.js).
         if actor_type == "producer":
-            if action_type == "commit_layer":
+            if action_type in ("commit_layer", "commit_stem_stack"):
                 raise ConflictError(
                     "Producer is not permitted to commit",
                     code="P_ACTOR_NOT_ALLOWED",
@@ -465,14 +465,14 @@ class ActionStore:
                     "Producer is not permitted to revert commits",
                     code="P_ACTOR_NOT_ALLOWED",
                 )
-            # producer preview_layer is allowed only with explicit permission,
+            # producer preview is allowed only with explicit permission,
             # which this tri-phase does not grant through the public API.
             raise ConflictError(
                 "Producer preview is not permitted via the public API",
                 code="P_PRODUCER_PREVIEW_DENIED",
             )
 
-        if action_type == "preview_layer":
+        if action_type in ("preview_layer", "preview_stem_stack"):
             if action["id"] in proposals["byId"]:
                 raise ConflictError(
                     "an action with this id already exists in this project",
@@ -551,10 +551,15 @@ class ActionStore:
                 proposals["activeIds"].remove(proposal_id)
             return {"result": "proposal_rejected", "proposalId": proposal_id}
 
-        # commit_layer: requires the auditioning precondition, exactly like
-        # the Phase 8 Node dispatcher. The accepted asset is verified against
-        # the server's prepared record and pinned in this same durable
-        # operation; a client can never forge one.
+        # commit_layer / commit_stem_stack: requires the auditioning
+        # precondition, exactly like the Phase 8 Node dispatcher. The accepted
+        # asset is verified against the server's prepared record and pinned in
+        # this same durable operation; a client can never forge one.
+        if action_type not in ("commit_layer", "commit_stem_stack"):
+            raise ConflictError(
+                "unknown action type reached the commit path",
+                code="V_UNKNOWN_TYPE",
+            )
         if proposal["lifecycle"] != "auditioning" and not replaying:
             raise ConflictError(
                 "commit_layer requires the referenced proposal to be in auditioning",

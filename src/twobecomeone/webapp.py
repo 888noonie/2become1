@@ -487,6 +487,12 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
         path = service.ghost_asset_audio_path(asset_id)
         return FileResponse(path, media_type="audio/wav", content_disposition_type="inline")
 
+    @app.get("/api/stem-stack-assets/{asset_id}/audio")
+    def stem_stack_asset_audio(asset_id: str):
+        """Serve a managed stem-stack asset by opaque ID only."""
+        path = service.stem_stack_audio_path(asset_id)
+        return FileResponse(path, media_type="audio/wav", content_disposition_type="inline")
+
     # ------------------------------------------------------------------
     # Render plan (read-only; shares the renderer's planning logic)
     # ------------------------------------------------------------------

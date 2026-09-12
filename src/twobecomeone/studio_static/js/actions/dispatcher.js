@@ -71,7 +71,9 @@ export class ActionDispatcher {
 
     // 3. Lifecycle/proposal lookup for commit/reject.
     const state = this.store.getState();
-    if (action.type === ACTION_TYPES.COMMIT_LAYER || action.type === ACTION_TYPES.REJECT_PROPOSAL) {
+    if (action.type === ACTION_TYPES.COMMIT_LAYER
+        || action.type === ACTION_TYPES.COMMIT_STEM_STACK
+        || action.type === ACTION_TYPES.REJECT_PROPOSAL) {
       const proposal = state.proposals.byId[action.payload.proposalId];
       if (!proposal) {
         return this._result(
@@ -79,7 +81,8 @@ export class ActionDispatcher {
           null,
         );
       }
-      if (action.type === ACTION_TYPES.COMMIT_LAYER) {
+      if (action.type === ACTION_TYPES.COMMIT_LAYER
+          || action.type === ACTION_TYPES.COMMIT_STEM_STACK) {
         if (proposal.lifecycle !== LIFECYCLE_STATES.AUDITIONING) {
           return this._result(
             buildFailure(ERROR_CODES.L_NOT_AUDITIONING, { lifecycle: proposal.lifecycle }),
@@ -157,7 +160,8 @@ export class ActionDispatcher {
   _recordAndProject(action, transportFact) {
     const proposal = makeProposalRecord(action, LIFECYCLE_STATES.READY);
 
-    if (action.type === ACTION_TYPES.PREVIEW_LAYER) {
+    if (action.type === ACTION_TYPES.PREVIEW_LAYER
+        || action.type === ACTION_TYPES.PREVIEW_STEM_STACK) {
       this.ledger.append({
         action,
         outcome: 'proposal_created',
@@ -173,7 +177,7 @@ export class ActionDispatcher {
       }), null);
     }
 
-    if (action.type === ACTION_TYPES.COMMIT_LAYER) {
+    if (action.type === ACTION_TYPES.COMMIT_LAYER || action.type === ACTION_TYPES.COMMIT_STEM_STACK) {
       const state = this.store.getState();
       const originalProposal = state.proposals.byId[action.payload.proposalId];
       const committedLayer = makeCommittedLayer(action, originalProposal);

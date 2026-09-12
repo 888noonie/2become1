@@ -244,20 +244,26 @@ export function makeProposalRecord(action, lifecycle = LIFECYCLE_STATES.READY) {
 
 export function makeCommittedLayer(commitAction, proposal) {
   if (!commitAction || !proposal) return null;
-  return Object.freeze({
+  const stack = commitAction.type === ACTION_TYPES.COMMIT_STEM_STACK;
+  const layer = {
     layerId: `layer-${commitAction.id}`,
     actionId: commitAction.id,
     actionType: commitAction.type,
     actionSchemaVersion: SCHEMA_VERSION,
     proposalId: proposal.id,
-    sourceRegionRef: freezeDeep(proposal.payload.source.region),
+    sourceRegionRef: stack ? null : freezeDeep(proposal.payload.source?.region),
     acceptedAsset: freezeDeep({
       id: commitAction.payload.acceptedAsset.id,
       contentHash: commitAction.payload.acceptedAsset.contentHash,
       transformSpec: commitAction.payload.acceptedAsset.transformSpec,
     }),
     transformSpec: freezeDeep(commitAction.payload.acceptedAsset.transformSpec),
-    placement: freezeDeep({
+    placement: freezeDeep(stack ? {
+      components: proposal.payload.components,
+      destinationBars: proposal.payload.destinationBars,
+      timing: proposal.payload.timing,
+      gainDb: 0,
+    } : {
       source: proposal.payload.source,
       destination: proposal.payload.destination,
       timing: proposal.payload.timing,
@@ -265,7 +271,9 @@ export function makeCommittedLayer(commitAction, proposal) {
     }),
     acceptedAt: commitAction.payload.acceptedAt,
     acceptedBy: freezeDeep(commitAction.actor),
-  });
+  };
+  if (stack) layer.kind = 'stem_stack';
+  return Object.freeze(layer);
 }
 
 export { ERROR_CODES };

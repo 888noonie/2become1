@@ -7,13 +7,27 @@
         "id": "a-1",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "2026-08-28T00:00:00Z",
         "idempotencyKey": "k-1",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "chorus_1" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "chorus_1"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -24,17 +38,31 @@
         "id": "a-2",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "2026-08-28T00:00:01Z",
         "idempotencyKey": "k-2",
         "payload": {
           "source": {
             "deck": "B",
             "stem": "vocal",
-            "region": { "id": "verse_2", "label": "second verse", "startBeat": 16, "endBeat": 32, "gridRevision": "grid-a" }
+            "region": {
+              "id": "verse_2",
+              "label": "second verse",
+              "startBeat": 16,
+              "endBeat": 32,
+              "gridRevision": "grid-a"
+            }
           },
-          "destination": { "deck": "A" },
-          "timing": { "launch": "next_phrase", "quantize": false },
+          "destination": {
+            "deck": "A"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": false
+          },
           "gainDb": 0
         }
       }
@@ -45,14 +73,90 @@
         "id": "a-3",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "op" },
+        "actor": {
+          "type": "human",
+          "id": "op"
+        },
         "requestedAt": "2026-08-28T00:00:02Z",
         "idempotencyKey": "k-3",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r", "startBeat": 0, "endBeat": 4 } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": false },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r",
+              "startBeat": 0,
+              "endBeat": 4
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": false
+          },
           "gainDb": -6
+        }
+      }
+    },
+    {
+      "name": "human preview stem stack one component",
+      "action": {
+        "id": "s-1",
+        "schemaVersion": 1,
+        "type": "preview_stem_stack",
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
+        "requestedAt": "2026-09-12T00:00:00Z",
+        "idempotencyKey": "sk-1",
+        "payload": {
+          "components": [
+            {
+              "crateItemId": "crate-voice",
+              "expected": {
+                "contentSha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "gridRevision": "grid-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "stemName": "vocals",
+                "stemSetId": "set-1"
+              },
+              "role": "voice",
+              "loopBars": 4,
+              "gainDb": -3
+            }
+          ],
+          "destinationBars": 4,
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          }
+        }
+      }
+    },
+    {
+      "name": "human commit stem stack",
+      "action": {
+        "id": "cs-1",
+        "schemaVersion": 1,
+        "type": "commit_stem_stack",
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
+        "requestedAt": "2026-09-12T00:00:05Z",
+        "idempotencyKey": "csk-1",
+        "payload": {
+          "proposalId": "s-1",
+          "acceptedAt": "2026-09-12T00:00:05Z",
+          "acceptedAsset": {
+            "id": "ss-cccccccccccccccccccccccccccccccc",
+            "contentHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "transformSpec": {
+              "kind": "stem_stack"
+            }
+          }
         }
       }
     }
@@ -65,14 +169,28 @@
         "id": "b-1",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "projectId": "forge",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -84,13 +202,27 @@
         "id": "b-2",
         "schemaVersion": 2,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -102,7 +234,10 @@
         "id": "b-3",
         "schemaVersion": 1,
         "type": "delete_project",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {}
@@ -115,13 +250,27 @@
         "id": "b-4",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "robot", "id": "x" },
+        "actor": {
+          "type": "robot",
+          "id": "x"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -133,13 +282,27 @@
         "id": "b-5",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "B", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "B",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -151,13 +314,29 @@
         "id": "b-6",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r", "startBeat": 32, "endBeat": 16 } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r",
+              "startBeat": 32,
+              "endBeat": 16
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -169,13 +348,29 @@
         "id": "b-7",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r", "startBeat": 16, "endBeat": 16 } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r",
+              "startBeat": 16,
+              "endBeat": 16
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -187,13 +382,29 @@
         "id": "b-7",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r", "startBeat": -1, "endBeat": 8 } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r",
+              "startBeat": -1,
+              "endBeat": 8
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -205,13 +416,27 @@
         "id": "b-8",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": 13
         }
       }
@@ -223,13 +448,27 @@
         "id": "b-9",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -25
         }
       }
@@ -241,13 +480,27 @@
         "id": "b-10",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": "-3"
         }
       }
@@ -259,13 +512,27 @@
         "id": "b-11",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": true
         }
       }
@@ -277,13 +544,27 @@
         "id": "b-11",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "immediately", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "immediately",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -295,13 +576,27 @@
         "id": "b-12",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": "yes" },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": "yes"
+          },
           "gainDb": -3
         }
       }
@@ -313,13 +608,27 @@
         "id": "b-12",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3,
           "bypassPermission": true
         }
@@ -332,7 +641,10 @@
         "id": "b-13",
         "schemaVersion": 1,
         "type": "commit_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": null
@@ -345,10 +657,16 @@
         "id": "b-14",
         "schemaVersion": 1,
         "type": "commit_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
-        "payload": { "proposalId": "a-1", "acceptedAt": "t2" }
+        "payload": {
+          "proposalId": "a-1",
+          "acceptedAt": "t2"
+        }
       }
     },
     {
@@ -358,13 +676,19 @@
         "id": "b-15",
         "schemaVersion": 1,
         "type": "commit_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
           "proposalId": "a-1",
           "acceptedAt": "t2",
-          "acceptedAsset": { "id": "asset-1", "transformSpec": {} }
+          "acceptedAsset": {
+            "id": "asset-1",
+            "transformSpec": {}
+          }
         }
       }
     },
@@ -375,10 +699,17 @@
         "id": "b-16",
         "schemaVersion": 1,
         "type": "reject_proposal",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
-        "payload": { "proposalId": "a-1", "rejectedAt": "t2", "reason": 42 }
+        "payload": {
+          "proposalId": "a-1",
+          "rejectedAt": "t2",
+          "reason": 42
+        }
       }
     },
     {
@@ -388,12 +719,26 @@
         "id": "b-17",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -404,13 +749,27 @@
       "action": {
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -422,13 +781,27 @@
         "id": "",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -440,13 +813,27 @@
         "id": "b-18",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "", "region": { "id": "r" } },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "",
+            "region": {
+              "id": "r"
+            }
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -458,13 +845,25 @@
         "id": "b-19",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": null },
-          "destination": { "deck": "B" },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": null
+          },
+          "destination": {
+            "deck": "B"
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
         }
       }
@@ -476,13 +875,168 @@
         "id": "b-20",
         "schemaVersion": 1,
         "type": "preview_layer",
-        "actor": { "type": "human", "id": "richard" },
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
         "requestedAt": "t",
         "idempotencyKey": "k",
         "payload": {
-          "source": { "deck": "A", "stem": "vocal", "region": { "id": "r" } },
-          "timing": { "launch": "next_phrase", "quantize": true },
+          "source": {
+            "deck": "A",
+            "stem": "vocal",
+            "region": {
+              "id": "r"
+            }
+          },
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          },
           "gainDb": -3
+        }
+      }
+    },
+    {
+      "name": "empty stem stack",
+      "node_code": "V_INVALID_COMPONENT_COUNT",
+      "action": {
+        "id": "s-b-21",
+        "schemaVersion": 1,
+        "type": "preview_stem_stack",
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "components": [],
+          "destinationBars": 4,
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          }
+        }
+      }
+    },
+    {
+      "name": "duplicate stack role",
+      "node_code": "V_DUPLICATE_ROLE",
+      "action": {
+        "id": "s-b-22",
+        "schemaVersion": 1,
+        "type": "preview_stem_stack",
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "components": [
+            {
+              "crateItemId": "crate-voice",
+              "expected": {
+                "contentSha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "gridRevision": "grid-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "stemName": "vocals",
+                "stemSetId": "set-1"
+              },
+              "role": "voice",
+              "loopBars": 4,
+              "gainDb": -3
+            },
+            {
+              "crateItemId": "crate-2",
+              "expected": {
+                "contentSha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "gridRevision": "grid-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "stemName": "vocals",
+                "stemSetId": "set-1"
+              },
+              "role": "voice",
+              "loopBars": 4,
+              "gainDb": -3
+            }
+          ],
+          "destinationBars": 4,
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          }
+        }
+      }
+    },
+    {
+      "name": "bool stack gain",
+      "node_code": "V_INVALID_GAIN",
+      "action": {
+        "id": "s-b-23",
+        "schemaVersion": 1,
+        "type": "preview_stem_stack",
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "components": [
+            {
+              "crateItemId": "crate-voice",
+              "expected": {
+                "contentSha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "gridRevision": "grid-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "stemName": "vocals",
+                "stemSetId": "set-1"
+              },
+              "role": "voice",
+              "loopBars": 4,
+              "gainDb": true
+            }
+          ],
+          "destinationBars": 4,
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          }
+        }
+      }
+    },
+    {
+      "name": "bad destination bars",
+      "node_code": "V_INVALID_DESTINATION_BARS",
+      "action": {
+        "id": "s-b-24",
+        "schemaVersion": 1,
+        "type": "preview_stem_stack",
+        "actor": {
+          "type": "human",
+          "id": "richard"
+        },
+        "requestedAt": "t",
+        "idempotencyKey": "k",
+        "payload": {
+          "components": [
+            {
+              "crateItemId": "crate-voice",
+              "expected": {
+                "contentSha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "gridRevision": "grid-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "stemName": "vocals",
+                "stemSetId": "set-1"
+              },
+              "role": "voice",
+              "loopBars": 4,
+              "gainDb": -3
+            }
+          ],
+          "destinationBars": 3,
+          "timing": {
+            "launch": "next_phrase",
+            "quantize": true
+          }
         }
       }
     }

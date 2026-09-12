@@ -269,6 +269,28 @@ MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
             " region_start_beat, region_end_beat)",
         ],
     ),
+    (
+        12,
+        "stem_stack_assets",
+        [
+            "CREATE TABLE stem_stack_assets ("
+            " id TEXT PRIMARY KEY,"
+            " project_id TEXT NOT NULL,"
+            " proposal_id TEXT NOT NULL,"
+            " content_sha256 TEXT NOT NULL,"
+            " relative_path TEXT NOT NULL,"
+            " manifest_json TEXT NOT NULL,"
+            " sample_rate INTEGER NOT NULL,"
+            " channels INTEGER NOT NULL,"
+            " duration_seconds REAL NOT NULL,"
+            " file_size_bytes INTEGER NOT NULL,"
+            " pinned INTEGER NOT NULL DEFAULT 0,"
+            " created_at REAL NOT NULL"
+            ")",
+            "CREATE UNIQUE INDEX idx_stem_stack_assets_proposal"
+            " ON stem_stack_assets(project_id, proposal_id)",
+        ],
+    ),
 ]
 
 

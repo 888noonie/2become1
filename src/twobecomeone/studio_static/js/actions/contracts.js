@@ -29,6 +29,8 @@ export const ACTION_TYPES = Object.freeze(Object.freeze({
   COMMIT_LAYER: 'commit_layer',
   REJECT_PROPOSAL: 'reject_proposal',
   REVERT_COMMIT: 'revert_commit',
+  PREVIEW_STEM_STACK: 'preview_stem_stack',
+  COMMIT_STEM_STACK: 'commit_stem_stack',
 }));
 
 const ALLOWED_TOP_KEYS = Object.freeze([
@@ -62,6 +64,20 @@ const ALLOWED_REGION_KEYS = Object.freeze([
   'endBeat',
   'gridRevision',
 ]);
+
+const ALLOWED_STACK_PREVIEW_KEYS = Object.freeze(['components', 'destinationBars', 'timing']);
+const ALLOWED_STACK_COMPONENT_KEYS = Object.freeze([
+  'crateItemId', 'expected', 'role', 'loopBars', 'gainDb', 'transform',
+]);
+const ALLOWED_STACK_EXPECTED_KEYS = Object.freeze([
+  'contentSha256', 'gridRevision', 'stemName', 'stemSetId',
+]);
+const ALLOWED_STACK_TRANSFORM_KEYS = Object.freeze(['tempoRatio', 'semitoneShift']);
+const STACK_ROLES = Object.freeze(['beat', 'bass', 'other', 'voice']);
+const STACK_LOOP_BARS = Object.freeze([1, 2, 4, 8]);
+const MIN_TEMPO_RATIO = 0.25;
+const MAX_TEMPO_RATIO = 4;
+const MAX_SEMITONE = 12;
 
 const ACTOR_TYPES = Object.freeze({
   HUMAN: 'human',
@@ -246,6 +262,108 @@ function validatePreviewPayload(payload) {
   return null;
 }
 
+function validateStackTransform(transform) {
+  if (transform === undefined || transform === null) return null;
+  if (!isPlainObject(transform)) {
+    return buildFailure(ERROR_CODES.V_INVALID_SHIFT);
+  }
+  const keyFailure = rejectKeys(transform, ALLOWED_STACK_TRANSFORM_KEYS, ERROR_CODES.V_UNEXPECTED_PAYLOAD_KEY);
+  if (keyFailure) return keyFailure;
+  if (Object.hasOwn(transform, 'tempoRatio')) {
+    if (!isFiniteNumber(transform.tempoRatio)
+        || transform.tempoRatio < MIN_TEMPO_RATIO
+        || transform.tempoRatio > MAX_TEMPO_RATIO) {
+      return buildFailure(ERROR_CODES.V_INVALID_SHIFT, { field: 'tempoRatio' });
+    }
+  }
+  if (Object.hasOwn(transform, 'semitoneShift')) {
+    if (!Number.isInteger(transform.semitoneShift) || Math.abs(transform.semitoneShift) > MAX_SEMITONE) {
+      return buildFailure(ERROR_CODES.V_INVALID_SHIFT, { field: 'semitoneShift' });
+    }
+  }
+  return null;
+}
+
+function validateStackComponent(component, rolesSeen, idsSeen) {
+  if (!isPlainObject(component)) {
+    return buildFailure(ERROR_CODES.V_MISSING_COMPONENTS);
+  }
+  const keyFailure = rejectKeys(component, ALLOWED_STACK_COMPONENT_KEYS, ERROR_CODES.V_UNEXPECTED_PAYLOAD_KEY);
+  if (keyFailure) return keyFailure;
+  if (!isNonEmptyString(component.crateItemId)) {
+    return buildFailure(ERROR_CODES.V_MISSING_CRATE_ITEM);
+  }
+  if (idsSeen.has(component.crateItemId)) {
+    return buildFailure(ERROR_CODES.V_DUPLICATE_COMPONENT);
+  }
+  idsSeen.add(component.crateItemId);
+  if (!STACK_ROLES.includes(component.role)) {
+    return buildFailure(ERROR_CODES.V_INVALID_ROLE, { value: component.role });
+  }
+  if (rolesSeen.has(component.role)) {
+    return buildFailure(ERROR_CODES.V_DUPLICATE_ROLE, { role: component.role });
+  }
+  rolesSeen.add(component.role);
+  if (!STACK_LOOP_BARS.includes(component.loopBars)) {
+    return buildFailure(ERROR_CODES.V_INVALID_LOOP_BARS, { value: component.loopBars });
+  }
+  if (!isFiniteNumber(component.gainDb)
+      || component.gainDb < GAIN_MIN_DB
+      || component.gainDb > GAIN_MAX_DB) {
+    return buildFailure(ERROR_CODES.V_INVALID_GAIN, { value: component.gainDb });
+  }
+  if (!isPlainObject(component.expected)) {
+    return buildFailure(ERROR_CODES.V_MISSING_EXPECTED);
+  }
+  const expectedKeyFailure = rejectKeys(
+    component.expected, ALLOWED_STACK_EXPECTED_KEYS, ERROR_CODES.V_UNEXPECTED_PAYLOAD_KEY,
+  );
+  if (expectedKeyFailure) return expectedKeyFailure;
+  for (const field of ALLOWED_STACK_EXPECTED_KEYS) {
+    if (!isNonEmptyString(component.expected[field])) {
+      return buildFailure(ERROR_CODES.V_MISSING_EXPECTED, { field });
+    }
+  }
+  return validateStackTransform(component.transform);
+}
+
+function validateStackPreviewPayload(payload) {
+  if (!isPlainObject(payload)) {
+    return buildFailure(ERROR_CODES.V_MISSING_PAYLOAD);
+  }
+  const keyFailure = rejectKeys(payload, ALLOWED_STACK_PREVIEW_KEYS, ERROR_CODES.V_UNEXPECTED_PAYLOAD_KEY);
+  if (keyFailure) return keyFailure;
+  if (!Array.isArray(payload.components)) {
+    return buildFailure(ERROR_CODES.V_MISSING_COMPONENTS);
+  }
+  if (payload.components.length < 1 || payload.components.length > 4) {
+    return buildFailure(ERROR_CODES.V_INVALID_COMPONENT_COUNT, { count: payload.components.length });
+  }
+  const rolesSeen = new Set();
+  const idsSeen = new Set();
+  for (const component of payload.components) {
+    const failure = validateStackComponent(component, rolesSeen, idsSeen);
+    if (failure) return failure;
+  }
+  if (!STACK_LOOP_BARS.includes(payload.destinationBars)) {
+    return buildFailure(ERROR_CODES.V_INVALID_DESTINATION_BARS, { value: payload.destinationBars });
+  }
+  if (!isPlainObject(payload.timing)) {
+    return buildFailure(ERROR_CODES.V_MISSING_TIMING);
+  }
+  const timingKeyFailure = rejectKeys(
+    payload.timing, ALLOWED_PREVIEW_TIMING_KEYS, ERROR_CODES.V_UNEXPECTED_PAYLOAD_KEY,
+  );
+  if (timingKeyFailure) return timingKeyFailure;
+  if (payload.timing.launch !== 'next_phrase') {
+    return buildFailure(ERROR_CODES.V_INVALID_LAUNCH, { value: payload.timing.launch });
+  }
+  if (typeof payload.timing.quantize !== 'boolean') {
+    return buildFailure(ERROR_CODES.V_INVALID_QUANTIZE);
+  }
+  return null;
+}
+
 function validateAcceptedAsset(asset) {
   if (!isPlainObject(asset)) {
     return buildFailure(ERROR_CODES.V_MISSING_ACCEPTED_ASSET);
@@ -384,7 +502,10 @@ export function validateAction(rawAction) {
   let payloadFailure;
   if (rawAction.type === ACTION_TYPES.PREVIEW_LAYER) {
     payloadFailure = validatePreviewPayload(rawAction.payload);
-  } else if (rawAction.type === ACTION_TYPES.COMMIT_LAYER) {
+  } else if (rawAction.type === ACTION_TYPES.PREVIEW_STEM_STACK) {
+    payloadFailure = validateStackPreviewPayload(rawAction.payload);
+  } else if (rawAction.type === ACTION_TYPES.COMMIT_LAYER
+      || rawAction.type === ACTION_TYPES.COMMIT_STEM_STACK) {
     payloadFailure = validateCommitPayload(rawAction.payload);
   } else if (rawAction.type === ACTION_TYPES.REJECT_PROPOSAL) {
     payloadFailure = validateRejectPayload(rawAction.payload);

@@ -137,7 +137,12 @@ try {
   const body = await page.locator('.stem-crate').textContent();
   record('ffmpeg crate cards stay center/sides', /ffmpeg center\/sides/.test(body) && !/vocals/i.test(body), body.slice(0, 120));
   const place = page.locator('.stem-crate__place').first();
-  record('stack placement stays disabled with 14C copy', await place.isDisabled() && /Stem stack arrives in Phase 14C/.test(await place.textContent()));
+  record('stack placement is enabled for available stems', await place.isEnabled());
+  await place.click();
+  await waitFor(async () => /OTHER: center/.test(await page.locator('.stem-crate-slot').first().textContent() || '')
+    || (await page.locator('.stem-crate-slot.is-filled').count()) >= 1, 'placed slot');
+  record('place fills a role slot', (await page.locator('.stem-crate-slot.is-filled').count()) >= 1);
+  record('preview control is present', (await page.locator('.stem-crate__preview').count()) === 1);
   const search = page.locator('.stem-crate__search');
   await search.fill('center');
   await waitFor(async () => (await page.locator('.stem-crate-card').count()) === 1, 'search filter');
@@ -165,7 +170,7 @@ try {
     const rect = button.getBoundingClientRect();
     return { width: rect.width, height: rect.height };
   });
-  record('disabled place control keeps a 44px target', size.width >= 44 && size.height >= 44, `${size.width.toFixed(1)}x${size.height.toFixed(1)}`);
+  record('place control keeps a 44px target', size.width >= 44 && size.height >= 44, `${size.width.toFixed(1)}x${size.height.toFixed(1)}`);
   const overflow = await page.evaluate(() => ({
     scroll: document.documentElement.scrollWidth,
     client: document.documentElement.clientWidth,

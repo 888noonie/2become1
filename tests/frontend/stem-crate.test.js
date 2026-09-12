@@ -51,5 +51,5 @@ test('separation outcomes distinguish Demucs, ffmpeg, full track, and jobs', () 
     separationOutcome({ jobs: [{ status: 'running', stage: 'separating' }] }).code,
     'separating',
   );
-  assert.equal(PLACE_STACK_COPY, 'Stem stack arrives in Phase 14C');
+  assert.equal(PLACE_STACK_COPY, 'Place into slot');
 });

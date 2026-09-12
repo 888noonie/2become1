@@ -11,6 +11,7 @@ import { GhostController } from './runtime/ghost-controller.js';
 import { CommittedLayerEngine } from './runtime/committed-layer-engine.js';
 import { LiveMixer } from './runtime/live-mixer.js';
 import { audioController } from './audio.js';
+import { StemStackController } from './runtime/stem-stack-controller.js';
 import {
   postProjectAction,
   postProposalLifecycle,
@@ -18,6 +19,7 @@ import {
   buildPreviewAction,
   buildRejectAction,
   buildCommitAction,
+  buildCommitStemStackAction,
   buildRevertAction,
   buildLifecycleBody,
 } from './api.js';
@@ -41,6 +43,7 @@ export const ghostController = new GhostController({
     buildPreviewAction,
     buildRejectAction,
     buildCommitAction,
+    buildCommitStemStackAction,
     buildRevertAction,
     buildLifecycleBody,
   },
@@ -55,6 +58,18 @@ export const ghostController = new GhostController({
   // controller (only when an authoritative projection holds a committed
   // layer), sharing the controller's AudioContext and injected timers.
   liveEngineFactory: (deps) => new CommittedLayerEngine(deps),
+});
+export const stemStackController = new StemStackController({
+  api: {
+    postProjectAction,
+    postProposalLifecycle,
+    buildCommitStemStackAction,
+    buildRevertAction,
+    buildLifecycleBody,
+  },
+  audioContextFactory: {
+    create: () => new AudioContext(),
+  },
 });
 export const projectManager = new ProjectManager(store, { ghostController });
 export const jobCoordinator = new JobCoordinator(store);

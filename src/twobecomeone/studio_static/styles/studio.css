@@ -1441,3 +1441,46 @@
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+.stem-crate__slots {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin-block: var(--space-3);
+}
+
+.stem-crate-slot {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  min-height: var(--target-min);
+}
+
+.stem-crate-slot.is-filled {
+  border-color: var(--color-lead);
+}
+
+.stem-crate-slot__label,
+.stem-crate-slot__method,
+.stem-crate__fever,
+.stem-crate__stack-state {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.stem-crate__stack-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-block-end: var(--space-3);
+}
+
+.stem-crate__stack-actions .button {
+  min-height: var(--target-min);
+}
+
+@media (max-width: 700px) {
+  .stem-crate__slots {
+    grid-template-columns: 1fr 1fr;
+  }
+}

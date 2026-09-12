@@ -14,7 +14,7 @@ function jsonResponse(body, status = 200) {
   };
 }
 
-test('crate panel lists items, disables stack placement, and keeps crate out of the store', async () => {
+test('crate panel lists items, places into OTHER, and keeps crate out of the store', async () => {
   const crateItem = {
     id: 'crate-1',
     stem_name: 'center',
@@ -75,9 +75,11 @@ test('crate panel lists items, disables stack placement, and keeps crate out of 
 
   assert.match(container.textContent, /ffmpeg center\/sides/);
   assert.doesNotMatch(container.textContent, /vocals/);
-  assert.match(container.textContent, /Stem stack arrives in Phase 14C/);
+  assert.match(container.textContent, /Place into slot/);
   const place = container.querySelector('.stem-crate__place');
-  assert.equal(place.disabled, true);
+  assert.equal(place.disabled, false);
+  place.click();
+  assert.match(container.textContent, /OTHER: center/);
   assert.equal(store.getState().crate, undefined);
   assert.ok(!JSON.stringify(store.getState()).includes('crate-1'));
 
