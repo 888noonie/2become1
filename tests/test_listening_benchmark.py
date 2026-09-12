@@ -387,6 +387,127 @@ def test_nonzero_cue_start_preserves_region_relative_layout(bench_dir, transient
 # Report assembly — the executable baseline's deliverable
 # ---------------------------------------------------------------------------
 
+def test_series_renderer_reports_every_onset_and_single_probe_parity(bench_dir, click_grid, transients):
+    assert callable(globals().get("_measure_series")), "series renderer is missing"
+    path, expected = click_grid
+    case = _measure_series("helper-series", path, expected, bench_dir,
+                           sr=44100, method="helper contract")
+    assert case["inputSampleRate"] == case["outputSampleRate"] == 44100
+    assert case["expectedOnsetsSec"] == expected
+    assert case["summary"]["n"] == len(case["offsetsMs"]) == 16
+    assert case["driftPerMinuteMs"] == bench.drift_per_minute(case["offsetsMs"], 0.5)
+    assert np.isfinite(case["clipping"]["true_peak_db"])
+    assert case["dropout"]["expectedClickCount"] == case["dropout"]["detectedClickCount"] == 16
+    assert case["dropout"]["droppedClickCount"] == 0
+    old = _measure("helper-old", transients[44100], 1.0, bench_dir, method="probe")
+    new = _measure_series("helper-probe", transients[44100], [1.0], bench_dir, method="probe")
+    assert new["offsetsMs"] == old["offsetsMs"]
+    assert new["summary"] == old["summary"]
+    assert new["driftPerMinuteMs"] is None
+
+
+def test_authorized_ambiguity_reports_whole_case_unmeasured(bench_dir, click_grid):
+    path, expected = click_grid
+    with pytest.raises(bench.OnsetMeasurementError, match="ambiguous onset near 4.0"):
+        _measure_series("strict-plus5", path, expected, bench_dir, shift=5, method="strict")
+    case = _measure_series("honest-plus5", path, expected, bench_dir, shift=5,
+                           method="authorized", allow_ambiguous=True)
+    assert case["measurementStatus"] == "unmeasured"
+    assert case["expectedOnsetsSec"] == expected
+    assert case["offsetsMs"] is case["summary"] is case["driftPerMinuteMs"] is None
+    assert {item["expectedOnsetSec"] for item in case["unmeasuredMetrics"]} == {4.0, 6.5}
+    first = case["unmeasuredMetrics"][0]
+    assert first["associationWindowSec"] == [3.9, 4.1]
+    assert "3.9795" in first["reason"] and "3.9472" in first["reason"]
+    assert first["metrics"] == ["offsetsMs", "summary", "driftPerMinuteMs"]
+    assert case["dropout"]["expectedClickCount"] == 16
+
+
+@pytest.mark.parametrize("allow_ambiguous", [False, True])
+def test_transformed_dropped_middle_click_fails_whole_case(bench_dir, allow_ambiguous):
+    signal, expected = bench.click_track(44100, bpm=120.0, bars=4, lead_in=1.0)
+    signal[int(3.49 * 44100):int(3.52 * 44100)] = 0.0
+    path = bench_dir / "helper-dropped-middle.wav"
+    bench.write_wav(path, signal, 44100)
+    with pytest.raises(bench.OnsetMeasurementError, match="no measurable transient"):
+        _measure_series("helper-dropped-transformed", path, [t / 1.25 for t in expected],
+                        bench_dir, ratio=1.25, method="dropped-middle negative control",
+                        allow_ambiguous=allow_ambiguous)
+
+
+def _measure_rendered(case_id: str, out: Path, expected: list[float], *, method: str,
+                      allow_ambiguous: bool = False) -> dict:
+    """Strict by default; authorized ambiguity nulls ALL timing, never subsets."""
+    with wave.open(str(out), "rb") as rendered:
+        output_sr = rendered.getframerate()
+    assert output_sr == bench.OUTPUT_SR
+    samples = bench.read_wav_mono(out)
+    offsets = []
+    unmeasured = []
+    for onset in expected:
+        try:
+            offsets.extend(bench.onset_offsets(samples, output_sr, [onset]))
+        except bench.OnsetMeasurementError as exc:
+            if not allow_ambiguous or not str(exc).startswith("ambiguous onset near "):
+                raise
+            unmeasured.append({
+                "metrics": ["offsetsMs", "summary", "driftPerMinuteMs"],
+                "expectedOnsetSec": onset,
+                "associationWindowSec": [onset - bench.SEARCH_WINDOW_SECONDS / 2,
+                                         onset + bench.SEARCH_WINDOW_SECONDS / 2],
+                "reason": str(exc),
+            })
+    if unmeasured:
+        offsets = None
+    # Fit against the supplied destination times, including nonuniform series.
+    drift = (round(float(np.polyfit(np.asarray(expected) - expected[0], offsets, 1)[0]
+                         * 60.0), 3) if offsets is not None and len(expected) > 1 else None)
+    peaks = bench.peak_times(samples, output_sr, threshold=0.2)
+    half_window = bench.SEARCH_WINDOW_SECONDS / 2
+    counts = [sum(abs(peak - onset) <= half_window for peak in peaks) for onset in expected]
+    detected = [peak for peak in peaks
+                if any(abs(peak - onset) <= half_window for onset in expected)]
+    if any(count == 0 for count in counts):
+        raise bench.OnsetMeasurementError(f"dropout in {case_id}: peak counts {counts}")
+    return {
+        "id": case_id,
+        "measurementStatus": "unmeasured" if unmeasured else "measured",
+        "unmeasuredMetrics": unmeasured,
+        "outputSampleRate": output_sr,
+        "expectedOnsetsSec": list(expected),
+        "offsetsMs": offsets,
+        "summary": bench.summarize(offsets) if offsets is not None else None,
+        "driftPerMinuteMs": drift,
+        "clipping": assembler.measure_clipping(str(out)),
+        "dropout": {
+            "expectedClickCount": len(expected),
+            "detectedClickCount": sum(count > 0 for count in counts),
+            "droppedClickCount": sum(count == 0 for count in counts),
+            "peakCountsPerExpectedOnset": counts,
+            "detectedPeakTimesSec": detected,
+            "method": "distinct peaks above absolute amplitude 0.2 in each onset association window",
+        },
+        "method": method,
+    }
+
+
+def _measure_series(case_id: str, source: Path, expected: list[float], bench_dir, *,
+                    ratio: float = 1.0, shift: int = 0, sr: int = 44100,
+                    start: float = 0.0, method: str, allow_ambiguous: bool = False) -> dict:
+    """Production render only; input rate is metadata, never an output override."""
+    out = bench_dir / f"{case_id}.wav"
+    assembler.render_aligned(str(source), out, tempo_ratio=ratio,
+                             semitone_shift=shift, start=start)
+    return {
+        **_measure_rendered(case_id, out, expected, method=method,
+                            allow_ambiguous=allow_ambiguous),
+        "inputSampleRate": sr,
+        "tempoRatio": ratio,
+        "semitoneShift": shift,
+        "cueSec": start,
+    }
+
+
 def _measure(case_id: str, source: Path, expected: float, bench_dir, *, ratio: float = 1.0,
              shift: int = 0, sr: int = 44100, start: float = 0.0,
              method: str) -> dict:
@@ -422,28 +543,31 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
 
     class_a_cases = []
 
-    # Unshifted playback at all three input rates.
-    for sr, path in transients.items():
-        case = _measure(
-            f"unshifted-sr{sr}", path, 1.0, bench_dir, sr=sr,
+    # Same 16-click 120-BPM fixture at each input rate; output stays 44.1 kHz.
+    for sr in (22050, 44100, 48000):
+        path = bench_dir / f"report-grid-{sr}.wav"
+        signal, expected = bench.click_track(sr, bpm=120.0, bars=4, lead_in=1.0)
+        bench.write_wav(path, signal, sr)
+        case = _measure_series(
+            f"unshifted-sr{sr}", path, expected, bench_dir, sr=sr,
             method=crossing_method + "; unshifted render",
         )
-        case["driftPerMinuteMs"] = bench.drift_per_minute(case["offsetsMs"], 0.5)
         class_a_cases.append(case)
 
     # Nonzero pitch shifts at 44.1k (duration-compensated expected onset).
     for shift in (-3, 5):
-        class_a_cases.append(_measure(
-            f"pitch-shift{shift}-sr44100", transients[44100], 1.0, bench_dir,
-            shift=shift,
+        class_a_cases.append(_measure_series(
+            f"pitch-shift{shift}-sr44100", click_path, click_onsets, bench_dir,
+            shift=shift, allow_ambiguous=True,
             method=crossing_method + "; duration-compensated shift keeps "
                                      "onsets at source times (measured, PR #1 behavior)",
         ))
 
     # Representative tempo ratios.
     for ratio in (1.25, 0.8):
-        class_a_cases.append(_measure(
-            f"tempo-ratio{ratio}", transients[44100], 1.0 / ratio, bench_dir, ratio=ratio,
+        class_a_cases.append(_measure_series(
+            f"tempo-ratio{ratio}", click_path, [t / ratio for t in click_onsets],
+            bench_dir, ratio=ratio,
             method=crossing_method + "; expected onset scaled by 1/ratio (atempo design)",
         ))
 
@@ -495,10 +619,64 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
         })
 
     # Nonzero cue through the trim path.
-    class_a_cases.append(_measure(
-        "nonzero-cue-0.4s", transients[44100], 1.0 - 0.4, bench_dir, start=0.4,
+    class_a_cases.append(_measure_series(
+        "nonzero-cue-0.4s", click_path, [t - 0.4 for t in click_onsets if t >= 0.4],
+        bench_dir, start=0.4,
         method=crossing_method + "; -ss trim at the cue",
     ))
+
+    # Distinct ordering: input -ss trim precedes atempo. Expected (t-cue)/ratio,
+    # not t/ratio-cue; neither the cue-only nor tempo-only case checks this.
+    class_a_cases.append(_measure_series(
+        "combined-cue0.4-tempo1.25", click_path, [(t - 0.4) / 1.25 for t in click_onsets],
+        bench_dir, ratio=1.25, start=0.4, allow_ambiguous=True,
+        method=crossing_method + "; input -ss cue before atempo, not after",
+    ))
+
+    # Beat 32 is absolute transport time 16 s. Foundation has generated energy
+    # elsewhere, and a separately rendered no-layer control proves that it
+    # cannot supply either committed onset in the measurement windows.
+    foundation = bench_dir / "boundary-foundation.wav"
+    bench.write_wav(foundation, bench.transient_signal(44100, onset=2.0, duration=18.0), 44100)
+    boundary_expected = [16.0, 16.5]
+    control_spec = assembler.MashSpec(
+        anchor_path=foundation, lead_path=click_path, lead_gain=0.0,
+        anchor_gain=0.8, duration=18.0,
+    )
+    control_out = bench_dir / "boundary-foundation-only.wav"
+    assembler.build_mash(control_spec, tempo_ratio=1.0, committed_sources=[], out=str(control_out))
+    control_samples = bench.read_wav_mono(control_out)
+    control_peaks = [float(np.max(np.abs(control_samples[
+        round((t - 0.1) * 44100):round((t + 0.1) * 44100) + 1]))) for t in boundary_expected]
+    assert control_peaks == [0.0, 0.0]
+    for condition, anchor_gain in (("isolated", 0.0), ("mixed", 0.8)):
+        case_id = f"committed-boundary-32beat-{condition}"
+        out = bench_dir / f"{case_id}.wav"
+        spec = assembler.MashSpec(
+            anchor_path=foundation, lead_path=click_path, lead_gain=0.0,
+            anchor_gain=anchor_gain, duration=18.0,
+        )
+        assembler.build_mash(spec, tempo_ratio=1.0, committed_sources=[{
+            "path": str(click_path), "tempoRatio": 1.0,
+            "sourceTrimStart": click_onsets[0], "sourceTrimDuration": 1.0,
+            "gainLinear": 1.0, "outputStart": 16.0,
+        }], out=str(out))
+        class_a_cases.append({
+            **_measure_rendered(case_id, out, boundary_expected,
+                                method="build_mash committed_sources; beat 32 boundary; two-click region",
+                                allow_ambiguous=True),
+            "inputSampleRate": 44100,
+            "anchorGain": anchor_gain,
+            "destinationBeatAt120Bpm": 32,
+            "sourceTrimStartSec": click_onsets[0],
+            "sourceTrimDurationSec": 1.0,
+            "plannedLaunchSec": 16.0,
+            "foundationControl": {
+                "method": "same Foundation-only build_mash, anchor_gain=0.8, no committed source",
+                "windowPeaksAbs": control_peaks,
+                "wholeFilePeakAbs": float(np.max(np.abs(control_samples))),
+            },
+        })
 
     # Drift over the full 16-click grid (audit A: drift needs a series).
     drift_ratio = 1.25
@@ -510,6 +688,8 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
     drift_offsets = bench.onset_offsets(samples, bench.OUTPUT_SR, drift_expected)
     class_a_cases.append({
         "id": "drift-tempo-ratio-1.25-full-grid",
+        **_measure_rendered("drift-tempo-ratio-1.25-full-grid", out, drift_expected,
+                            method=crossing_method),
         "tempoRatio": drift_ratio,
         "expectedOnsetsSec": [round(t, 6) for t in drift_expected],
         "offsetsMs": drift_offsets,
@@ -539,6 +719,10 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
     sweep_offsets = [p["summary"]["worstCaseMs"] for p in sweep_points]
     class_a_cases.append({
         "id": "source-position-sweep-44100-unshifted",
+        "unmeasuredMetrics": [{
+            "metrics": ["clipping", "dropout", "driftPerMinuteMs"],
+            "reason": "independent single-onset calibration renders, not one rhythmic series; quality metrics not collected",
+        }],
         "sweepPoints": sweep_points,
         "expectedOnsetsSec": [0.25, 0.5, 1.0, 1.25],
         "offsetsMs": sweep_offsets,
@@ -583,8 +767,8 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
         f"{sweep_worst} ms (spread {round(max(sweep_worst) - min(sweep_worst), 3)} ms). "
         "The mechanism has not been isolated and is not claimed.",
         f"Unshifted renders this run measured {unshifted} ms across "
-        "22.05/44.1/48k inputs (n=1 each; single-onset cases are labeled as "
-        "such and cannot establish drift).",
+        "22.05/44.1/48k inputs (16 onsets each; worst signed offsets, "
+        "not single-onset latency probes).",
     ]
     if committed_mixed is not None:
         observations.append(
@@ -601,10 +785,23 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
             f"drift {drift_case['driftPerMinuteMs']} ms/minute (measured from "
             "this run's series).")
     observations.append(
-        "Clipping and dropout were measured only for the committed phrase "
-        "case (true peak via assembler.measure_clipping; expected clicks "
-        "detected). Longer playback, the interruption matrix, and class C "
+        "Clipping and dropout were measured for every rhythmic matrix and committed "
+        "case (true peak via assembler.measure_clipping; expected clicks detected); "
+        "the calibration sweep names its unmeasured metrics. Longer playback, the interruption matrix, and class C "
         "loopback remain unmeasured; tolerances remain pending.")
+
+    for case in class_a_cases:
+        if case.get("measurementStatus") == "unmeasured":
+            observations.append(
+                f"{case['id']}: all {len(case['expectedOnsetsSec'])} expected onsets retained; "
+                "whole-case offsets, distribution/worst offset and drift unmeasured, not a partial n. "
+                + "; ".join(item["reason"] for item in case["unmeasuredMetrics"]))
+        if case["id"].startswith("committed-boundary-32beat-"):
+            observations.append(
+                f"{case['id']}: beat 32 at {case['plannedLaunchSec']} s; "
+                f"offsets {json.dumps(case['offsetsMs'])} ms; Foundation-only window peaks "
+                f"{case['foundationControl']['windowPeaksAbs']}. "
+                "Two-click drift is a short-region slope, not a long-playback stability claim.")
 
     report = {
         "schema": "2become1.listening-timing/1",
@@ -614,6 +811,7 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
         "acceptanceTolerances": None,
         "classA": {
             "measured": True,
+            "timingComplete": not any(c.get("measurementStatus") == "unmeasured" for c in class_a_cases),
             "cases": class_a_cases,
             "method": (
                 "fixtures: deterministic transients generated in-test; "
@@ -658,8 +856,8 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
             "longer playback under browser load not exercised",
             "stop/seek/project switching/Release/Commit/Undo/reload/missing "
             "assets/interruption matrix not exercised (follows evidence)",
-            "clipping/dropout measured only for the committed phrase case, "
-            "not across all cases",
+            "ambiguous timing cases are wholly unmeasured; see per-case unmeasuredMetrics",
+            "calibration sweep quality metrics not collected; see per-case unmeasuredMetrics",
             "CommittedLayerEngine live behavior not exercised (separate from "
             "GhostScheduler)",
             "tolerances pending agreement; no acceptance claimed",
@@ -667,14 +865,30 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
     }
 
     report_path = Path("benchmark_report.json")
+    json.dumps(report, allow_nan=False)  # Reject non-finite observations BEFORE writing evidence.
     bench.write_json(report_path, report)
 
     # Truth gates on the report itself.
     assert report["acceptanceTolerances"] is None
     assert report["classC"]["measured"] is False
     assert all(case["measured"] is None for case in report["classC"]["cases"])
-    assert len(class_a_cases) == 12  # 3 rates + 2 shifts + 2 ratios + 2 committed + cue + drift + sweep
-    assert all(case["summary"]["n"] >= 1 for case in class_a_cases)
+    boundary = [case for case in class_a_cases if case["id"].startswith("committed-boundary-32beat-")]
+    assert {case["id"] for case in boundary} == {
+        "committed-boundary-32beat-isolated", "committed-boundary-32beat-mixed"}
+    for case in boundary:
+        assert case["destinationBeatAt120Bpm"] == 32
+        assert case["plannedLaunchSec"] == 16.0
+        assert case["expectedOnsetsSec"] == [16.0, 16.5]
+        assert case["summary"]["n"] == 2
+        assert case["dropout"]["detectedClickCount"] == 2
+        assert case["foundationControl"]["windowPeaksAbs"] == [0.0, 0.0]
+        assert case["foundationControl"]["wholeFilePeakAbs"] > 0.0
+    assert len(class_a_cases) == 15  # previous 12 + combined + two boundary conditions
+    assert all(case["summary"] is None or case["summary"]["n"] >= 1 for case in class_a_cases)
+    assert all(("clipping" in case and "dropout" in case) or case.get("unmeasuredMetrics")
+               for case in class_a_cases)
+    json.dumps(report, allow_nan=False)
+    json.loads(report_path.read_text(), parse_constant=lambda value: pytest.fail(value))
     committed_cases = [case for case in class_a_cases
                        if case["id"].startswith("committed-layer-placement-9s-")]
     assert committed_cases
@@ -693,3 +907,30 @@ def test_benchmark_report_is_complete_and_truthful(bench_dir, transients, click_
     # Derived observations must quote THIS run's numbers, not stale constants.
     assert str(unshifted[0]) in observations[1]
     assert report_path.exists()
+    matrix_ids = {f"unshifted-sr{sr}" for sr in (22050, 44100, 48000)} | {
+        "pitch-shift-3-sr44100", "pitch-shift5-sr44100",
+        "tempo-ratio0.8", "tempo-ratio1.25", "nonzero-cue-0.4s",
+        "combined-cue0.4-tempo1.25",
+    }
+    matrix = [case for case in class_a_cases if case["id"] in matrix_ids]
+    assert {case["id"] for case in matrix} == matrix_ids
+    for case in matrix:
+        assert len(case["expectedOnsetsSec"]) == 16
+        if case["measurementStatus"] == "unmeasured":
+            assert case["unmeasuredMetrics"]
+            assert case["offsetsMs"] is case["summary"] is case["driftPerMinuteMs"] is None
+            assert all(item["reason"].startswith("ambiguous onset near ")
+                       for item in case["unmeasuredMetrics"])
+        else:
+            assert case["measurementStatus"] == "measured"
+            assert case["summary"]["n"] == len(case["offsetsMs"]) == 16
+            assert not case["unmeasuredMetrics"]
+        assert case["outputSampleRate"] == 44100
+        assert case["dropout"]["expectedClickCount"] == 16
+        assert case["dropout"]["detectedClickCount"] == 16
+        assert case["dropout"]["droppedClickCount"] == 0
+        assert np.isfinite(case["clipping"]["true_peak_db"])
+        spacing = np.diff(case["expectedOnsetsSec"])
+        assert np.allclose(spacing, 0.5 / case["tempoRatio"])
+        if case["offsetsMs"] is not None:
+            assert case["driftPerMinuteMs"] == bench.drift_per_minute(case["offsetsMs"], spacing[0])
