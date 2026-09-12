@@ -43,11 +43,33 @@ function emptyDeckState() {
     playing: false,
     paused: true,
     ended: false,
+    syncPending: false,
+    tempoRatio: 1,
     contextState: 'closed',
     contextClock: 0,
     error: null,
     time: 0,
     duration: 0,
+  };
+}
+
+function emptyMixerState() {
+  return {
+    crossfaderPosition: 50,
+    masterDeck: 'A',
+    gainA: Math.SQRT1_2,
+    gainB: Math.SQRT1_2,
+    tempoRatioA: 1,
+    tempoRatioB: 1,
+    pitchPreserveSupported: null,
+    pitchPreserveActive: false,
+    syncReceipt: null,
+    headroom: {
+      peak: 0,
+      headroomDb: 0,
+      clipping: false,
+      attenuationRecommended: false,
+    },
   };
 }
 
@@ -109,17 +131,8 @@ const INITIAL_STATE = {
     A: emptyDeckState(),
     B: emptyDeckState(),
   },
-  mixer: {
-    xfader: 0.5,
-    master: 'A',
-    gainA: Math.cos(Math.PI / 4),
-    gainB: Math.sin(Math.PI / 4),
-    limiterPolicy: 'off',
-    clipping: false,
-    playbackRate: { A: 1, B: 1 },
-    pitchPreservation: { A: 'unknown', B: 'unknown' },
-    classC: 'unmeasured',
-  },
+  // Phase 15B: serializable live mixer controls (crossfader, master, sync).
+  mixer: emptyMixerState(),
   ui: {
     toast: null,
   },
@@ -459,7 +472,10 @@ export function registerReducers(store) {
   store.register('mixer/set', (state, action) => {
     const mixer = action.mixer;
     if (!mixer || !isPlainJson(mixer)) return state;
-    return { ...state, mixer: structuredClone(mixer) };
+    return {
+      ...state,
+      mixer: structuredClone(mixer),
+    };
   });
 
   store.register('ui/toast', (state, action) => ({

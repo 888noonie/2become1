@@ -145,21 +145,28 @@ test('playback actions do not leak the action type into state', async () => {
 test('mixer slice stores live xfader facts without runtime nodes', async () => {
   const { StateStore, registerReducers } = await loadState();
   const store = registerReducers(new StateStore());
-  assert.equal(store.getState().mixer.xfader, 0.5);
-  assert.equal(store.getState().mixer.classC, 'unmeasured');
+  assert.equal(store.getState().mixer.crossfaderPosition, 50);
+  assert.equal(store.getState().mixer.masterDeck, 'A');
   store.dispatch({
     type: 'mixer/set',
     mixer: {
-      xfader: 0, master: 'B', gainA: 1, gainB: 0, limiterPolicy: 'off',
-      clipping: false, playbackRate: { A: 1, B: 1 },
-      pitchPreservation: { A: 'unsupported', B: 'unsupported' }, classC: 'unmeasured',
+      crossfaderPosition: 0,
+      masterDeck: 'B',
+      gainA: 1,
+      gainB: 0,
+      tempoRatioA: 1,
+      tempoRatioB: 1,
+      pitchPreserveSupported: false,
+      pitchPreserveActive: false,
+      syncReceipt: null,
+      headroom: { peak: 0, headroomDb: 0, clipping: false, attenuationRecommended: false },
     },
   });
-  assert.equal(store.getState().mixer.master, 'B');
+  assert.equal(store.getState().mixer.masterDeck, 'B');
   assert.equal(store.getState().mixer.gainA, 1);
   class GainNodeHandle {}
   const before = store.getState().mixer;
-  store.dispatch({ type: 'mixer/set', mixer: { xfader: 1, node: new GainNodeHandle() } });
+  store.dispatch({ type: 'mixer/set', mixer: { crossfaderPosition: 100, node: new GainNodeHandle() } });
   assert.deepEqual(store.getState().mixer, before);
 });
 
