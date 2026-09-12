@@ -17,6 +17,7 @@ import { mountRenderActions } from '../components/render-actions.js';
 import { mountGhostCard } from '../components/ghost-card.js';
 import { mountCommittedLayers } from '../components/committed-layers.js';
 import { mountPerformanceDeck } from '../components/performance-deck.js';
+import { mountStemCratePanel } from '../components/stem-crate-panel.js';
 import { mountLiveCrossfader } from '../components/live-crossfader.js';
 import {
   checkGhostPreconditions,
@@ -154,6 +155,7 @@ export function mountStudio({ container }) {
   let ghostCardDisposer = null;
   let committedLayersDisposer = null;
   let performanceDeckDisposer = null;
+  let crateDisposer = null;
   let liveCrossfaderDisposer = null;
 
   const studioRoot = createElement('div', { class: 'studio' });
@@ -172,6 +174,7 @@ export function mountStudio({ container }) {
 
   const retryContainer = createElement('div', { class: 'studio__retry-container' });
   const performanceDeckContainer = createElement('div', { class: 'studio__performance-deck-container' });
+  const crateMount = createElement('div', { class: 'studio__stem-crate', hidden: 'true' });
   const decksContainer = createElement('div', { class: 'studio__decks' });
   const swapBar = createElement('div', { class: 'studio__swap-bar' });
   const crossfaderContainer = createElement('div', { class: 'studio__crossfader-container' });
@@ -192,6 +195,7 @@ export function mountStudio({ container }) {
   studioRoot.appendChild(liveAnnouncer);
   studioRoot.appendChild(retryContainer);
   studioRoot.appendChild(performanceDeckContainer);
+  studioRoot.appendChild(crateMount);
   studioRoot.appendChild(swapBar);
   studioRoot.appendChild(crossfaderContainer);
   studioRoot.appendChild(decksContainer);
@@ -297,9 +301,11 @@ export function mountStudio({ container }) {
       swapBar.hidden = isFun;
       crossfaderContainer.hidden = isFun;
       planContainer.hidden = isFun;
+      crateMount.hidden = !isFun;
       studioRoot.dataset.deckMode = mode;
     },
   });
+  crateDisposer = mountStemCratePanel({ container: crateMount, store, onAnnounce });
   planDisposer = mountPlan({ container: planContainer, store, projectManager });
   renderActionsDisposer = mountRenderActions({
     container: renderActionsContainer, store, projectManager,
@@ -353,6 +359,7 @@ export function mountStudio({ container }) {
     if (ghostCardDisposer) ghostCardDisposer();
     if (committedLayersDisposer) committedLayersDisposer();
     if (performanceDeckDisposer) performanceDeckDisposer();
+    if (crateDisposer) crateDisposer();
     if (liveCrossfaderDisposer) liveCrossfaderDisposer();
     projectManager.flushNow();
   };

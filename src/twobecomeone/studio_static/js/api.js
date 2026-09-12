@@ -372,6 +372,29 @@ export function listStems(trackId, signal) {
   return get(`/api/tracks/${trackId}/stems`, signal);
 }
 
+export function listStemCrate(params = {}, signal) {
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set('limit', String(params.limit));
+  if (params.offset) qs.set('offset', String(params.offset));
+  if (params.query) qs.set('q', params.query);
+  if (params.role) qs.set('role', params.role);
+  if (params.against) qs.set('against', params.against);
+  const suffix = qs.toString();
+  return get(`/api/stem-crate${suffix ? `?${suffix}` : ''}`, signal);
+}
+
+export function createStemCrateItem(body, signal) {
+  return post('/api/stem-crate', body, signal);
+}
+
+export function patchStemCrateItem(itemId, fields, signal) {
+  return patch(`/api/stem-crate/${encodeURIComponent(itemId)}`, fields, signal);
+}
+
+export function deleteStemCrateItem(itemId, signal) {
+  return del(`/api/stem-crate/${encodeURIComponent(itemId)}`, signal);
+}
+
 /** Server-authored stem audio URL; add download=true for an attachment. */
 export function stemAudioUrl(stemSetId, name, { download = false } = {}) {
   const qs = new URLSearchParams({ name });

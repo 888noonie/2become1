@@ -19,9 +19,11 @@ import {
   watchJob,
   cancelJob,
   stemAudioUrl,
+  createStemCrateItem,
 } from '../api.js';
 import { audioController } from '../audio.js';
 import { projectManager as globalProjectManager, store as globalStore } from '../app-context.js';
+import { roleForStemName } from '../stem-crate.js';
 
 export async function openStemDialog({ track, role, store = globalStore, projectManager = globalProjectManager, onAnnounce, trigger = null }) {
   let activeUnsub = null;
@@ -160,9 +162,33 @@ export async function openStemDialog({ track, role, store = globalStore, project
         });
       }
 
+      let crateBtn = null;
+      if (!isFull && v.stem_set_id) {
+        crateBtn = createElement('button', {
+          class: 'button button--sm',
+          type: 'button',
+          text: 'Add to crate',
+          onclick: async () => {
+            try {
+              await createStemCrateItem({
+                track_id: track.id,
+                stem_set_id: v.stem_set_id,
+                stem_name: v.name,
+                role: roleForStemName(v.name),
+              });
+              showToast(`Added ${v.name} to the stem crate.`, 'success');
+              onAnnounce?.(`Added ${v.name} to the stem crate.`);
+            } catch (err) {
+              showToast(err.message, 'danger');
+            }
+          },
+        });
+      }
+
       const actionsEl = createElement('div', { class: 'stem-row__actions' }, [
         playBtn,
         useBtn,
+        crateBtn,
         downloadBtn,
       ]);
 

@@ -2365,6 +2365,10 @@ class StudioService:
         self, item: dict, *, against_id: str | None = None
     ) -> dict:
         enriched = dict(item)
+        try:
+            enriched["source_track_name"] = self.get_track(item["track_id"])["name"]
+        except (NotFoundError, UserError):
+            enriched["source_track_name"] = None
         enriched["loop_truth"] = self._stem_crate_loop_truth(item)
         if against_id:
             enriched["compatibility"] = self.stem_crate_compatibility(
