@@ -274,6 +274,7 @@ class TestStemCrateServiceTruth:
         assert item["region_end_beat"] == expected["region_end_beat"]
         assert item["loop_truth"]["grid_status"] == "ok"
         assert item["provenance"] == "source_track_inherited"
+        assert item["source_track_name"]
 
     def test_bpm_override_invalidates_stored_revision(self, crate_service):
         service, track, stem_set_id = crate_service
