@@ -45,6 +45,17 @@ test('prepared stack URLs never use the ghost audio route', () => {
   assert.match(preparedAssetAudioUrl({ id: 'ga-' + 'b'.repeat(32) }), /\/api\/ghost-assets\//);
 });
 
+test('fever stays locked when the stack bus is muted or unavailable', () => {
+  const item = { media_status: 'available', loop_truth: { grid_status: 'ok' } };
+  const slots = { beat: item, bass: item, other: item, voice: item };
+  const muted = feverRecipe(slots, { muted: true, state: 'live' });
+  assert.equal(muted.unlocked, false);
+  assert.match(muted.label, /muted/);
+  const missing = feverRecipe(slots, { error: { code: 'S_ASSET_NOT_AVAILABLE' } });
+  assert.equal(missing.unlocked, false);
+  assert.match(missing.label, /unavailable/);
+});
+
 test('fever recipe is inspectable and needs four available roles', () => {
   const empty = feverRecipe({ beat: null, bass: null, other: null, voice: null });
   assert.equal(empty.unlocked, false);

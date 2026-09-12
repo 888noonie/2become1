@@ -6,6 +6,47 @@
 import { createElement, replaceChildren } from '../dom.js';
 import { store as globalStore, liveMixer as globalLiveMixer } from '../app-context.js';
 
+function stackRow(mixer, liveMixer, onAnnounce) {
+  const stack = mixer.stack || {};
+  const muted = Boolean(stack.muted);
+  const mute = createElement('button', {
+    class: 'button button--sm live-crossfader__stack-mute',
+    type: 'button',
+    text: muted ? 'Unmute stack' : 'Mute stack',
+    'aria-pressed': muted ? 'true' : 'false',
+    onclick: () => {
+      liveMixer.muteStack(!muted);
+      onAnnounce?.(muted ? 'Stem stack unmuted.' : 'Stem stack muted.');
+    },
+  });
+  const gain = createElement('input', {
+    class: 'live-crossfader__stack-gain',
+    type: 'range',
+    min: '-24',
+    max: '6',
+    step: '1',
+    value: String(stack.gainDb ?? 0),
+    'aria-label': 'Stem stack gain',
+  });
+  gain.addEventListener('input', (event) => {
+    liveMixer.setStackGain(event.target.value);
+  });
+  const truth = stack.error
+    ? `Stack bus unavailable (${stack.error.code || 'error'})`
+    : (stack.state === 'empty'
+      ? 'Stack bus idle'
+      : `Stack ${stack.state}${muted ? ' · muted' : ''}${stack.audible ? ' · audible' : ''}`);
+  return createElement('div', {
+    class: 'live-crossfader__stack',
+    role: 'group',
+    'aria-label': 'Stem stack bus',
+  }, [
+    createElement('span', { class: 'live-crossfader__stack-truth', text: truth, role: 'status' }),
+    mute,
+    gain,
+  ]);
+}
+
 export function mountLiveCrossfader({
   container,
   store = globalStore,
@@ -80,6 +121,7 @@ export function mountLiveCrossfader({
       createElement('div', { class: 'live-crossfader__masters' }, [masterA, masterB]),
       createElement('div', { class: 'live-crossfader__track' }, [labelA, slider, labelB]),
       createElement('div', { class: 'live-crossfader__meta' }, [tempoEl, headroomEl]),
+      stackRow(mixer, liveMixer, onAnnounce),
     ]);
   }
 

@@ -33,8 +33,8 @@ class FakeBufferSource {
 }
 
 class FakeGainNode {
-  constructor() { this.gain = { value: 1 }; this.disconnected = false; }
-  connect() { return this; }
+  constructor() { this.gain = { value: 1 }; this.disconnected = false; this.connectedTo = null; }
+  connect(node) { this.connectedTo = node; return node; }
   disconnect() { this.disconnected = true; }
 }
 
@@ -443,5 +443,23 @@ test('scheduled announcement surfaces the re-resolved next launch beat', async (
   const scheduled = states.find((s) => s.state === ENGINE_STATES.SCHEDULED);
   assert.ok(scheduled, 'a scheduled announcement exists');
   assert.equal(scheduled.detail.launchBeat, 64);
+  engine.shutdown();
+});
+
+test('optional outputNode receives the instance gain instead of destination', async () => {
+  const ctx = new FakeAudioContext();
+  const timers = new FakeTimers();
+  const output = { name: 'stemStack' };
+  const engine = new CommittedLayerEngine({
+    audioContext: ctx,
+    outputNode: output,
+    loadAsset: async () => new ArrayBuffer(8),
+    transportProvider: () => transport(),
+    setTimer: (delayMs, fn) => timers.set(delayMs, fn),
+    clearTimer: (id) => timers.clear(id),
+  });
+  await engine.sync([committedLayer()]);
+  assert.equal(ctx.gains[0].connectedTo, output);
+  assert.notEqual(ctx.gains[0].connectedTo, ctx.destination);
   engine.shutdown();
 });

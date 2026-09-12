@@ -1,14 +1,31 @@
-// js/runtime/live-mixer.js — Phase 15A/15B dual-deck live mixer.
+// js/runtime/live-mixer.js — Phase 15A/15B/15C three-bus live mixer.
 // One shared AudioContext, two deck buses (A/B), each a private media element
 // wrapped once into an independent gain node and a common master bus. Playing A
 // never stops B. Phase 15B adds equal-power crossfader routing, beat-synced
 // follower launch, bounded playback-rate tempo matching, and master headroom
-// monitoring. No DOM/window imports; snapshot() is frozen/serializable.
+// monitoring. Phase 15C adds the committed stem-stack bus: one decoded
+// AudioBufferSourceNode graph routed around the crossfader into master.
+// No DOM/window imports; snapshot() is frozen/serializable.
 
 import { buildFailure, buildSuccess, ERROR_CODES, messageFor } from '../actions/errors.js';
 import { equalPowerGains } from './crossfader.js';
 import { resolveSyncedFollowerLaunch } from './beat-sync.js';
 import { buildDeckTransport } from './transport-bridge.js';
+import { CommittedLayerEngine } from './committed-layer-engine.js';
+
+function stackAssetUrl(asset) {
+  const id = asset?.id;
+  if (!id || !String(id).startsWith('ss-')) return null;
+  // Never honour a client-supplied media path. The mixer only fetches the
+  // server-prepared stem-stack asset by opaque id.
+  return `/api/stem-stack-assets/${encodeURIComponent(id)}/audio`;
+}
+
+function dbToLinear(db) {
+  const numeric = Number(db);
+  if (!Number.isFinite(numeric)) return 1;
+  return Math.pow(10, Math.max(-60, Math.min(12, numeric)) / 20);
+}
 
 const DECKS = Object.freeze(['A', 'B']);
 const HEADROOM_CLIP_THRESHOLD = 0.99;
@@ -45,6 +62,22 @@ export class LiveMixer {
     this._tempoRatios = { A: 1, B: 1 };
     this._pitchPreserve = { supported: null, active: false };
     this._headroom = { peak: 0, headroomDb: 0, clipping: false, attenuationRecommended: false };
+    this._stackLoadAsset = deps.loadAsset || null;
+    this._stackTransportProvider = deps.stackTransportProvider || null;
+    this._stackEngineFactory = deps.stackEngineFactory || ((engineDeps) => new CommittedLayerEngine(engineDeps));
+    this._stack = this._emptyStack();
+  }
+
+  _emptyStack() {
+    return {
+      gainNode: null,
+      muteNode: null,
+      engine: null,
+      layer: null,
+      muted: false,
+      gainDb: 0,
+      error: null,
+    };
   }
 
   _makeDeck(name) {
@@ -102,6 +135,14 @@ export class LiveMixer {
     return this._ctx ? this._ctx.state : 'closed';
   }
 
+  audioContext() {
+    return this._ctx;
+  }
+
+  async ensureGraph() {
+    return this._ensureContext();
+  }
+
   _ensureMasterBus(ctx) {
     if (this._masterGain) return;
     const masterGain = ctx.createGain();
@@ -122,6 +163,111 @@ export class LiveMixer {
       try { masterGain.disconnect(); } catch {}
       throw err;
     }
+  }
+
+  _ensureStackBus(ctx) {
+    this._ensureMasterBus(ctx);
+    if (this._stack.muteNode && this._stack.gainNode) return;
+    const muteNode = ctx.createGain();
+    muteNode.gain.value = this._stack.muted ? 0 : 1;
+    const gainNode = ctx.createGain();
+    gainNode.gain.value = dbToLinear(this._stack.gainDb);
+    muteNode.connect(gainNode);
+    gainNode.connect(this._masterGain);
+    this._stack.muteNode = muteNode;
+    this._stack.gainNode = gainNode;
+  }
+
+  _stackSnapshot() {
+    const engineSnap = this._stack.engine ? this._stack.engine.snapshot() : { layers: [] };
+    const entry = engineSnap.layers[0] || null;
+    const layer = this._stack.layer;
+    const asset = layer?.asset || layer?.acceptedAsset || null;
+    const state = entry?.state || (layer ? 'idle' : 'empty');
+    const muted = this._stack.muted;
+    const gainLinear = dbToLinear(this._stack.gainDb);
+    const live = state === 'live' || state === 'scheduled';
+    return Object.freeze({
+      layerId: layer?.layerId || layer?.actionId || null,
+      actionId: layer?.actionId || null,
+      assetId: asset?.id || null,
+      contentHash: asset?.contentHash || null,
+      state,
+      muted,
+      gainDb: this._stack.gainDb,
+      playing: live && this._contextState() === 'running',
+      audible: live && !muted && gainLinear > 0 && this._contextState() === 'running',
+      receipt: entry?.receipt ? Object.freeze({ ...entry.receipt }) : null,
+      error: this._stack.error || entry?.error || null,
+    });
+  }
+
+  _applyStackGains() {
+    if (this._stack.muteNode) this._stack.muteNode.gain.value = this._stack.muted ? 0 : 1;
+    if (this._stack.gainNode) this._stack.gainNode.gain.value = dbToLinear(this._stack.gainDb);
+  }
+
+  _defaultStackLoadAsset(asset, signal) {
+    if (typeof this._stackLoadAsset === 'function') {
+      return this._stackLoadAsset({ ...asset, audioUrl: stackAssetUrl(asset) }, signal);
+    }
+    const url = stackAssetUrl(asset);
+    if (!url) {
+      const error = new Error('stack asset path refused');
+      error.code = ERROR_CODES.S_ASSET_NOT_AVAILABLE;
+      throw error;
+    }
+    return fetch(url, { signal }).then((response) => {
+      if (!response.ok) {
+        const error = new Error(`stack asset fetch failed: ${response.status}`);
+        error.code = ERROR_CODES.S_ASSET_NOT_AVAILABLE;
+        throw error;
+      }
+      return response.arrayBuffer();
+    });
+  }
+
+  _ensureStackEngine() {
+    if (this._stack.engine) return this._stack.engine;
+    if (!this._ctx || !this._stack.muteNode) return null;
+    this._stack.engine = this._stackEngineFactory({
+      audioContext: this._ctx,
+      outputNode: this._stack.muteNode,
+      loadAsset: (asset, signal) => this._defaultStackLoadAsset(asset, signal),
+      transportProvider: (layer) => {
+        if (typeof this._stackTransportProvider === 'function') {
+          return this._stackTransportProvider(layer, this);
+        }
+        throw Object.assign(new Error('stack transport unavailable'), { code: 'T_TRANSPORT_UNAVAILABLE' });
+      },
+      setTimer: (delayMs, fn) => this._timers.set(fn, delayMs),
+      clearTimer: (id) => this._timers.clear(id),
+      onStateChange: () => this._emitMixer(),
+    });
+    return this._stack.engine;
+  }
+
+  _suspendStemStack(reason) {
+    if (this._stack.engine) this._stack.engine.suspend(reason || 'transport');
+    this._emitMixer();
+  }
+
+  async _rearmStemStack() {
+    if (!this._stack.layer || !this._stack.engine) return;
+    try {
+      await this._stack.engine.sync([this._stack.layer]);
+    } finally {
+      this._emitMixer();
+    }
+  }
+
+  _onMasterTransport(type, deckName) {
+    if (deckName !== this._masterDeck || !this._stack.layer) return null;
+    if (type === 'play') return this._rearmStemStack();
+    if (type === 'pause' || type === 'stop' || type === 'ended' || type === 'seek') {
+      this._suspendStemStack(`master-${type}`);
+    }
+    return null;
   }
 
   _probePitchPreserve(element) {
@@ -256,6 +402,7 @@ export class LiveMixer {
       deck.playing = false;
       deck.paused = true;
       this._emit('ended', deck.name);
+      this._onMasterTransport('ended', deck.name);
     };
     const error = () => {
       if (deck.generation !== generation) return;
@@ -301,7 +448,12 @@ export class LiveMixer {
     if (this._disposed) return buildFailure('X_INTERNAL');
     if (!DECKS.includes(deckName)) return buildFailure(ERROR_CODES.T_INVALID_DECK);
     this._cancelSyncSchedule();
+    const previous = this._masterDeck;
     this._masterDeck = deckName;
+    if (previous !== deckName && this._stack.layer) {
+      this._suspendStemStack('master-swap');
+      if (this._decks[deckName].playing) void this._rearmStemStack();
+    }
     this._emitMixer();
     return buildSuccess({ masterDeck: deckName });
   }
@@ -319,7 +471,82 @@ export class LiveMixer {
       pitchPreserveActive: this._pitchPreserve.active,
       syncReceipt: this._syncReceipt ? Object.freeze({ ...this._syncReceipt }) : null,
       headroom: Object.freeze({ ...this._headroom }),
+      stack: this._stackSnapshot(),
     });
+  }
+
+  setStackGain(db) {
+    if (this._disposed) return buildFailure('X_INTERNAL');
+    const numeric = Number(db);
+    this._stack.gainDb = Number.isFinite(numeric) ? Math.max(-60, Math.min(12, numeric)) : 0;
+    this._applyStackGains();
+    this._emitMixer();
+    return buildSuccess({ gainDb: this._stack.gainDb });
+  }
+
+  muteStack(muted) {
+    if (this._disposed) return buildFailure('X_INTERNAL');
+    this._stack.muted = Boolean(muted);
+    this._applyStackGains();
+    this._emitMixer();
+    return buildSuccess({ muted: this._stack.muted });
+  }
+
+  stopStemStack() {
+    if (this._stack.engine) {
+      this._stack.engine.shutdown();
+      this._stack.engine = null;
+    }
+    this._stack.layer = null;
+    this._stack.error = null;
+    this._emitMixer();
+    return buildSuccess({ cleared: true });
+  }
+
+  /**
+   * Converge the stemStack bus with one server-projected committed stack layer.
+   * Client media paths are ignored; only ss- prepared assets are fetched.
+   */
+  async syncStemStack(layer, opts = {}) {
+    if (this._disposed) return buildFailure('X_INTERNAL');
+    if (opts.transportProvider) this._stackTransportProvider = opts.transportProvider;
+    if (opts.loadAsset) this._stackLoadAsset = opts.loadAsset;
+
+    if (!layer) return this.stopStemStack();
+    if (layer.kind && layer.kind !== 'stem_stack') {
+      return this.stopStemStack();
+    }
+    const asset = layer.asset || layer.acceptedAsset;
+    const url = stackAssetUrl(asset);
+    if (!url) {
+      this._stack.error = { code: ERROR_CODES.S_ASSET_NOT_AVAILABLE, message: messageFor(ERROR_CODES.S_ASSET_NOT_AVAILABLE) };
+      this._emitMixer();
+      return buildFailure(ERROR_CODES.S_ASSET_NOT_AVAILABLE);
+    }
+
+    const ctxResult = await this._ensureContext();
+    if (!ctxResult.ok) {
+      this._stack.error = { code: ctxResult.code, message: messageFor(ctxResult.code) };
+      this._emitMixer();
+      return ctxResult;
+    }
+    this._ensureStackBus(this._ctx);
+    this._stack.layer = layer;
+    this._stack.error = null;
+    const engine = this._ensureStackEngine();
+    if (!engine) return buildFailure('X_INTERNAL');
+    const result = await engine.sync([layer]);
+    if (!result.ok && result.code === 'IDLE') {
+      this._emitMixer();
+      return buildSuccess({ stack: this._stackSnapshot(), idle: true });
+    }
+    if (!result.ok && result.code) {
+      this._stack.error = { code: result.code, message: result.code };
+      this._emitMixer();
+      return buildFailure(result.code);
+    }
+    this._emitMixer();
+    return buildSuccess({ stack: this._stackSnapshot() });
   }
 
   async play(deckName, descriptor) {
@@ -402,6 +629,7 @@ export class LiveMixer {
     deck.paused = false;
     this._tempoRatios[deckName] = deck.tempoRatio || 1;
     this._emit('play', deckName);
+    await this._onMasterTransport('play', deckName);
     return buildSuccess({ deck: deckName });
   }
 
@@ -559,6 +787,7 @@ export class LiveMixer {
       };
       this._emit('play', deckName);
       this._emitMixer();
+      await this._onMasterTransport('play', deckName);
       return buildSuccess({ deck: deckName, receipt: this._syncReceipt });
     };
 
@@ -595,6 +824,7 @@ export class LiveMixer {
     deck.playing = false;
     deck.paused = true;
     this._emit('pause', deckName);
+    this._onMasterTransport('pause', deckName);
     return buildSuccess({ deck: deckName });
   }
 
@@ -613,6 +843,7 @@ export class LiveMixer {
     this._tempoRatios[deckName] = 1;
     this._emit('stop', deckName);
     this._emitMixer();
+    this._onMasterTransport('stop', deckName);
     return buildSuccess({ deck: deckName });
   }
 
@@ -624,6 +855,7 @@ export class LiveMixer {
     if (deckName !== this._masterDeck) this._cancelSyncSchedule();
     if (deck.element) deck.element.currentTime = Math.max(0, seconds);
     this._emit('seek', deckName);
+    this._onMasterTransport('seek', deckName);
     return buildSuccess({ deck: deckName });
   }
 
@@ -657,6 +889,7 @@ export class LiveMixer {
     return Object.freeze({
       decks: Object.freeze({ A: this.getDeck('A'), B: this.getDeck('B') }),
       mixer: this.getMixerState(),
+      stack: this._stackSnapshot(),
     });
   }
 
@@ -676,6 +909,15 @@ export class LiveMixer {
       this._tempoRatios[name] = 1;
     }
     this._syncReceipt = null;
+    this.stopStemStack();
+    if (this._stack.gainNode) {
+      try { this._stack.gainNode.disconnect(); } catch {}
+      this._stack.gainNode = null;
+    }
+    if (this._stack.muteNode) {
+      try { this._stack.muteNode.disconnect(); } catch {}
+      this._stack.muteNode = null;
+    }
     if (this._masterGain) {
       try { this._masterGain.disconnect(); } catch {}
       this._masterGain = null;
