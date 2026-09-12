@@ -449,6 +449,131 @@ async function journeyDualDeckConcurrent(page) {
   ) === 1, { label: 'foundation paused' });
 }
 
+async function readMixerGains(page) {
+  return page.evaluate(async () => {
+    const { liveMixer } = await import('/assets/js/app-context.js');
+    const mixer = liveMixer.getMixerState();
+    return { position: mixer.crossfaderPosition, gainA: mixer.gainA, gainB: mixer.gainB };
+  });
+}
+
+async function journeyLiveCrossfader(page) {
+  await page.goto(`${BASE}/#/studio`);
+  await waitFor(async () => (await page.locator('.live-crossfader__slider').count()) === 1, { label: 'crossfader present' });
+
+  const setFader = async (value) => {
+    await page.locator('.live-crossfader__slider').evaluate((el, v) => {
+      el.value = String(v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }, value);
+    await sleep(50);
+  };
+
+  await setFader(0);
+  const left = await readMixerGains(page);
+  const leftOk = left.gainA > 0.99 && left.gainB < 0.01;
+  record('crossfader hard-left routes to A only', leftOk, `A=${left.gainA.toFixed(3)} B=${left.gainB.toFixed(3)}`);
+
+  await setFader(50);
+  const center = await readMixerGains(page);
+  const centerOk = Math.abs(center.gainA - center.gainB) < 0.02
+    && center.gainA > 0.6 && center.gainB > 0.6;
+  record('crossfader center splits A+B', centerOk, `A=${center.gainA.toFixed(3)} B=${center.gainB.toFixed(3)}`);
+
+  await setFader(100);
+  const right = await readMixerGains(page);
+  const rightOk = right.gainA < 0.01 && right.gainB > 0.99;
+  record('crossfader hard-right routes to B only', rightOk, `A=${right.gainA.toFixed(3)} B=${right.gainB.toFixed(3)}`);
+}
+
+async function journeyBeatSync(page) {
+  await page.goto(`${BASE}/#/studio`);
+  await page.locator('.deck-slot--anchor button[aria-label="Play Foundation"]').click();
+  await waitFor(async () => (
+    await page.locator('.deck-slot--anchor button[aria-label^="Pause Foundation"]').count()
+  ) === 1, { label: 'master foundation playing' });
+  // Seek master near the next phrase boundary so CI does not wait a full 8-bar phrase.
+  await page.evaluate(async () => {
+    const { liveMixer } = await import('/assets/js/app-context.js');
+    const deck = liveMixer.getDeck('A');
+    const seekTo = Math.max(0, (deck.duration || 8) - 1.5);
+    liveMixer.seek('A', seekTo);
+  });
+  await sleep(200);
+
+  const syncBtn = page.locator('.deck-slot--lead button[aria-label="Beat-sync Lead to master deck A"]');
+  const syncDisabled = await syncBtn.getAttribute('disabled');
+  record('beat sync button enabled with master playing', syncDisabled === null, `disabled=${syncDisabled}`);
+  await syncBtn.click();
+  const keepMasterAlive = setInterval(() => {
+    page.evaluate(async () => {
+      const { liveMixer } = await import('/assets/js/app-context.js');
+      const master = liveMixer.getDeck('A');
+      if (master.playing && master.time > 6) {
+        liveMixer.seek('A', 0);
+      }
+    }).catch(() => {});
+  }, 400);
+  const scheduledOk = await waitFor(async () => page.evaluate(async () => {
+    const { liveMixer } = await import('/assets/js/app-context.js');
+    const deck = liveMixer.getDeck('B');
+    const receipt = liveMixer.getMixerState().syncReceipt;
+    return (deck.syncPending || deck.playing) && receipt && Number.isFinite(receipt.launchBeat);
+  }), { timeout: 5000, label: 'beat sync scheduled' }).then(() => true).catch(() => false);
+  record('beat sync scheduled with receipt', scheduledOk);
+  let beatSyncDetail = '';
+  try {
+    await waitFor(async () => page.evaluate(async () => {
+      const { liveMixer } = await import('/assets/js/app-context.js');
+      const deck = liveMixer.getDeck('B');
+      const receipt = liveMixer.getMixerState().syncReceipt;
+      return deck.playing && receipt && Number.isFinite(receipt.launchBeat);
+    }), { timeout: 45000, label: 'beat-synced lead playing' });
+  } catch (err) {
+    clearInterval(keepMasterAlive);
+    beatSyncDetail = await page.evaluate(async () => {
+      const { liveMixer } = await import('/assets/js/app-context.js');
+      const deck = liveMixer.getDeck('B');
+      const mixer = liveMixer.getMixerState();
+      return JSON.stringify({
+        playing: deck.playing,
+        syncPending: deck.syncPending,
+        error: deck.error,
+        time: deck.time,
+        duration: deck.duration,
+        tempoRatio: deck.tempoRatio,
+        launchBeat: mixer.syncReceipt?.launchBeat,
+        launchElementSeconds: mixer.syncReceipt?.launchElementSeconds,
+        launchAudioTime: mixer.syncReceipt?.launchAudioTime,
+        scheduledDelayMs: mixer.syncReceipt?.scheduledDelayMs,
+        contextClock: deck.contextClock,
+        contextState: deck.contextState,
+        rawPlaying: deck.playing,
+        launchedAt: mixer.syncReceipt?.launchedAt,
+      });
+    });
+    throw new Error(`${err.message} — ${beatSyncDetail}`);
+  }
+  clearInterval(keepMasterAlive);
+
+  const receipt = await page.evaluate(async () => {
+    const { liveMixer } = await import('/assets/js/app-context.js');
+    const mixer = liveMixer.getMixerState();
+    const deck = liveMixer.getDeck('B');
+    return {
+      launchBeat: mixer.syncReceipt?.launchBeat,
+      tempoRatio: deck.tempoRatio,
+      playing: deck.playing,
+    };
+  });
+  const ratioOk = receipt.tempoRatio > 0.5 && receipt.tempoRatio < 2;
+  record(
+    'beat sync launches follower with receipt',
+    receipt.playing && Number.isFinite(receipt.launchBeat) && ratioOk,
+    `launchBeat=${receipt.launchBeat} ratio=${receipt.tempoRatio}`,
+  );
+}
+
 async function journeyRecovery(page) {
   await page.goto(`${BASE}/#/activity`);
   await waitFor(async () => (await page.locator('.job-item button', { hasText: 'Retry' }).count()) >= 1, { label: 'retryable failed job' });
@@ -547,6 +672,8 @@ async function main() {
     await journeySeparation(page);
     await journeyRender(page);
     await journeyDualDeckConcurrent(page);
+    await journeyLiveCrossfader(page);
+    await journeyBeatSync(page);
     await journeyKeyboard(page);
     await journeyRecovery(page);
 

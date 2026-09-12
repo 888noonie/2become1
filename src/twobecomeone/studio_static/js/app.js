@@ -95,7 +95,7 @@ audioController.on((type, payload) => {
   }
 });
 
-// ---- LiveMixer deck events -> decks slice + Ghost Lead ownership ----
+// ---- LiveMixer deck events -> decks/mixer slices + Ghost Lead ownership ----
 const GHOST_DECK_EVENTS = new Set(['play', 'pause', 'stop', 'ended', 'seek']);
 liveMixer.on((event) => {
   const { type, deck, state: deckState } = event;
@@ -104,8 +104,13 @@ liveMixer.on((event) => {
     return;
   }
   if (type === 'contextstatechange') {
-    const snap = liveMixer.snapshot().decks;
-    store.dispatch({ type: 'decks/set', decks: snap });
+    const snap = liveMixer.snapshot();
+    store.dispatch({ type: 'decks/set', decks: snap.decks });
+    store.dispatch({ type: 'mixer/set', mixer: snap.mixer });
+    return;
+  }
+  if (type === 'mixerchange') {
+    store.dispatch({ type: 'mixer/set', mixer: liveMixer.getMixerState() });
     return;
   }
   if (deck !== 'A' && deck !== 'B') return;

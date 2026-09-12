@@ -181,6 +181,56 @@
   justify-content: center;
 }
 
+.studio__crossfader-container {
+  margin: var(--space-4) 0;
+}
+
+.live-crossfader {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.live-crossfader__masters {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.live-crossfader__track {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.live-crossfader__label {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-muted);
+}
+
+.live-crossfader__slider {
+  width: 100%;
+}
+
+.live-crossfader__meta {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-3);
+  min-height: 1.25rem;
+  font-size: var(--font-size-sm);
+  color: var(--color-muted);
+}
+
+.live-crossfader__headroom--clip {
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
 .studio__decks {
   display: grid;
   grid-template-columns: 1fr 1fr;
