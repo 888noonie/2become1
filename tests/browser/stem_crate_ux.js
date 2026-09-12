@@ -155,7 +155,13 @@ try {
   }, 'loop bars patched');
   record('loop selector patches crate item', true);
   record('grid correction control is present', (await page.locator('.stem-crate-card button', { hasText: 'Correct grid' }).count()) >= 1);
-  const size = await place.evaluate((button) => {
+  await waitFor(async () => {
+    const button = page.locator('.stem-crate-card .stem-crate__place').first();
+    return (await button.count()) === 1 && await button.isVisible();
+  }, 'visible place control');
+  const placeTarget = page.locator('.stem-crate-card .stem-crate__place').first();
+  await placeTarget.evaluate((button) => button.scrollIntoView({ block: 'center' }));
+  const size = await placeTarget.evaluate((button) => {
     const rect = button.getBoundingClientRect();
     return { width: rect.width, height: rect.height };
   });
