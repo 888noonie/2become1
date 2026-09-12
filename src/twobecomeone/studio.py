@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from . import __version__, analyzer, assembler, beatgrid, ghost_assets, media, migrations, projects, separator, sources, stem_crate
+from . import __version__, analyzer, assembler, beatgrid, ghost_assets, media, migrations, projects, separator, sources, stem_crate, stem_crate_truth
 from .action_store import ActionStore
 from .common import (
     MAX_MEDIA_BYTES,
@@ -2336,8 +2336,40 @@ class StudioService:
             raise UserError(f"stem media is unavailable or corrupt: {stem_name}")
         return row
 
-    def _enrich_stem_crate_item(self, item: dict) -> dict:
+    def _stem_crate_grid_facts(self, track: dict) -> dict:
+        payload = dict(track)
+        payload["overrides_active"] = self._track_overrides_active(track["id"])
+        stem_crate_truth.grid_facts_from_track(payload, "pending")
+        return stem_crate_truth.grid_facts_from_track(
+            payload, self._track_grid_revision(track)
+        )
+
+    def _stem_crate_loop_truth(self, item: dict) -> dict:
+        try:
+            track = self.get_track(item["track_id"])
+            facts = self._stem_crate_grid_facts(track)
+            error = None
+        except (UserError, NotFoundError) as exc:
+            facts = None
+            error = getattr(exc, "code", None) or stem_crate_truth.GRID_MISSING
+        return stem_crate_truth.evaluate_loop_truth(
+            stored_revision=item["grid_revision"],
+            stored_start=item["region_start_beat"],
+            stored_end=item["region_end_beat"],
+            stored_bars=item["loop_bars"],
+            current_facts=facts,
+            current_error=error,
+        )
+
+    def _enrich_stem_crate_item(
+        self, item: dict, *, against_id: str | None = None
+    ) -> dict:
         enriched = dict(item)
+        enriched["loop_truth"] = self._stem_crate_loop_truth(item)
+        if against_id:
+            enriched["compatibility"] = self.stem_crate_compatibility(
+                item["id"], against_id
+            )
         try:
             current_hash = self._track_content_hash(item["track_id"])
         except NotFoundError:
@@ -2389,16 +2421,21 @@ class StudioService:
         )
         role = stem_crate.validate_role(role)
         loop_bars = stem_crate.validate_loop_bars(loop_bars)
+        track = self.get_track(track_id)
+        facts = self._stem_crate_grid_facts(track)
         if region_end_beat is None:
-            region_end_beat = region_start_beat + loop_bars * 4.0
+            derived = stem_crate_truth.derive_bar_region(
+                facts, loop_bars, start_beat=region_start_beat
+            )
+            region_start_beat = derived["region_start_beat"]
+            region_end_beat = derived["region_end_beat"]
         start, end = stem_crate.validate_region(region_start_beat, region_end_beat)
         gain_db = stem_crate.validate_gain_db(gain_db)
         if label is not None:
             label = media.sanitize_text(label, stem_crate.MAX_LABEL_LEN) or None
 
-        track = self.get_track(track_id)
         row = self._get_track_row(track_id)
-        effective_bpm = float(track["bpm"])
+        effective_bpm = facts["bpm"]
         record = {
             "schema_version": stem_crate.SCHEMA_VERSION,
             "track_id": track_id,
@@ -2413,9 +2450,9 @@ class StudioService:
             "effective_bpm": effective_bpm,
             "effective_tonic": track["key"]["tonic"],
             "effective_mode": track["key"]["mode"],
-            "grid_revision": self._track_grid_revision(track),
-            "analysis_confidence": track["key"]["confidence"],
-            "overrides_active": self._track_overrides_active(track_id),
+            "grid_revision": facts["grid_revision"],
+            "analysis_confidence": facts["analysis_confidence"],
+            "overrides_active": facts["overrides_active"],
             "region_start_beat": start,
             "region_end_beat": end,
             "loop_bars": loop_bars,
@@ -2436,6 +2473,7 @@ class StudioService:
         offset: int = 0,
         query: str | None = None,
         role: str | None = None,
+        against_id: str | None = None,
     ) -> dict:
         limit = max(1, min(stem_crate.MAX_LIST_LIMIT, limit))
         offset = max(0, offset)
@@ -2446,13 +2484,30 @@ class StudioService:
             role=role,
         )
         return {
-            "items": [self._enrich_stem_crate_item(item) for item in items],
+            "items": [
+                self._enrich_stem_crate_item(item, against_id=against_id)
+                for item in items
+            ],
             "total": total,
             "limit": limit,
             "offset": offset,
         }
 
+    def stem_crate_compatibility(self, source_id: str, against_id: str) -> dict:
+        source = self._stem_crate.get(source_id)
+        against = self._stem_crate.get(against_id)
+        result = stem_crate_truth.compatibility(source, against)
+        result["source_id"] = source_id
+        result["against_id"] = against_id
+        return result
+
     def update_stem_crate_item(self, item_id: str, **fields: Any) -> dict:
+        current = self._stem_crate.get(item_id)
+        loop_bars = fields.get("loop_bars", current["loop_bars"])
+        start = fields.get("region_start_beat", current["region_start_beat"])
+        if "loop_bars" in fields or "region_start_beat" in fields:
+            if "region_end_beat" not in fields:
+                fields["region_end_beat"] = start + stem_crate_truth.loop_beats(loop_bars)
         item = self._stem_crate.update(item_id, **fields)
         return self._enrich_stem_crate_item(item)
 
