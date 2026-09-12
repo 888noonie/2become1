@@ -400,6 +400,40 @@ async function journeyDualDeckConcurrent(page) {
     `A ${t0.a.toFixed(3)}→${t1.a.toFixed(3)} B ${t0.b.toFixed(3)}→${t1.b.toFixed(3)}`,
   );
 
+  const xfader = page.locator('input[aria-label="Live equal-power crossfader"]');
+  record('live crossfader is present', (await xfader.count()) === 1);
+  await xfader.evaluate((el) => {
+    el.value = '0';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const hardLeft = await page.evaluate(async () => {
+    const { liveMixer } = await import('/assets/js/app-context.js');
+    return liveMixer.mixerSnapshot();
+  });
+  record(
+    'hard-left live xfader is A-only bus gains',
+    hardLeft.gainA === 1 && hardLeft.gainB === 0,
+    `A=${hardLeft.gainA} B=${hardLeft.gainB}`,
+  );
+  await xfader.evaluate((el) => {
+    el.value = '100';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const hardRight = await page.evaluate(async () => {
+    const { liveMixer } = await import('/assets/js/app-context.js');
+    return liveMixer.mixerSnapshot();
+  });
+  record(
+    'hard-right live xfader is B-only bus gains',
+    hardRight.gainA === 0 && hardRight.gainB === 1,
+    `A=${hardRight.gainA} B=${hardRight.gainB}`,
+  );
+  record('Class C loopback stays unmeasured', hardRight.classC === 'unmeasured');
+  await xfader.evaluate((el) => {
+    el.value = '50';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+
   await page.locator('.deck-slot--lead button[aria-label^="Pause Lead"]').click();
   await waitFor(async () => (
     await page.locator('.deck-slot--lead button[aria-label="Play Lead"]').count()

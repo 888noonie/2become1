@@ -109,6 +109,17 @@ const INITIAL_STATE = {
     A: emptyDeckState(),
     B: emptyDeckState(),
   },
+  mixer: {
+    xfader: 0.5,
+    master: 'A',
+    gainA: Math.cos(Math.PI / 4),
+    gainB: Math.sin(Math.PI / 4),
+    limiterPolicy: 'off',
+    clipping: false,
+    playbackRate: { A: 1, B: 1 },
+    pitchPreservation: { A: 'unknown', B: 'unknown' },
+    classC: 'unmeasured',
+  },
   ui: {
     toast: null,
   },
@@ -443,6 +454,12 @@ export function registerReducers(store) {
       ...state,
       decks: { ...state.decks, [deck]: structuredClone(deckState) },
     };
+  });
+
+  store.register('mixer/set', (state, action) => {
+    const mixer = action.mixer;
+    if (!mixer || !isPlainJson(mixer)) return state;
+    return { ...state, mixer: structuredClone(mixer) };
   });
 
   store.register('ui/toast', (state, action) => ({

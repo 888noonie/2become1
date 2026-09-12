@@ -304,7 +304,7 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
                     kind: 'stem',
                     stemName: variant,
                     variant,
-                  });
+                  }, { grid: track, sync: true });
                 } else {
                   showToast?.(`Variant "${variant}" is not available for playback.`, 'danger');
                 }
@@ -318,7 +318,7 @@ export function mountDeck({ container, role, onAnnounce, store = globalStore, pr
             kind: variant === 'full' ? 'track' : 'stem',
             stemName: variant === 'full' ? null : variant,
             variant,
-          });
+          }, { grid: track, sync: true });
         }
       },
     });

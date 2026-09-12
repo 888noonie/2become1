@@ -12,6 +12,7 @@ import { confirmDialog, openDialog } from '../components/dialog.js';
 import { showToast } from '../components/toast.js';
 import { store, projectManager, ghostController } from '../app-context.js';
 import { mountDeck } from '../components/deck.js';
+import { mountLiveMixerStrip } from '../components/live-mixer-strip.js';
 import { mountPlan } from '../components/plan.js';
 import { mountRenderActions } from '../components/render-actions.js';
 import { mountGhostCard } from '../components/ghost-card.js';
@@ -153,6 +154,7 @@ export function mountStudio({ container }) {
   let ghostCardDisposer = null;
   let committedLayersDisposer = null;
   let performanceDeckDisposer = null;
+  let mixerStripDisposer = null;
 
   const studioRoot = createElement('div', { class: 'studio' });
   container.replaceChildren(studioRoot);
@@ -170,8 +172,9 @@ export function mountStudio({ container }) {
 
   const retryContainer = createElement('div', { class: 'studio__retry-container' });
   const performanceDeckContainer = createElement('div', { class: 'studio__performance-deck-container' });
-  const decksContainer = createElement('div', { class: 'studio__decks' });
   const swapBar = createElement('div', { class: 'studio__swap-bar' });
+  const mixerStripMount = createElement('div', { class: 'studio__live-mixer' });
+  const decksContainer = createElement('div', { class: 'studio__decks' });
   // Phase 10C: the Ghost status card sits between decks and plan so the
   // truthful state is visible in the natural flow.
   const ghostCardContainer = createElement('div', { class: 'studio__ghost-card-container' });
@@ -190,6 +193,7 @@ export function mountStudio({ container }) {
   studioRoot.appendChild(retryContainer);
   studioRoot.appendChild(performanceDeckContainer);
   studioRoot.appendChild(swapBar);
+  studioRoot.appendChild(mixerStripMount);
   studioRoot.appendChild(decksContainer);
   studioRoot.appendChild(ghostCardContainer);
   studioRoot.appendChild(committedLayersContainer);
@@ -285,11 +289,13 @@ export function mountStudio({ container }) {
     onModeChange: (mode) => {
       const isFun = mode === 'fun';
       decksContainer.hidden = isFun;
+      mixerStripMount.hidden = isFun;
       swapBar.hidden = isFun;
       planContainer.hidden = isFun;
       studioRoot.dataset.deckMode = mode;
     },
   });
+  mixerStripDisposer = mountLiveMixerStrip({ container: mixerStripMount, store, onAnnounce });
   planDisposer = mountPlan({ container: planContainer, store, projectManager });
   renderActionsDisposer = mountRenderActions({
     container: renderActionsContainer, store, projectManager,
@@ -343,6 +349,7 @@ export function mountStudio({ container }) {
     if (ghostCardDisposer) ghostCardDisposer();
     if (committedLayersDisposer) committedLayersDisposer();
     if (performanceDeckDisposer) performanceDeckDisposer();
+    if (mixerStripDisposer) mixerStripDisposer();
     projectManager.flushNow();
   };
 }

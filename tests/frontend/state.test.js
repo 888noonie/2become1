@@ -142,6 +142,27 @@ test('playback actions do not leak the action type into state', async () => {
   assert.equal(Object.hasOwn(store.getState().playback, 'type'), false);
 });
 
+test('mixer slice stores live xfader facts without runtime nodes', async () => {
+  const { StateStore, registerReducers } = await loadState();
+  const store = registerReducers(new StateStore());
+  assert.equal(store.getState().mixer.xfader, 0.5);
+  assert.equal(store.getState().mixer.classC, 'unmeasured');
+  store.dispatch({
+    type: 'mixer/set',
+    mixer: {
+      xfader: 0, master: 'B', gainA: 1, gainB: 0, limiterPolicy: 'off',
+      clipping: false, playbackRate: { A: 1, B: 1 },
+      pitchPreservation: { A: 'unsupported', B: 'unsupported' }, classC: 'unmeasured',
+    },
+  });
+  assert.equal(store.getState().mixer.master, 'B');
+  assert.equal(store.getState().mixer.gainA, 1);
+  class GainNodeHandle {}
+  const before = store.getState().mixer;
+  store.dispatch({ type: 'mixer/set', mixer: { xfader: 1, node: new GainNodeHandle() } });
+  assert.deepEqual(store.getState().mixer, before);
+});
+
 test('decks slice subscription fires only on decks changes', async () => {
   const { StateStore, registerReducers } = await loadState();
   const store = registerReducers(new StateStore());

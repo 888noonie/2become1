@@ -99,6 +99,10 @@ audioController.on((type, payload) => {
 const GHOST_DECK_EVENTS = new Set(['play', 'pause', 'stop', 'ended', 'seek']);
 liveMixer.on((event) => {
   const { type, deck, state: deckState } = event;
+  if (type === 'mixerchange') {
+    store.dispatch({ type: 'mixer/set', mixer: event.state });
+    return;
+  }
   if (type === 'contextstatechange') {
     const snap = liveMixer.snapshot().decks;
     store.dispatch({ type: 'decks/set', decks: snap });
