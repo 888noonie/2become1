@@ -89,7 +89,7 @@ The underlying engine remains fully scriptable:
 
 # Import a local file or permitted YouTube source into the Studio library
 .venv/bin/twobecomeone import track_a.flac
-.venv/bin/twobecomeone import 'https://youtu.be/VIDEO_ID'
+.venv/bin/twobecomeone import '<YOUTUBE_URL>'
 
 # Machine-readable analysis
 .venv/bin/twobecomeone analyze track_a.mp3 --json
@@ -168,8 +168,10 @@ retried or resumed from the Activity view.
 
 - Beat/downbeat positions are suggestions, not phrase or chorus detection.
 - The ffmpeg fallback is a center/side transform, not vocal isolation.
-- Vercel can host a static demonstration, but real ffmpeg/Torch processing
-  belongs on this local backend or a dedicated GPU service.
+- **There is no hosted demo.** The Studio runs locally; the former static
+  demonstration link has been retired and is not a working deployment. Real
+  ffmpeg/Torch processing belongs on this local backend or a dedicated GPU
+  service, so a static host could only ever show the interface, not mix audio.
 - YouTube importing requires `yt-dlp` on `PATH` and does not bypass access controls;
   use media you own or have permission to download and remix.
 - Torrent acquisition is not part of the launch UI.
