@@ -38,13 +38,16 @@ requests must originate from the Studio itself.
 
 The Studio provides:
 
-- two audio decks accepting drag-and-drop files or single-track YouTube links;
+- two audio decks, with Choose Track offering the library, a file upload, or one YouTube video;
+- a Library add pane that opens that same Choose Track dialog;
+- a Studio sidebar queue that adds a track already in the library, plus an instruction field and agent reply;
 - persistent DJ/FUN views: waveform precision in DJ and a seven-pad,
   touch-first project surface in FUN;
 - one managed local media library with source provenance, BPM, key, duration, and playback;
 - lightweight first-beat/downbeat suggestions with manual correction;
 - explicit output BPM (Foundation/Lead/custom), overlay and A→B transition
   modes, and per-deck gain/pan/3-band EQ;
+- automatic separation for a track that has just finished an upload or YouTube import, keeping the original full mix beside the components;
 - optional CUDA-accelerated Demucs stem separation with honest center/side fallback;
 - queued 12-second previews and full renders with live stage progress;
 - bounded vocal Ghost phrase audition, visible tether/status, durable Commit,
@@ -113,6 +116,25 @@ YouTube imports use `yt-dlp`, fetch one video only, extract a high-quality MP3,
 and then pass through the same managed ingestion and analysis path as uploads.
 Public-index torrent search remains an experimental CLI-only helper.
 
+## Adding a track
+
+Upload and YouTube import both store the original full mix, then queue
+separation without another click. When Demucs is installed the components are
+vocals, drums, bass, and other. Otherwise the components are honest center and
+sides, never relabeled as vocals. The import still completes if separation
+cannot be queued. The CLI `import` command and tracks already in the library
+are left alone.
+
+In the Library, the empty **+** pane opens the same Choose Track dialog the
+decks use: Library, Upload, and YouTube. The Studio sidebar does not paste
+YouTube links. Its queue **+** adds a track that is already in the library.
+The rest of that column is the instruction field and the agent reply. The
+queue lasts for the browser session only.
+
+`drop the bass on deck A` cuts deck A’s low EQ by 12 dB and the agent replies
+`I have dropped the bass to come in on the next suitable cue`. A request to
+loop a vocal does not start separation.
+
 ## Architecture
 
 ```text
@@ -178,6 +200,8 @@ retried or resumed from the Activity view.
 - FUN pads use the existing single local audition player. Their 1/2/4/8,
   blend, and arrangement controls update the saved render plan; multi-source
   live mixing, loops, stutter, and reverse require a future engine boundary.
+- Separation of a newly imported track is prepared offline. It is not live
+  stem streaming. The sidebar queue is not saved with the project.
 
 ## License
 

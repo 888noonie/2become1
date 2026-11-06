@@ -35,6 +35,7 @@ from .common import (
     NotFoundError,
     PayloadTooLargeError,
     UserError,
+    log,
 )
 from .contracts import TERMINAL_JOB_STATES, JobKind
 from .jobs import CancellationToken, JobEngine, JobStore
@@ -1049,12 +1050,7 @@ class StudioService:
             except Exception:
                 return None
 
-        demucs_available = False
-        try:
-            import demucs.api  # noqa: F401
-            demucs_available = True
-        except Exception:
-            pass
+        demucs_ok = separator.demucs_available()
 
         return {
             "status": "ready",
@@ -1063,7 +1059,7 @@ class StudioService:
             "yt_dlp": bool(_shutil.which("yt-dlp")),
             "preferred_device": separator._pick_demucs_device(),
             "current_device": separator.demucs_device(),
-            "demucs_available": demucs_available,
+            "demucs_available": demucs_ok,
             "demucs_version": _version("demucs"),
             "torch_version": _version("torch"),
             "data_dir": str(self.data_dir),
@@ -1785,10 +1781,7 @@ class StudioService:
             )
             # Clean staging only after successful managed ingestion.
             shutil.rmtree(work_dir, ignore_errors=True)
-            return {
-                "result": {"track_id": track["id"], "name": track["name"]},
-                "message": "Import complete",
-            }
+            return self._finish_import(track)
 
         if source_kind == "upload":
             # Uploads are staged by the HTTP layer under an opaque key; resolve
@@ -1808,12 +1801,27 @@ class StudioService:
                     source, original_name, source_kind="upload",
                 )
             staged_path.unlink(missing_ok=True)
-            return {
-                "result": {"track_id": track["id"], "name": track["name"]},
-                "message": "Import complete",
-            }
+            return self._finish_import(track)
 
         raise UserError(f"unknown import source: {source_kind}")
+
+    def _finish_import(self, track: dict) -> dict:
+        """Return the stored track and queue separation without waiting for it.
+
+        The original full mix is already in the library. Separation runs on the
+        audio worker and must not decide whether the import itself succeeded.
+        """
+        self._queue_auto_separation(track["id"])
+        return {
+            "result": {"track_id": track["id"], "name": track["name"]},
+            "message": "Import complete",
+        }
+
+    def _queue_auto_separation(self, track_id: str) -> None:
+        try:
+            self.submit_separation(track_id, method="auto")
+        except (UserError, CapabilityError) as exc:
+            log(f"Automatic separation was not queued: {exc}")
 
     def _resolve_downloaded_audio(self, work_dir: Path, video_id: str) -> Path | None:
         """Resolve the downloaded artifact by its explicit ID-based name.
@@ -1961,11 +1969,9 @@ class StudioService:
         ``ffmpeg`` and model_name is a stable, version-sensitive string.
         """
         if method == "auto":
-            try:
-                import demucs.api  # noqa: F401
+            if separator.demucs_available():
                 return "demucs", separator.demucs_model_name()
-            except Exception:
-                return "ffmpeg", separator.center_side_model_name()
+            return "ffmpeg", separator.center_side_model_name()
         if method == "demucs":
             return "demucs", separator.demucs_model_name()
         if method == "ffmpeg":
@@ -2150,13 +2156,10 @@ class StudioService:
             raise UserError(f"unknown separation method: {method}")
         # Explicit demucs without the capability -> 503 (never silently claim an
         # ffmpeg center channel is a vocal).
-        if method == "demucs":
-            try:
-                import demucs.api  # noqa: F401
-            except Exception:
-                raise CapabilityError(
-                    "Demucs is not installed; vocal/drums/bass/other separation is unavailable"
-                )
+        if method == "demucs" and not separator.demucs_available():
+            raise CapabilityError(
+                "Demucs is not installed; vocal/drums/bass/other separation is unavailable"
+            )
         request = {"track_id": track_id, "method": method}
         job = self._engine.submit(
             JobKind.SEPARATE, request, self._separation_run_fn(request), executor="audio",

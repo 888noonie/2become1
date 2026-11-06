@@ -110,8 +110,14 @@ class TestDedupe:
             service.close()
 
 
+def _keep_separation_on_ffmpeg(monkeypatch):
+    """Auto separation must not download HTDemucs weights in these tests."""
+    monkeypatch.setattr("twobecomeone.separator.demucs_available", lambda: False)
+
+
 class TestImportJobs:
     def test_youtube_import_returns_202_job(self, tmp_path, monkeypatch):
+        _keep_separation_on_ffmpeg(monkeypatch)
         service = StudioService(tmp_path / "data")
         try:
             # Mock the download to avoid network.
@@ -159,16 +165,37 @@ class TestImportJobs:
         finally:
             service.close()
 
-    def test_upload_import_stages_and_analyzes(self, tmp_path):
+    def test_upload_import_stages_and_analyzes(self, tmp_path, monkeypatch):
+        _keep_separation_on_ffmpeg(monkeypatch)
         service = StudioService(tmp_path / "data")
         try:
             p = synth_track(tmp_path / "t.wav", bpm=100, root=261.63)
+            source_hash = media.sha256_file(p)
             with p.open("rb") as f:
                 staged = service.stage_upload(f, "t.wav")
             job = service.submit_upload_import(staged)
             completed = service.wait_for_job(job["id"], timeout=30)
             assert completed["status"] == "complete", completed.get("error")
-            assert "track_id" in completed["result"]
+            track_id = completed["result"]["track_id"]
+            stored = service.track_path(track_id)
+            assert media.sha256_file(stored) == source_hash
+            stems = service.list_stems(track_id)
+            full = next(variant for variant in stems["variants"] if variant["name"] == "full")
+            assert full["stem_set_id"] is None
+            assert full["audio_url"] == f"/api/tracks/{track_id}/audio"
+            separation = [
+                item for item in service.list_jobs(limit=20)
+                if item["kind"] == "separate" and item["request"]["track_id"] == track_id
+            ]
+            assert separation, "import completion did not queue separation"
+            assert separation[0]["request"]["method"] == "auto"
+            print(
+                "original full mix kept"
+                f" track_id={track_id}"
+                f" sha256={source_hash}"
+                f" separation_job={separation[0]['id']}"
+                f" method={separation[0]['request']['method']}"
+            )
         finally:
             service.close()
 
@@ -180,6 +207,7 @@ class TestHTTPImports:
 
     @pytest.mark.anyio
     async def test_imports_youtube_returns_202(self, tmp_path, monkeypatch):
+        _keep_separation_on_ffmpeg(monkeypatch)
         pytest.importorskip("fastapi")
         import httpx
         from twobecomeone.webapp import create_app
@@ -205,7 +233,8 @@ class TestHTTPImports:
             app.state.studio.close()
 
     @pytest.mark.anyio
-    async def test_imports_upload_returns_202(self, tmp_path):
+    async def test_imports_upload_returns_202(self, tmp_path, monkeypatch):
+        _keep_separation_on_ffmpeg(monkeypatch)
         pytest.importorskip("fastapi")
         import httpx
         from twobecomeone.webapp import create_app

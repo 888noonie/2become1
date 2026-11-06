@@ -149,6 +149,18 @@ const INITIAL_STATE = {
   ui: {
     toast: null,
   },
+  // Autonomous queue. Plain JSON only; job monitors stay outside the store.
+  urlQueue: {
+    armed: false,
+    items: [],
+    activeImportId: null,
+    endNotified: { A: false, B: false },
+  },
+  daw: {
+    lastDirective: null,
+    lastError: null,
+    agentReply: '',
+  },
 };
 
 export class StateStore extends EventTarget {
@@ -495,6 +507,44 @@ export function registerReducers(store) {
     ...state,
     ui: { ...state.ui, toast: action.toast },
   }));
+
+  store.register('mashup/queue', (state, action) => {
+    const urlQueue = action.urlQueue;
+    if (!urlQueue || !isPlainJson(urlQueue) || !Array.isArray(urlQueue.items)) return state;
+    return { ...state, urlQueue: structuredClone(urlQueue) };
+  });
+
+  store.register('mashup/daw', (state, action) => {
+    const patch = {};
+    if (Object.hasOwn(action, 'lastDirective')) {
+      if (action.lastDirective != null && !isPlainJson(action.lastDirective)) return state;
+      patch.lastDirective = action.lastDirective == null ? null : structuredClone(action.lastDirective);
+    }
+    if (Object.hasOwn(action, 'lastError')) {
+      if (action.lastError != null && !isPlainJson(action.lastError)) return state;
+      patch.lastError = action.lastError == null ? null : structuredClone(action.lastError);
+    }
+    if (Object.hasOwn(action, 'agentReply')) {
+      if (typeof action.agentReply !== 'string') return state;
+      patch.agentReply = action.agentReply;
+    }
+    if (Object.hasOwn(action, 'eq')) {
+      const change = action.eq;
+      const deck = change?.deck;
+      const band = change?.band;
+      const db = Number(change?.db);
+      const bands = new Set(['low', 'mid', 'high']);
+      if ((deck !== 'A' && deck !== 'B') || !bands.has(band) || !Number.isFinite(db)) return state;
+      const previous = state.daw.eq && typeof state.daw.eq === 'object' ? state.daw.eq : {};
+      const deckLevels = previous[deck] && typeof previous[deck] === 'object' ? previous[deck] : {};
+      patch.eq = {
+        A: { ...(previous.A && typeof previous.A === 'object' ? previous.A : {}) },
+        B: { ...(previous.B && typeof previous.B === 'object' ? previous.B : {}) },
+      };
+      patch.eq[deck] = { ...deckLevels, [band]: db };
+    }
+    return { ...state, daw: { ...state.daw, ...patch } };
+  });
 
   return store;
 }

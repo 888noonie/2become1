@@ -105,6 +105,7 @@ class TestEmbeddedArtwork:
 
 class TestYouTubeThumbnail:
     def test_youtube_ingest_stores_normalized_thumbnail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("twobecomeone.separator.demucs_available", lambda: False)
         service = StudioService(tmp_path / "data")
         try:
             def fake_download(url, work_dir, **kwargs):

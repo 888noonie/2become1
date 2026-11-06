@@ -93,7 +93,8 @@ class TestCanonicalization:
 
 
 class TestStagingKey:
-    def test_public_job_json_has_no_absolute_paths(self, tmp_path):
+    def test_public_job_json_has_no_absolute_paths(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("twobecomeone.separator.demucs_available", lambda: False)
         service = StudioService(tmp_path / "data")
         try:
             p = synth_track(tmp_path / "t.wav", bpm=100, root=261.63)
@@ -121,7 +122,8 @@ class TestStagingKey:
 
 
 class TestOriginalName:
-    def test_original_upload_name_survives(self, tmp_path):
+    def test_original_upload_name_survives(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("twobecomeone.separator.demucs_available", lambda: False)
         service = StudioService(tmp_path / "data")
         try:
             p = synth_track(tmp_path / "human-name.wav", bpm=100, root=261.63)

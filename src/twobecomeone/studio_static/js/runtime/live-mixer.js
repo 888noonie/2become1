@@ -27,6 +27,25 @@ function dbToLinear(db) {
   return Math.pow(10, Math.max(-60, Math.min(12, numeric)) / 20);
 }
 
+function clampDb(db) {
+  const numeric = Number(db);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(-12, Math.min(12, numeric));
+}
+
+function toneFailure(code, message) {
+  return Object.freeze({ ok: false, code, message });
+}
+
+const EQ_FREQUENCY = Object.freeze({ low: 120, mid: 1000, high: 8000 });
+
+function filterFrequency(mode, amount) {
+  const wet = Math.max(0, Math.min(1, Number(amount) || 0));
+  if (mode === 'highpass') return 20 + wet * 780;
+  if (mode === 'lowpass') return 20000 - wet * 19600;
+  return 20000;
+}
+
 const DECKS = Object.freeze(['A', 'B']);
 const HEADROOM_CLIP_THRESHOLD = 0.99;
 const HEADROOM_WARN_THRESHOLD = 0.85;
@@ -86,6 +105,16 @@ export class LiveMixer {
       element: null,
       sourceNode: null,
       gainNode: null,
+      trimNode: null,
+      lowNode: null,
+      midNode: null,
+      highNode: null,
+      filterNode: null,
+      toneReady: false,
+      eq: { low: 0, mid: 0, high: 0 },
+      filter: { mode: 'off', amount: 0 },
+      trimGain: 1,
+      loop: null,
       descriptor: null,
       generation: 0,
       playing: false,
@@ -370,9 +399,14 @@ export class LiveMixer {
     deck.element = element;
     const sourceNode = ctx.createMediaElementSource(element);
     deck.sourceNode = sourceNode;
+    // Crossfader gain is created first so existing bus-order checks stay put.
     const gainNode = ctx.createGain();
     deck.gainNode = gainNode;
-    sourceNode.connect(gainNode);
+    const trimNode = ctx.createGain();
+    trimNode.gain.value = deck.trimGain;
+    deck.trimNode = trimNode;
+    this._insertTone(ctx, deck, sourceNode, trimNode);
+    trimNode.connect(gainNode);
     gainNode.connect(this._masterGain);
     this._applyCrossfaderGains();
     this._bindElement(deck, element, deck.generation);
@@ -385,12 +419,69 @@ export class LiveMixer {
     try { deck.element.removeAttribute('src'); } catch {}
     try { deck.element.load(); } catch {}
     if (deck.sourceNode) try { deck.sourceNode.disconnect(); } catch {}
-    if (deck.gainNode) try { deck.gainNode.disconnect(); } catch {}
+    for (const node of [deck.lowNode, deck.midNode, deck.highNode, deck.filterNode, deck.trimNode, deck.gainNode]) {
+      if (node) try { node.disconnect(); } catch {}
+    }
     deck.element = null;
     deck.sourceNode = null;
     deck.gainNode = null;
+    deck.trimNode = null;
+    deck.lowNode = null;
+    deck.midNode = null;
+    deck.highNode = null;
+    deck.filterNode = null;
+    deck.toneReady = false;
     deck.tempoRatio = 1;
     deck.syncPending = false;
+  }
+
+  _insertTone(ctx, deck, sourceNode, trimNode) {
+    deck.toneReady = false;
+    if (typeof ctx.createBiquadFilter !== 'function') {
+      sourceNode.connect(trimNode);
+      return;
+    }
+    try {
+      const low = ctx.createBiquadFilter();
+      const mid = ctx.createBiquadFilter();
+      const high = ctx.createBiquadFilter();
+      const filter = ctx.createBiquadFilter();
+      low.type = 'peaking';
+      mid.type = 'peaking';
+      high.type = 'peaking';
+      low.frequency.value = EQ_FREQUENCY.low;
+      mid.frequency.value = EQ_FREQUENCY.mid;
+      high.frequency.value = EQ_FREQUENCY.high;
+      low.Q.value = 0.7;
+      mid.Q.value = 1;
+      high.Q.value = 0.7;
+      low.gain.value = deck.eq.low;
+      mid.gain.value = deck.eq.mid;
+      high.gain.value = deck.eq.high;
+      filter.type = deck.filter.mode === 'highpass' ? 'highpass' : 'lowpass';
+      filter.frequency.value = filterFrequency(deck.filter.mode, deck.filter.amount);
+      filter.Q.value = 0.707;
+      sourceNode.connect(low);
+      low.connect(mid);
+      mid.connect(high);
+      high.connect(filter);
+      filter.connect(trimNode);
+      deck.lowNode = low;
+      deck.midNode = mid;
+      deck.highNode = high;
+      deck.filterNode = filter;
+      deck.toneReady = true;
+    } catch {
+      sourceNode.connect(trimNode);
+      deck.toneReady = false;
+    }
+  }
+
+  _applyLoop(deck, element) {
+    const loop = deck.loop;
+    if (!loop || !loop.enabled) return;
+    if (!(element.currentTime >= loop.end - 0.03)) return;
+    try { element.currentTime = loop.start; } catch {}
   }
 
   _bindElement(deck, element, generation) {
@@ -414,6 +505,7 @@ export class LiveMixer {
     };
     const timeupdate = () => {
       if (deck.generation !== generation) return;
+      this._applyLoop(deck, element);
       this._updateHeadroom();
       this._emit('timeupdate', deck.name);
     };
@@ -433,6 +525,89 @@ export class LiveMixer {
     deck.paused = true;
     deck.syncPending = false;
     this._emit('error', deck.name);
+  }
+
+  setDeckEq(deckName, band, db) {
+    if (this._disposed) return toneFailure('X_INTERNAL', 'mixer disposed');
+    if (!DECKS.includes(deckName)) return toneFailure('T_INVALID_DECK', 'unknown deck');
+    if (!Object.hasOwn(EQ_FREQUENCY, band)) return toneFailure('BAD_BAND', 'unknown EQ band');
+    const gainDb = clampDb(db);
+    if (gainDb == null) return toneFailure('BAD_DB', 'EQ gain is out of range');
+    const deck = this._decks[deckName];
+    deck.eq = { ...deck.eq, [band]: gainDb };
+    const node = band === 'low' ? deck.lowNode : band === 'mid' ? deck.midNode : deck.highNode;
+    if (node) {
+      node.gain.value = gainDb;
+      return buildSuccess({ deck: deckName, band, db: gainDb });
+    }
+    // No media element yet. The level is kept and applied when this deck's
+    // tone stage opens, which is the next cue the cut can be heard on.
+    if (!deck.element) {
+      return buildSuccess({ deck: deckName, band, db: gainDb });
+    }
+    return toneFailure('TONE_UNAVAILABLE', 'This browser graph has no EQ stage.');
+  }
+
+  setDeckFilter(deckName, mode, amount) {
+    if (this._disposed) return toneFailure('X_INTERNAL', 'mixer disposed');
+    if (!DECKS.includes(deckName)) return toneFailure('T_INVALID_DECK', 'unknown deck');
+    if (mode !== 'lowpass' && mode !== 'highpass' && mode !== 'off') {
+      return toneFailure('BAD_FILTER', 'unknown filter');
+    }
+    const numeric = Number(amount);
+    if (!Number.isFinite(numeric) || numeric < 0 || numeric > 1) {
+      return toneFailure('BAD_FILTER', 'filter amount is out of range');
+    }
+    const deck = this._decks[deckName];
+    deck.filter = { mode, amount: numeric };
+    if (!deck.toneReady || !deck.filterNode) {
+      return toneFailure('TONE_UNAVAILABLE', 'This browser graph has no filter stage.');
+    }
+    deck.filterNode.type = mode === 'highpass' ? 'highpass' : 'lowpass';
+    deck.filterNode.frequency.value = filterFrequency(mode, numeric);
+    return buildSuccess({ deck: deckName, mode, amount: numeric });
+  }
+
+  setDeckTrim(deckName, value) {
+    if (this._disposed) return toneFailure('X_INTERNAL', 'mixer disposed');
+    if (!DECKS.includes(deckName)) return toneFailure('T_INVALID_DECK', 'unknown deck');
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric < 0 || numeric > 1) {
+      return toneFailure('BAD_GAIN', 'trim is out of range');
+    }
+    const deck = this._decks[deckName];
+    deck.trimGain = numeric;
+    if (deck.trimNode) deck.trimNode.gain.value = numeric;
+    return buildSuccess({ deck: deckName, value: numeric });
+  }
+
+  setDeckLoop(deckName, spec) {
+    if (this._disposed) return toneFailure('X_INTERNAL', 'mixer disposed');
+    if (!DECKS.includes(deckName)) return toneFailure('T_INVALID_DECK', 'unknown deck');
+    const deck = this._decks[deckName];
+    if (!spec || spec.enabled === false) {
+      deck.loop = null;
+      return buildSuccess({ deck: deckName, enabled: false });
+    }
+    const bars = Number(spec.bars);
+    const bpm = Number(spec.bpm);
+    if (![1, 2, 4, 8].includes(bars) || !Number.isFinite(bpm) || bpm < 20 || bpm > 300) {
+      return toneFailure('BAD_LOOP', 'loop needs bars of 1, 2, 4, or 8 and a BPM from 20 to 300');
+    }
+    const element = deck.element;
+    const duration = element && Number.isFinite(element.duration) ? element.duration : Number(spec.duration);
+    const time = element ? element.currentTime : Number(spec.time) || 0;
+    if (!(duration > 0)) return toneFailure('BAD_LOOP', 'loop needs a known duration');
+    const barSeconds = bars * 4 * (60 / bpm);
+    const firstBeat = Number.isFinite(Number(spec.firstBeat)) ? Number(spec.firstBeat) : 0;
+    const origin = Math.min(Math.max(0, firstBeat), duration);
+    const into = Math.max(0, time - origin);
+    const index = Math.floor(into / barSeconds);
+    const start = Math.max(0, Math.min(duration, origin + index * barSeconds));
+    const end = Math.max(start, Math.min(duration, start + barSeconds));
+    if (end - start < 0.05) return toneFailure('BAD_LOOP', 'loop window is too short');
+    deck.loop = { enabled: true, bars, start, end };
+    return buildSuccess({ deck: deckName, enabled: true, start, end });
   }
 
   setCrossfader(position) {
@@ -882,6 +1057,7 @@ export class LiveMixer {
       error: deck.error ? Object.freeze({ ...deck.error }) : null,
       time: deck.element ? deck.element.currentTime : 0,
       duration: deck.element ? (deck.element.duration || 0) : 0,
+      eq: Object.freeze({ low: deck.eq.low, mid: deck.eq.mid, high: deck.eq.high }),
     });
   }
 

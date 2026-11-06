@@ -314,7 +314,9 @@ class TestStems:
     def test_center_side_separation_and_cache(self, tmp_path):
         service = StudioService(tmp_path / "data")
         try:
-            t = _ingest(service, synth_track(tmp_path / "t.wav", bpm=100, root=261.63))
+            source = synth_track(tmp_path / "t.wav", bpm=100, root=261.63)
+            source_hash = media.sha256_file(source)
+            t = _ingest(service, source)
             job = service.submit_separation(t["id"], method="ffmpeg")
             completed = service.wait_for_job(job["id"], timeout=60)
             assert completed["status"] == "complete", completed.get("error")
@@ -325,10 +327,25 @@ class TestStems:
             assert "sides" in stems["stems"]
             # Never relabel center as vocals.
             assert "vocals" not in stems["stems"]
+            full = next(variant for variant in stems["variants"] if variant["name"] == "full")
+            assert full["stem_set_id"] is None
+            assert media.sha256_file(service.track_path(t["id"])) == source_hash
+            for name in ("center", "sides"):
+                variant = next(item for item in stems["variants"] if item["name"] == name)
+                assert variant["method"] == "ffmpeg"
+                stem_path = service.stem_audio_path(variant["stem_set_id"], name)
+                assert stem_path.is_file()
+                assert stem_path.resolve() != service.track_path(t["id"]).resolve()
             # Second separation is a cache hit (no re-run).
             job2 = service.submit_separation(t["id"], method="ffmpeg")
             completed2 = service.wait_for_job(job2["id"], timeout=60)
             assert completed2["result"]["cached"] is True
+            print(
+                "components listed beside original"
+                f" track_id={t['id']}"
+                f" stems={sorted(stems['stems'])}"
+                f" full_stem_set_id={full['stem_set_id']}"
+            )
         finally:
             service.close()
 

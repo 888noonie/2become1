@@ -118,3 +118,48 @@ test('Source picker renders its selected tab on first open', async () => {
   document.querySelector('dialog').close('close');
   await result;
 });
+
+test('Library plus pane opens the Choose Track source dialog', async () => {
+  const store = await makeStore();
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
+  });
+
+  const { mountLibrary } = await import(
+    '../../src/twobecomeone/studio_static/js/views/library.js'
+  );
+  const container = document.getElementById('main');
+  const dispose = mountLibrary({ store, container });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const add = container.querySelector('button.library-add');
+  assert.equal(add.getAttribute('aria-label'), 'Add a track');
+  assert.equal(add.textContent, '+');
+  assert.match(container.textContent, /No tracks yet/);
+
+  add.click();
+  const dialog = document.querySelector('dialog');
+  assert.ok(dialog);
+  assert.equal(dialog.querySelector('.dialog__title').textContent, 'Add a track');
+  const tabs = [...dialog.querySelectorAll('.picker__tab')].map((tab) => tab.textContent);
+  assert.deepEqual(tabs, ['Library', 'Upload', 'YouTube']);
+  console.log(`library plus opened Choose Track tabs=${tabs.join(',')}`);
+  dialog.close('close');
+
+  store.dispatch({
+    type: 'library/set',
+    items: [{
+      id: 'track-1',
+      name: 'Night Drive',
+      duration: 12,
+      source: { kind: 'upload' },
+    }],
+    total: 1,
+    limit: 50,
+    offset: 0,
+  });
+  assert.ok(container.querySelector('button.library-add'));
+  assert.match(container.textContent, /Night Drive/);
+  dispose();
+});

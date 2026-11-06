@@ -122,6 +122,11 @@ class TrackImportBody(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
 
 
+class MashupCommandBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=500)
+
+
 class TrackPatchBody(BaseModel):
     display_name: str | None = None
     bpm: float | None = None
@@ -344,6 +349,30 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
     @app.post("/api/imports/youtube", status_code=202)
     def import_youtube(body: TrackImportBody):
         return service.submit_youtube_import(body.url)
+
+    @app.post("/api/mashup/interpret")
+    def interpret_mashup(body: MashupCommandBody):
+        from . import mashup_provider
+        from .mashup_intent import directive_from_model_json, escalation, interpret
+
+        result = interpret(body.text)
+        if result["ok"]:
+            return result
+        plan = escalation(body.text)
+        if not plan.get("escalate"):
+            return result
+        try:
+            raw = mashup_provider.complete_json(plan["model"], body.text)
+        except Exception:
+            raw = None
+        if not raw:
+            failed = dict(result)
+            failed["error"] = {
+                "code": "PR_PROVIDER_UNAVAILABLE",
+                "message": "No mashup model is available. Playback is unchanged.",
+            }
+            return failed
+        return directive_from_model_json(raw, tier=plan["tier"])
 
     @app.post("/api/imports/upload", status_code=202)
     def import_upload(file: UploadFile = File(...)):

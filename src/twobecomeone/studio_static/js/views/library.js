@@ -9,6 +9,7 @@
 import { createElement, replaceChildren } from '../dom.js';
 import { audioController } from '../audio.js';
 import { confirmDialog, openDialog } from '../components/dialog.js';
+import { openSourcePicker } from '../components/source-picker.js';
 import { showToast } from '../components/toast.js';
 import { formatBpm, formatKey, formatTime, sourceLabel } from '../format.js';
 import {
@@ -60,10 +61,20 @@ export function mountLibrary({ store, container }) {
     searchInput, statusSelect, sourceSelect, sortSelect, densityButton,
   ]);
 
+  const addPane = createElement('button', {
+    class: 'button library-add',
+    type: 'button',
+    'aria-label': 'Add a track',
+    text: '+',
+  });
+  addPane.addEventListener('click', () => {
+    void openSourcePicker(store, null);
+  });
+
   const listEl = createElement('div', { class: 'track-list track-list--grid', role: 'list' });
   const loadMoreEl = createElement('div', { class: 'load-more' });
 
-  container.replaceChildren(toolbar, listEl, loadMoreEl);
+  container.replaceChildren(toolbar, addPane, listEl, loadMoreEl);
 
   // ---- State sync ----
   const syncFromState = (state) => {

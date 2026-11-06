@@ -5,6 +5,18 @@ local-first, single-user model; versions track the workspace milestones.
 
 ## [Unreleased] — V1 Action and durable acoustic foundation
 
+- A finished upload or YouTube import keeps the original full mix and queues
+  separation on its own. Demucs supplies vocals, drums, bass, and other when
+  that extra is installed; otherwise the components are center and sides.
+  Tracks already in the library, and the CLI `import` command, are not
+  backfilled.
+- The Library has an empty add pane that opens the same Choose Track dialog
+  as the decks, including Library, Upload, and YouTube.
+- The Studio sidebar queue adds a library track with **+**. The YouTube paste
+  box is gone. The freed space is the instruction field and the agent reply.
+  `drop the bass on deck A` still applies a deck A low EQ cut of −12 dB and
+  the reply is “I have dropped the bass to come in on the next suitable cue”.
+
 - Added the Ultimate Deck UI: persistent `◐ DJ` / `◎ FUN` views, seven
   project-backed performance pads, truthful single-player Foundation/Lead
   audition, beat-derived 1/2/4/8 render lengths, equal-power render blend, and

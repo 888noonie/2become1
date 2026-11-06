@@ -280,6 +280,10 @@ export function submitYouTube(url) {
   return post('/api/imports/youtube', { url });
 }
 
+export function interpretCommand(text) {
+  return post('/api/mashup/interpret', { text });
+}
+
 export function submitUpload(file, onProgress, signal) {
   return upload('/api/imports/upload', file, onProgress, signal);
 }

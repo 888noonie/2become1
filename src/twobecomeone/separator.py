@@ -38,6 +38,19 @@ def _pick_demucs_device() -> str:
     return "cpu"
 
 
+def demucs_available() -> bool:
+    """True when the optional Demucs package can be imported.
+
+    Importing the package does not load HTDemucs weights. Callers that only
+    need to choose a method should use this instead of constructing a model.
+    """
+    try:
+        import demucs.api  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def demucs_model_name() -> str:
     """Return a stable, version-sensitive model name for the cache key.
 

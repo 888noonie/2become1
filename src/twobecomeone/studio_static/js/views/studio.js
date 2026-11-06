@@ -19,6 +19,9 @@ import { mountCommittedLayers } from '../components/committed-layers.js';
 import { mountPerformanceDeck } from '../components/performance-deck.js';
 import { mountStemCratePanel } from '../components/stem-crate-panel.js';
 import { mountLiveCrossfader } from '../components/live-crossfader.js';
+import { mountUrlQueuePanel } from '../components/url-queue-panel.js';
+import { mountDawCommandBar } from '../components/daw-command-bar.js';
+import { startMashupSession } from '../mashup/session.js';
 import {
   checkGhostPreconditions,
   ensureVocalsStemKnown,
@@ -157,6 +160,9 @@ export function mountStudio({ container }) {
   let performanceDeckDisposer = null;
   let crateDisposer = null;
   let liveCrossfaderDisposer = null;
+  let queueDisposer = null;
+  let dawDisposer = null;
+  let mashupSession = null;
 
   const studioRoot = createElement('div', { class: 'studio' });
   container.replaceChildren(studioRoot);
@@ -203,6 +209,11 @@ export function mountStudio({ container }) {
   studioRoot.appendChild(committedLayersContainer);
   studioRoot.appendChild(planContainer);
   studioRoot.appendChild(renderActionsContainer);
+  const mashupSide = createElement('aside', { class: 'studio__mashup-side' });
+  const queueMount = createElement('div', { class: 'studio__mashup-queue' });
+  const dawMount = createElement('div', { class: 'studio__mashup-daw' });
+  mashupSide.append(queueMount, dawMount);
+  studioRoot.appendChild(mashupSide);
 
   function updateHeader() {
     replaceChildren(headerContainer, [projectHeader()]);
@@ -347,6 +358,21 @@ export function mountStudio({ container }) {
     onUndo: (commitActionId) => ghostController.revert(commitActionId),
   });
 
+  mashupSession = startMashupSession({ store, liveMixer, projectManager });
+  queueDisposer = mountUrlQueuePanel({
+    container: queueMount,
+    store,
+    onEnqueueTrack: (track) => mashupSession.enqueueTrack(track),
+    onRemove: (id) => mashupSession.remove(id),
+    onArm: (armed) => mashupSession.setArmed(armed),
+  });
+  dawDisposer = mountDawCommandBar({
+    container: dawMount,
+    store,
+    onCommand: (text) => { void mashupSession.command(text); },
+    onDirective: (directive) => mashupSession.directive(directive),
+  });
+
   updateHeader();
 
   const unsubSave = store.subscribeSlice('save', updateHeader);
@@ -364,6 +390,9 @@ export function mountStudio({ container }) {
     if (performanceDeckDisposer) performanceDeckDisposer();
     if (crateDisposer) crateDisposer();
     if (liveCrossfaderDisposer) liveCrossfaderDisposer();
+    if (queueDisposer) queueDisposer();
+    if (dawDisposer) dawDisposer();
+    if (mashupSession) mashupSession.stop();
     projectManager.flushNow();
   };
 }

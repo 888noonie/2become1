@@ -111,8 +111,9 @@ def test_fixture_app_reports_loopback_binding(tmp_path):
         app.state.studio.close()
 
 
-def test_youtube_import_job_completes_with_stub(tmp_path):
+def test_youtube_import_job_completes_with_stub(tmp_path, monkeypatch):
     """The real import job path runs end to end with only the download stubbed."""
+    monkeypatch.setattr("twobecomeone.separator.demucs_available", lambda: False)
     fixture_server.patch_for_tests()
     service = StudioService(tmp_path / "data")
     try:
