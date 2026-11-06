@@ -1,230 +1,141 @@
-# 2become1 Studio
+# 2become1
 
-A local-first music mashup studio for combining two tracks without uploading
-them to somebody else's cloud. It analyzes tempo and key, suggests a beat-grid
-starting point, optionally isolates stems with Demucs, aligns both sources to
-an output BPM, and produces a loudness-managed mix.
+## What it does
+
+2become1 is a local-first mashup studio for combining two tracks without
+uploading them to a third-party service. It analyzes tempo and key, suggests a
+beat-grid starting point, can separate stems, aligns both sources to an output
+BPM, and renders a loudness-managed mix. The project has two front ends over the
+same engine: a FastAPI web Studio for drag-and-drop mixing, library management,
+previews, and renders, and a CLI for analysis, import, separation, and scripted
+mashups. Both store state in SQLite and keep media in a managed local directory.
 
 The name is a deliberately cheesy nod to the Spice Girls. The engine is general
-purpose; bring audio you own or have permission to remix.
+purpose: bring audio you own or have permission to remix.
 
-## Launch the Studio
+## Development status
 
-Requirements: Python 3.11+, `uv`, and `ffmpeg`/`ffprobe` on `PATH`. On
-CachyOS/Arch, install ffmpeg with `sudo pacman -S ffmpeg`.
+Active. Development ran from August to September 2026 (roughly 100 commits),
+with a docs commit in October 2026. Version 0.3.0 is declared in `pyproject.toml`,
+but no Git tag or GitHub release exists; treat it as a source version.
+
+## What demonstrably works
+
+- The Studio serves one same-origin app on loopback, with SQLite-backed
+  projects, jobs, and a local media library.
+- Two decks open Choose Track, which offers the library, a file upload, or one
+  YouTube video. The library keeps source provenance and supports previews,
+  renders with progress, downloads, and history.
+- The Library has an empty add pane that opens that same Choose Track dialog.
+- A finished upload or YouTube import keeps the original full mix and queues
+  separation. Demucs produces vocals, drums, bass, and other when that extra is
+  installed. Otherwise the components are center and sides, never relabeled as
+  vocals. The import still completes if separation cannot be queued.
+- The Studio sidebar queue adds a track that is already in the library. It does
+  not paste YouTube links. The rest of that column is the instruction field and
+  the agent reply. `drop the bass on deck A` cuts deck A low EQ by 12 dB and
+  the reply is “I have dropped the bass to come in on the next suitable cue”.
+- Analysis reports BPM, key, and duration, with first-beat/downbeat suggestions
+  that can be corrected by hand.
+- Mix settings include an explicit output BPM, overlay and A-to-B transition
+  modes, and per-deck gain, pan, and 3-band EQ.
+- Optional Demucs separation uses CUDA with CPU fallback. The ffmpeg method
+  provides an honest center/side split, not isolated vocals.
+- A short vocal phrase layer can be auditioned, committed, and undone; one
+  committed layer can play alongside the Lead.
+- The CLI can analyze, import, separate, and render a region-aware mash, or
+  print the plan without writing files. The CLI `import` command does not queue
+  separation, and tracks already in the library are not backfilled.
+- Upload names are never used as storage paths, audio suffixes are allow-listed,
+  and the Studio binds to loopback unless network access is explicitly enabled.
+
+## Experimental, incomplete, or planned
+
+- Deck audition on the FUN pads is singleton: starting Lead B stops Foundation A,
+  and the saved blend is not a live crossfader. Three-bus live mixing is planned,
+  not shipped. The sidebar queue can place a library track on a live deck and
+  remember an EQ cut until that deck's tone stage opens.
+- The sidebar queue lasts for the browser session only. Separation of a new
+  import is offline preparation, not live stem streaming. A request to loop a
+  vocal does not start separation.
+- The proposed stem stack (four separated loops as one committed layer) is only
+  a prototype at `design/stem_crate_fun_mock.html`; it persists and renders nothing.
+- Producer access, live warping, and multiple committed layers remain deferred.
+- FUN pads update the saved render plan. Multi-source live mixing, loops,
+  stutter, and reverse need a future engine boundary.
+- Beat and downbeat positions are suggestions, not phrase or chorus detection.
+- Torrent search is an experimental CLI-only helper and is not in the Studio UI.
+
+## Install, run, inspect
+
+Requirements: Python 3.11+, `uv`, and `ffmpeg`/`ffprobe` on `PATH` (`sudo pacman
+-S ffmpeg` on Arch-based systems).
 
 ```bash
-cd 2become1
 uv venv .venv
 uv sync --frozen --extra web --extra demucs
 .venv/bin/twobecomeone web
 ```
 
-Open <http://127.0.0.1:8765>. The server binds to the local machine only by
-default, and project media is kept under `~/.local/share/2become1/`.
+Open <http://127.0.0.1:8765>. Omit `--extra demucs` on a fresh environment if
+you do not need stem separation. A later sync that drops the extra uninstalls
+Demucs if it was already installed. Project data lives under
+`~/.local/share/2become1/` (SQLite plus `tracks/`, `stems/`, `renders/`,
+`artwork/`, and `waveforms/`); back it up.
 
-Binding to a non-loopback host (e.g. `0.0.0.0`) exposes the unauthenticated
-Studio and its media routes to your network. It now requires an explicit
-`--allow-network` flag:
+Binding to a non-loopback address requires `--host 0.0.0.0 --allow-network` plus
+an exact `--trusted-host <hostname>`. It stays unauthenticated; only enable it on
+a network you trust.
 
-```bash
-.venv/bin/twobecomeone web --host 0.0.0.0 --allow-network --trusted-host 192.168.1.10
-```
-
-Replace the example IP with this computer's network address. Repeat
-`--trusted-host` for additional exact hostnames. Network access remains
-unauthenticated; only enable it on a network you trust. Mutating browser
-requests must originate from the Studio itself.
-
-The Studio provides:
-
-- two audio decks, with Choose Track offering the library, a file upload, or one YouTube video;
-- a Library add pane that opens that same Choose Track dialog;
-- a Studio sidebar queue that adds a track already in the library, plus an instruction field and agent reply;
-- persistent DJ/FUN views: waveform precision in DJ and a seven-pad,
-  touch-first project surface in FUN;
-- one managed local media library with source provenance, BPM, key, duration, and playback;
-- lightweight first-beat/downbeat suggestions with manual correction;
-- explicit output BPM (Foundation/Lead/custom), overlay and A→B transition
-  modes, and per-deck gain/pan/3-band EQ;
-- automatic separation for a track that has just finished an upload or YouTube import, keeping the original full mix beside the components;
-- optional CUDA-accelerated Demucs stem separation with honest center/side fallback;
-- queued 12-second previews and full renders with live stage progress;
-- bounded vocal Ghost phrase audition, visible tether/status, durable Commit,
-  append-only Undo, and inclusion in the shared preview/render plan;
-- local playback, downloads, and recent-render history;
-- one same-origin FastAPI application—no public CORS or remote upload path.
-
-The `main` branch contains the accepted V1 Action/Ghost
-foundation: a project-scoped append-only Action ledger and reload projection,
-server-managed vocal preview assets, a visible human Ghost audition/Commit/Undo
-workflow, an injected Web Audio phrase scheduler, and the accepted Phase 12
-live committed-layer engine. One committed layer can play alongside the Lead.
-Producer access, live warping, and multiple committed layers remain deferred.
-
-## Current roadmap truth
-
-Phase 14A's audited FUN stem-crate interaction prototype is available at
-`design/stem_crate_fun_mock.html`. It demonstrates an honest four-role crate,
-loop-length controls, compatibility explanations, deterministic Fever recipes,
-and accessible pointer/keyboard/mobile interaction. It is a design prototype;
-it does not yet persist a crate or produce audio.
-
-The approved production shape is a **stem stack**: up to four separated stem
-loops become one server-prepared composite asset and one committed layer. See
-`PHASE_14_STEM_CRATE_TRI_PHASE_PLAN.md`.
-
-The current app still has singleton deck audition: starting Foundation A and
-then Lead B stops A. The saved render blend is not a live crossfader. Concurrent
-Foundation A + Lead B + stem-stack output is planned, not shipped, in
-`PHASE_15_THREE_BUS_LIVE_MIXER_TRI_PHASE_PLAN.md`. The intended order is Phase
-14B persistent crate, Phase 15A–B dual-deck/live-crossfader work, then Phase
-14C/15C stack convergence. Do not describe the current build as a simultaneous
-three-bus DJ mixer.
-
-## CLI
-
-The underlying engine remains fully scriptable:
+CLI examples:
 
 ```bash
-# Analyze tempo and key
 .venv/bin/twobecomeone analyze track_a.mp3 track_b.mp3
-
-# Import a local file or permitted YouTube source into the Studio library
-.venv/bin/twobecomeone import track_a.flac
-.venv/bin/twobecomeone import 'https://youtu.be/VIDEO_ID'
-
-# Machine-readable analysis
-.venv/bin/twobecomeone analyze track_a.mp3 --json
-
-# Real four-stem separation when Demucs is installed
 .venv/bin/twobecomeone separate track.mp3 -o stems/ --method demucs
-
-# Honest center/side fallback (not fake vocals/instrumental labels)
-.venv/bin/twobecomeone separate track.mp3 -o stereo-parts/ --method ffmpeg
-
-# Region-aware mash; anchor supplies target tempo and key
-.venv/bin/twobecomeone mash anchor.mp3 lead.mp3 \
-  --anchor-start 32.4 --lead-start 18.1 --duration 30 \
-  --stems --stem-method demucs -o out.mp3
-
-# Inspect the plan without creating stems or output files
-.venv/bin/twobecomeone mash anchor.mp3 lead.mp3 --dry-run --json
+.venv/bin/twobecomeone mash anchor.mp3 lead.mp3 --anchor-start 32.4 \
+  --lead-start 18.1 --duration 30 -o out.mp3
 ```
 
-YouTube imports use `yt-dlp`, fetch one video only, extract a high-quality MP3,
-and then pass through the same managed ingestion and analysis path as uploads.
-Public-index torrent search remains an experimental CLI-only helper.
+`import` and `analyze --json` are also available. There is no hosted demo: the
+homepage demo URL returns 404, and mixing requires the local ffmpeg/Torch
+backend, so a static host could only show the interface.
 
-## Adding a track
+## Tests and build evidence
 
-Upload and YouTube import both store the original full mix, then queue
-separation without another click. When Demucs is installed the components are
-vocals, drums, bass, and other. Otherwise the components are honest center and
-sides, never relabeled as vocals. The import still completes if separation
-cannot be queued. The CLI `import` command and tracks already in the library
-are left alone.
+Observed before this change: CI passed on its last six runs across two jobs.
+`test` runs the Python suite, the JavaScript unit suite, and a wheel/sdist
+build check; `browser-e2e` drives the Studio in Chromium at desktop and mobile
+sizes. CI builds and verifies both a wheel and an sdist from the files under
+`tests/`.
 
-In the Library, the empty **+** pane opens the same Choose Track dialog the
-decks use: Library, Upload, and YouTube. The Studio sidebar does not paste
-YouTube links. Its queue **+** adds a track that is already in the library.
-The rest of that column is the instruction field and the agent reply. The
-queue lasts for the browser session only.
-
-`drop the bass on deck A` cuts deck A’s low EQ by 12 dB and the agent replies
-`I have dropped the bass to come in on the next suitable cue`. A request to
-loop a vocal does not start separation.
-
-## Architecture
-
-```text
-browser (same origin)
-        │
-        ▼
-FastAPI routes ──► StudioService ──► SQLite project/job state
-                         │
-                         ├── analyzer + beat-grid suggestion
-                         ├── single-worker Demucs queue (CUDA → CPU fallback)
-                         ├── V1 Action ledger + projection snapshot
-                         ├── managed ephemeral Ghost assets
-                         └── ffmpeg align/mix/loudness pipeline
-```
-
-The CLI and web app call the service/audio modules directly; neither wraps or
-scrapes the other's output. A single render worker prevents concurrent jobs
-from competing for laptop GPU memory. Uploaded names are never used as storage
-paths, supported audio suffixes are allow-listed, and uploads have a 750 MB
-local ceiling.
-
-## Development
+The changelog claims 427 Python tests (1 skipped) and 30/30 inherited browser
+acceptance; those figures were not re-run for this README.
 
 ```bash
-uv sync --frozen --extra web --extra dev --extra demucs
-.venv/bin/pytest -q          # Python unit + service + HTTP tests
-npm ci && npm test           # frontend unit tests (jsdom)
-npm run test:browser          # browser E2E + accessibility (system Chromium)
-npm run test:ghost-browser    # headless V1 API → asset → Web Audio proof
-node tests/browser/ultimate_deck_ux.js  # DJ/FUN desktop + mobile proof
+.venv/bin/pytest -q
+npm ci && npm test
+npm run test:browser    # needs system Chromium
 ```
 
-The test suite covers DSP invariants, invalid media, JSON contracts, truthful
-center/side output, Demucs caching and CUDA selection, OOM fallback behavior,
-region timing, true-peak checks, safe ingestion, persistent jobs, the full
-HTTP upload-to-render vertical slice, and browser-level primary journeys with
-an accessibility audit.
+Agent notes for the library, the sidebar, and separation tests are in
+[AGENTS.md](AGENTS.md).
 
-The browser tier (`tests/browser/run.js`) drives the real Studio in system
-Chromium via `playwright-core` (which never downloads a browser) against a
-temporary data root with only the external network/GPU boundaries stubbed. CI
-runs it as a distinct `browser-e2e` job.
+## Limitations and dependencies
 
-## Backup and recovery
+- Hard dependencies: Python 3.11+, NumPy, SciPy, and ffmpeg/ffprobe. The web
+  extra adds FastAPI, uvicorn, and python-multipart. Demucs and Torch are optional
+  and large; a single render worker keeps jobs from competing for GPU memory.
+- YouTube import requires `yt-dlp` on `PATH`, but `yt-dlp` is **not declared** in
+  `pyproject.toml`. This is a known packaging gap; without a separate install,
+  YouTube import fails.
+- Tempo/key detection and grid placement are estimates. Pitch matching preserves
+  major/minor mode, but matching tonics does not guarantee harmonic
+  compatibility; the plan warns when source modes differ.
+- Guardrails: 750 MiB per upload, 30-minute audio limit, bounded process
+  deadlines, and at most 32 queued or running jobs per process.
+- Network mode is opt-in and unauthenticated. The default is loopback only, with
+  no accounts, cloud sync, or remote upload path.
 
-Project data lives under `~/.local/share/2become1/` (SQLite database plus
-`tracks/`, `stems/`, `renders/`, `artwork/`, and `waveforms/`). Back up that
-directory to preserve your library and projects. On restart, jobs left
-queued/running by a previous process are marked `interrupted` and can be
-retried or resumed from the Activity view.
+## Licence
 
-## Current boundaries
-
-- Beat/downbeat positions are suggestions, not phrase or chorus detection.
-- The ffmpeg fallback is a center/side transform, not vocal isolation.
-- Vercel can host a static demonstration, but real ffmpeg/Torch processing
-  belongs on this local backend or a dedicated GPU service.
-- YouTube importing requires `yt-dlp` on `PATH` and does not bypass access controls;
-  use media you own or have permission to download and remix.
-- Torrent acquisition is not part of the launch UI.
-- Human Ghost drag/tether/audition, durable Commit and append-only Undo are
-  visible. Producer access and live committed-layer playback remain deferred.
-- FUN pads use the existing single local audition player. Their 1/2/4/8,
-  blend, and arrangement controls update the saved render plan; multi-source
-  live mixing, loops, stutter, and reverse require a future engine boundary.
-- Separation of a newly imported track is prepared offline. It is not live
-  stem streaming. The sidebar queue is not saved with the project.
-
-## License
-
-MIT—see [LICENSE](LICENSE).
-
-## Processing limits and safeguards
-
-- Uploads are limited to 750 MiB per audio file, with an additional 1 MiB
-  allowance for HTTP multipart overhead. Actual streamed bytes are checked
-  before they reach the multipart parser, even without Content-Length. Other
-  request bodies are limited to 1 MiB.
-- Audio inputs longer than 30 minutes are rejected explicitly; import a
-  shorter region. Decoding uses temporary disk storage before loading the
-  bounded signal. Spectral analysis processes every frame in small blocks.
-- Decoding has a three-minute deadline; ffmpeg alignment, mixing, measurement,
-  and center/side stages each have a ten-minute deadline. Demucs cancellation
-  remains cooperative between safe stages.
-- At most 32 jobs may be running or waiting in one Studio process. A full
-  queue returns a retryable `queue_full` error without creating another job.
-- Loopback hosts are allowed by default. Additional hosts require explicit
-  configuration; cross-origin browser mutations are refused.
-- Pitch matching preserves major/minor mode. Matching tonics does not guarantee
-  harmonic compatibility; the plan warns when the source modes differ.
-
-Release CI installs from `uv.lock` with `--frozen`. Dependency updates should
-be made deliberately with a refreshed lockfile and the complete CI gates.
+MIT. See [LICENSE](LICENSE).
