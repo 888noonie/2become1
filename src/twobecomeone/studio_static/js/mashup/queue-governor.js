@@ -18,6 +18,7 @@ export function createQueueState() {
   return {
     armed: false,
     items: [],
+    nextItemId: 1,
     activeImportId: null,
     endNotified: { A: false, B: false },
   };
@@ -27,10 +28,19 @@ function copyState(state, patch) {
   return {
     armed: state.armed,
     items: state.items,
+    nextItemId: nextItemId(state),
     activeImportId: state.activeImportId,
     endNotified: state.endNotified,
     ...patch,
   };
+}
+
+function nextItemId(state) {
+  if (Number.isSafeInteger(state.nextItemId) && state.nextItemId > 0) return state.nextItemId;
+  return state.items.reduce((max, item) => {
+    const match = /^q(\d+)-/.exec(item.id || '');
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0) + 1;
 }
 
 function replaceItem(items, itemId, next) {
@@ -38,6 +48,7 @@ function replaceItem(items, itemId, next) {
 }
 
 export function enqueueTrack(state, track) {
+  const sequence = nextItemId(state);
   const trackId = typeof track?.id === 'string' ? track.id.trim() : '';
   if (!trackId) {
     return { state, error: { code: 'EMPTY_TRACK', message: 'Track is missing.' } };
@@ -46,7 +57,7 @@ export function enqueueTrack(state, track) {
   if (duplicate) return { state, error: null };
   const name = typeof track.name === 'string' && track.name.trim() ? track.name.trim() : trackId;
   const item = {
-    id: `q${state.items.length + 1}-${trackId.length}`,
+    id: `q${sequence}-${trackId.length}`,
     url: null,
     name,
     status: 'pending',
@@ -56,12 +67,13 @@ export function enqueueTrack(state, track) {
     error: null,
   };
   return {
-    state: copyState(state, { items: [...state.items, item] }),
+    state: copyState(state, { items: [...state.items, item], nextItemId: sequence + 1 }),
     error: null,
   };
 }
 
 export function enqueueUrl(state, url) {
+  const sequence = nextItemId(state);
   const trimmed = typeof url === 'string' ? url.trim() : '';
   if (!trimmed) {
     return { state, error: { code: 'EMPTY_URL', message: 'URL is empty.' } };
@@ -69,7 +81,7 @@ export function enqueueUrl(state, url) {
   const duplicate = state.items.some((item) => item.url === trimmed && OPEN_STATUSES.has(item.status));
   if (duplicate) return { state, error: null };
   const item = {
-    id: `q${state.items.length + 1}-${trimmed.length}`,
+    id: `q${sequence}-${trimmed.length}`,
     url: trimmed,
     status: 'pending',
     jobId: null,
@@ -78,7 +90,7 @@ export function enqueueUrl(state, url) {
     error: null,
   };
   return {
-    state: copyState(state, { items: [...state.items, item] }),
+    state: copyState(state, { items: [...state.items, item], nextItemId: sequence + 1 }),
     error: null,
   };
 }

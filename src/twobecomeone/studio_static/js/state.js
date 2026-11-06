@@ -153,6 +153,7 @@ const INITIAL_STATE = {
   urlQueue: {
     armed: false,
     items: [],
+    nextItemId: 1,
     activeImportId: null,
     endNotified: { A: false, B: false },
   },

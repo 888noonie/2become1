@@ -7,6 +7,7 @@ import { NEAR_END_SECONDS, validateQueueEvent } from '../../src/twobecomeone/stu
 import {
   createQueueState,
   decide,
+  enqueueTrack,
   enqueueUrl,
   noteAsset,
   noteJob,
@@ -15,6 +16,18 @@ import {
 } from '../../src/twobecomeone/studio_static/js/mashup/queue-governor.js';
 
 const URL = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+
+test('removing an item does not reuse an existing queue ID', () => {
+  let state = enqueueTrack(createQueueState(), { id: 'aa' }).state;
+  state = enqueueTrack(state, { id: 'bb' }).state;
+  const firstId = state.items[0].id;
+  const secondId = state.items[1].id;
+  state = removeItem(state, firstId);
+  state = enqueueTrack(state, { id: 'cc' }).state;
+  assert.notEqual(state.items[1].id, secondId);
+  state = removeItem(state, secondId);
+  assert.deepEqual(state.items.map((item) => item.trackId), ['cc']);
+});
 
 function ended() {
   return { playing: false, ended: true, time: 180, duration: 180 };
