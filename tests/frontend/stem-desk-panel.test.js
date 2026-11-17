@@ -46,6 +46,7 @@ class FakeDesk {
     const anySolo = this.lanes.some((lane) => lane.solo);
     return {
       status: this.status,
+      contextState: this.contextState || 'running',
       error: null,
       playing: this.status === 'playing',
       positionSeconds: this.position,
@@ -66,6 +67,7 @@ class FakeDesk {
     };
   }
 
+  async resume() { this.calls.push(['resume']); return this.state(); }
   play() { this.calls.push(['play']); this.status = 'playing'; return this.state(); }
   stop() { this.calls.push(['stop']); this.status = 'ready'; this.position = 0; return this.state(); }
   setGain(name, db) {
@@ -91,7 +93,7 @@ class FakeDesk {
   dispose() { this.disposed = true; }
 }
 
-function mount({ variants, tracks = [{ id: 'track-1', title: 'Night Drive' }] } = {}) {
+function mount({ variants, tracks = [{ id: 'track-1', name: 'night-drive.wav' }] } = {}) {
   const container = document.createElement('div');
   const desk = new FakeDesk();
   const calls = [];
@@ -103,7 +105,7 @@ function mount({ variants, tracks = [{ id: 'track-1', title: 'Night Drive' }] } 
       calls.push(['createDesk', options]);
       return desk;
     },
-    listTracksImpl: async () => ({ tracks, total: tracks.length }),
+    listTracksImpl: async () => ({ items: tracks, total: tracks.length, limit: 50, offset: 0 }),
     listStemsImpl: async (trackId) => {
       calls.push(['listStems', trackId]);
       return { stems: ['full', ...(variants || []).map((v) => v.name)], variants: [{ name: 'full' }, ...(variants || [])] };
@@ -127,7 +129,7 @@ test('the desk lists tracks, loads four stems and labels them with provenance', 
   await flush();
 
   const options = [...container.querySelectorAll('option')].map((option) => option.textContent);
-  assert.deepEqual(options, ['Night Drive']);
+  assert.deepEqual(options, ['night-drive.wav']);
   assert.equal(select.value, 'track-1');
 
   container.querySelector('button.button--sm').click();
@@ -248,4 +250,93 @@ test('dispose releases the desk and clears the panel', async () => {
   dispose();
   assert.equal(desk.disposed, true);
   assert.equal(container.childElementCount, 0);
+});
+
+test('the desk prefers four Demucs lanes when a fallback set also exists, never more than four', async () => {
+  const { container, desk } = mount({
+    variants: [
+      variant('vocals'), variant('drums'), variant('bass'), variant('other'),
+      variant('center', { method: 'ffmpeg', model_name: 'center-side-v1' }),
+      variant('sides', { method: 'ffmpeg', model_name: 'center-side-v1' }),
+    ],
+  });
+  await flush();
+  container.querySelector('button.button--sm').click();
+  await flush();
+
+  assert.equal(desk.lanes.length, 4);
+  assert.deepEqual(desk.lanes.map((lane) => lane.name), ['vocals', 'drums', 'bass', 'other']);
+  assert.equal(container.querySelectorAll('.stem-row').length, 4);
+});
+
+test('the panel owns and passes ownsContext so the desk can close its own context', async () => {
+  const { container, calls } = mount({ variants: [variant('vocals'), variant('drums')] });
+  await flush();
+  container.querySelector('button.button--sm').click();
+  await flush();
+  const [name, options] = calls.find(([entry]) => entry === 'createDesk');
+  assert.equal(name, 'createDesk');
+  assert.equal(options.ownsContext, true);
+  assert.deepEqual(options.audioContext, { name: 'fake-context' });
+});
+
+test('a browser-suspended audio context is reported instead of claimed as playing', async () => {
+  const container = document.createElement('div');
+  const desk = new FakeDesk();
+  desk.contextState = 'suspended';
+  const dispose = mountStemDeskPanel({
+    container,
+    audioContextFactory: () => ({ name: 'fake-context' }),
+    createDesk: () => desk,
+    listTracksImpl: async () => ({ items: [{ id: 'track-1', name: 'night-drive.wav' }] }),
+    listStemsImpl: async () => ({ variants: [variant('vocals'), variant('drums')] }),
+  });
+  await flush();
+  container.querySelector('button.button--sm').click();
+  await flush();
+  [...container.querySelectorAll('button')].find((button) => button.textContent === 'Play').click();
+  await flush();
+  assert.match(container.textContent, /blocking audio/i);
+  dispose();
+});
+
+test('the real StemDesk runtime renders four lanes through the panel', async () => {
+  const { StemDesk } = await import('../../src/twobecomeone/studio_static/js/runtime/stem-desk.js');
+
+  class Gains { constructor() { this.gain = { value: 1 }; } connect() {} disconnect() {} }
+  class Sources { constructor() { this.started = null; } connect() {} start(when, offset) { this.started = { when, offset }; } stop() {} disconnect() {} }
+  const ctx = {
+    state: 'running',
+    currentTime: 5,
+    destination: {},
+    createGain: () => new Gains(),
+    createBufferSource: () => new Sources(),
+    decodeAudioData: async () => ({ duration: 8, length: 8000, numberOfChannels: 2 }),
+    resume: async () => {},
+  };
+
+  const container = document.createElement('div');
+  const dispose = mountStemDeskPanel({
+    container,
+    audioContextFactory: () => ctx,
+    createDesk: (options) => new StemDesk({
+      ...options,
+      fetchImpl: async () => ({ ok: true, status: 200, arrayBuffer: async () => new Uint8Array(16).buffer }),
+    }),
+    listTracksImpl: async () => ({ items: [{ id: 'track-1', name: 'night-drive.wav' }] }),
+    listStemsImpl: async () => ({
+      variants: [variant('vocals'), variant('drums'), variant('bass'), variant('other')],
+    }),
+  });
+  await flush();
+  container.querySelector('button.button--sm').click();
+  await flush();
+
+  const rows = container.querySelectorAll('.stem-row');
+  assert.equal(rows.length, 4);
+  const [mute] = rows[0].querySelectorAll('.stem-row__actions button');
+  mute.click();
+  await flush();
+  assert.equal(container.querySelectorAll('.stem-row')[0].querySelectorAll('button')[0].getAttribute('aria-pressed'), 'true');
+  dispose();
 });

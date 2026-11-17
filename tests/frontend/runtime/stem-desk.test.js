@@ -56,6 +56,8 @@ class FakeSource {
 class FakeContext {
   constructor({ duration = 30, channels = 2 } = {}) {
     this.currentTime = 10;
+    this.state = 'running';
+    this.resumeCalls = 0;
     this.destination = { name: 'destination' };
     this.created = [];
     this.closed = false;
@@ -81,6 +83,11 @@ class FakeContext {
       length: Math.round(this.duration * 4000),
       numberOfChannels: this.channels,
     };
+  }
+
+  async resume() {
+    this.resumeCalls += 1;
+    this.state = 'running';
   }
 
   async close() {
@@ -293,9 +300,59 @@ test('unload frees decoded audio and dispose never closes a shared context', asy
 
 test('a context created by the desk is closed on dispose', async () => {
   const own = new FakeContext();
-  const desk = new StemDesk({ audioContext: own, fetchImpl: fakeFetch() });
-  desk._ownsContext = true;
+  const desk = new StemDesk({ audioContext: own, fetchImpl: fakeFetch(), ownsContext: true });
   desk.dispose();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(own.closed, true);
+});
+
+test('resume() asks a suspended context to start and reports the state', async () => {
+  const ctx = new FakeContext();
+  ctx.state = 'suspended';
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  await desk.load([lane('vocals'), lane('drums')]);
+  assert.equal(desk.state().contextState, 'suspended');
+  const resumed = await desk.resume();
+  assert.equal(ctx.resumeCalls, 1);
+  assert.equal(resumed.contextState, 'running');
+});
+
+test('play refuses a still-suspended context rather than claiming sound', async () => {
+  const ctx = new FakeContext();
+  ctx.state = 'suspended';
+  ctx.resume = async () => { throw new Error('autoplay blocked'); };
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  await desk.load([lane('vocals'), lane('drums')]);
+
+  const state = await desk.resume();
+  assert.equal(state.contextState, 'suspended');
+  assert.equal(state.error.code, 'S_CONTEXT_SUSPENDED');
+  assert.throws(() => desk.play(), (err) => err.code === 'S_CONTEXT_SUSPENDED');
+});
+
+test('an offline render context is suspended by design and still plays', async () => {
+  const ctx = new FakeContext();
+  ctx.state = 'suspended';
+  ctx.startRendering = async () => ({ getChannelData: () => new Float32Array(8) });
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  await desk.load([lane('vocals'), lane('drums')]);
+  const state = desk.play({ loop: false });
+  assert.equal(state.status, 'playing');
+  assert.equal(ctx.resumeCalls, 0, 'rendering must not be started by resume()');
+});
+
+test('an oversized Content-Length is refused before the body is read', async () => {
+  let bodyRead = false;
+  const desk = new StemDesk({
+    audioContext: new FakeContext(),
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => String(STEM_DESK_LIMITS.maxStemBytes + 1) },
+      arrayBuffer: async () => { bodyRead = true; return new ArrayBuffer(0); },
+    }),
+  });
+  const state = await desk.load([lane('vocals')]);
+  assert.equal(state.error.code, 'S_STEM_TOO_LARGE');
+  assert.equal(bodyRead, false);
 });

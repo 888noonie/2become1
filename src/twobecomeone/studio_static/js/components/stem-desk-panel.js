@@ -23,6 +23,21 @@ function sortLanes(variants) {
   });
 }
 
+/**
+ * A track can legitimately have both a Demucs set and an ffmpeg fallback set.
+ * Prefer the four isolated Demucs stems; only fall back to other variants when
+ * no Demucs lane exists, and never exceed the desk's four lanes.
+ */
+function selectLanes(variants) {
+  const usable = variants.filter((variant) => variant && variant.name && variant.name !== 'full');
+  const byName = new Map(usable.map((variant) => [variant.name, variant]));
+  const demucs = ['vocals', 'drums', 'bass', 'other']
+    .filter((name) => byName.has(name))
+    .map((name) => byName.get(name));
+  const chosen = demucs.length ? demucs : usable.slice(0, STEM_DESK_LIMITS.maxLanes);
+  return sortLanes(chosen);
+}
+
 function stemLabel(name) {
   switch (name) {
     case 'vocals': return 'Vocals';
@@ -95,7 +110,9 @@ export function mountStemDeskPanel({
 
   function ensureDesk() {
     if (desk) return desk;
-    desk = createDesk({ audioContext: audioContextFactory() });
+    // The panel owns this context; LiveMixer's context is never reused or
+    // closed here, and this one is closed when the panel is disposed.
+    desk = createDesk({ audioContext: audioContextFactory(), ownsContext: true });
     return desk;
   }
 
@@ -178,13 +195,18 @@ export function mountStemDeskPanel({
     }, 200);
   }
 
-  playButton.addEventListener('click', () => {
+  playButton.addEventListener('click', async () => {
     try {
+      const before = await desk.resume();
       const state = desk.play({ loop: true });
       renderLanes(state);
       refreshTransport();
       startPositionTimer();
-      say(`Playing ${state.lanes.length} stems together.`);
+      if (before.contextState && before.contextState !== 'running' && before.contextState !== 'unknown') {
+        say('The browser is still blocking audio. Press Play again to allow sound.');
+      } else {
+        say(`Playing ${state.lanes.length} stems together.`);
+      }
     } catch (err) {
       say(err?.message || 'The stem desk could not start.');
     }
@@ -192,6 +214,8 @@ export function mountStemDeskPanel({
 
   stopButton.addEventListener('click', () => {
     if (!desk) return;
+    window.clearInterval(positionTimer);
+    positionTimer = null;
     const state = desk.stop();
     renderLanes(state);
     positionLabel.textContent = '0.0 s';
@@ -207,10 +231,14 @@ export function mountStemDeskPanel({
     tracksPending = (async () => {
       try {
         const page = await listTracksImpl({ limit: 50 });
-      const tracks = Array.isArray(page?.tracks) ? page.tracks : (Array.isArray(page) ? page : []);
+      const tracks = Array.isArray(page?.items)
+        ? page.items
+        : Array.isArray(page?.tracks)
+          ? page.tracks
+          : (Array.isArray(page) ? page : []);
       const options = tracks.map((track) => createElement('option', {
         value: track.id,
-        text: track.title || track.originalName || track.id,
+        text: track.title || track.name || track.originalName || track.id,
       }));
         replaceChildren(trackSelect, options.length
           ? options
@@ -245,8 +273,9 @@ export function mountStemDeskPanel({
     say('Loading separated stems...');
     try {
       const stems = await listStemsImpl(trackId, abort?.signal);
+      if (disposed) return;
       const variants = Array.isArray(stems?.variants) ? stems.variants : [];
-      const lanes = sortLanes(variants.filter((variant) => variant && variant.name && variant.name !== 'full'));
+      const lanes = selectLanes(variants);
       if (!lanes.length) {
         replaceChildren(lanesMount, []);
         refreshTransport();
@@ -260,7 +289,8 @@ export function mountStemDeskPanel({
         method: variant.method,
         modelName: variant.model_name,
         device: variant.device,
-      })));
+      })), { signal: abort?.signal });
+      if (disposed) return;
       renderLanes(state);
       refreshTransport();
       if (state.status === 'unavailable') {

@@ -50,7 +50,7 @@ function assertName(name) {
 }
 
 export class StemDesk {
-  constructor({ audioContext, fetchImpl = null, now = null } = {}) {
+  constructor({ audioContext, fetchImpl = null, now = null, ownsContext = false } = {}) {
     if (!audioContext) {
       throw new StemDeskError('S_NO_AUDIO_CONTEXT', 'the stem desk needs an AudioContext');
     }
@@ -65,7 +65,7 @@ export class StemDesk {
     this._startedAt = null;
     this._offset = 0;
     this._loop = true;
-    this._ownsContext = false;
+    this._ownsContext = Boolean(ownsContext);
     this._decodedBytes = 0;
   }
 
@@ -131,6 +131,13 @@ export class StemDesk {
     const response = await fetchImpl(lane.audioUrl, { signal });
     if (!response || response.ok === false) {
       throw new StemDeskError('S_STEM_UNAVAILABLE', `stem ${lane.name} could not be fetched`);
+    }
+    const declared = Number(response.headers?.get?.('content-length'));
+    if (Number.isFinite(declared) && declared > STEM_DESK_LIMITS.maxStemBytes) {
+      throw new StemDeskError(
+        'S_STEM_TOO_LARGE',
+        `stem ${lane.name} declares ${declared} bytes; the desk fetches at most ${STEM_DESK_LIMITS.maxStemBytes}`,
+      );
     }
     const bytes = await response.arrayBuffer();
     if (!bytes || bytes.byteLength === 0) {
@@ -205,9 +212,37 @@ export class StemDesk {
     }
   }
 
+  /**
+   * Let the browser's autoplay policy decide. The panel calls this from the
+   * Play gesture; a context that stays suspended is reported, never claimed as
+   * playing.
+   */
+  async resume() {
+    const ctx = this._ctx;
+    // An OfflineAudioContext is suspended by design until startRendering().
+    if (!ctx || this._offline() || typeof ctx.resume !== 'function') return this.state();
+    if (ctx.state && ctx.state !== 'running' && ctx.state !== 'closed') {
+      try {
+        await ctx.resume();
+      } catch {
+        this._error = {
+          code: 'S_CONTEXT_SUSPENDED',
+          message: 'the browser did not allow audio; press Play again',
+        };
+      }
+    }
+    return this.state();
+  }
+
   play({ loop = true, offset = 0 } = {}) {
     if (this._status !== 'ready' && this._status !== 'playing') {
       throw new StemDeskError('S_NOT_READY', 'the stem desk is not ready to play');
+    }
+    if (this._ctx?.state === 'suspended' && !this._offline()) {
+      throw new StemDeskError(
+        'S_CONTEXT_SUSPENDED',
+        'the audio context is suspended by the browser; press Play again to allow sound',
+      );
     }
     this._stopSources();
     const duration = this._duration();
@@ -309,6 +344,10 @@ export class StemDesk {
     return anySolo ? lane.solo : !lane.muted;
   }
 
+  _offline() {
+    return typeof this._ctx?.startRendering === 'function';
+  }
+
   _lane(name) {
     const lane = this._lanes.find((item) => item.name === name);
     if (!lane) throw new StemDeskError('S_UNKNOWN_STEM', `no stem lane named ${String(name)}`);
@@ -332,6 +371,7 @@ export class StemDesk {
     const duration = this._duration();
     return Object.freeze({
       status: this._status,
+      contextState: this._ctx?.state ?? 'unknown',
       error: this._error,
       playing: this._status === 'playing',
       loop: this._loop,
