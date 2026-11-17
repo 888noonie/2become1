@@ -1,8 +1,13 @@
 // tests/frontend/static-size.test.js — measured evidence for static asset growth.
 //
-// This replaces a retired byte ceiling with an explicit, reviewable budget:
-// the recorder walks the Studio static tree, reports its real size, and fails
-// only when growth exceeds either threshold against the checked-in baseline.
+// This replaces the retired byte ceiling with a recorder, not a gate. It walks
+// the Studio static tree and always reports the real size, file count, delta
+// against the checked-in baseline and the five largest files.
+//
+// The 15% / 50,000-byte thresholds are INVESTIGATION TRIGGERS, per the owner's
+// 2026-11-17 policy: crossing one is a reason to look at load cost, not an
+// automatic release rejection. Set STATIC_GROWTH_ENFORCE=1 (for example in a
+// release job) to turn the same thresholds into a failing assertion.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,8 +19,9 @@ const REPO_ROOT = path.resolve(HERE, '..', '..');
 const STATIC_ROOT = path.resolve(REPO_ROOT, 'src', 'twobecomeone', 'studio_static');
 const BASELINE_PATH = path.resolve(HERE, 'static-size-baseline.json');
 
-const MAX_GROWTH_PERCENT = 15;
-const MAX_GROWTH_BYTES = 50_000;
+const TRIGGER_GROWTH_PERCENT = 15;
+const TRIGGER_GROWTH_BYTES = 50_000;
+const ENFORCE = /^(1|true|yes)$/i.test(process.env.STATIC_GROWTH_ENFORCE ?? '');
 
 function walkFiles(directory) {
   const files = [];
@@ -34,7 +40,7 @@ function formatPercent(percent) {
   return Number.isFinite(percent) ? percent.toFixed(2) : 'infinite';
 }
 
-test('static asset growth stays within the measured budget', () => {
+test('static asset size is measured and growth is reported', () => {
   assert.ok(fs.existsSync(STATIC_ROOT), `missing static root: ${STATIC_ROOT}`);
 
   const files = walkFiles(STATIC_ROOT);
@@ -49,6 +55,10 @@ test('static asset growth stays within the measured budget', () => {
   const growthPercent = baseline.bytes > 0 ? (deltaBytes / baseline.bytes) * 100 : 0;
   const largest = [...files].sort((a, b) => b.bytes - a.bytes).slice(0, 5);
 
+  const exceedsPercent = growthPercent > TRIGGER_GROWTH_PERCENT;
+  const exceedsBytes = deltaBytes > TRIGGER_GROWTH_BYTES;
+  const triggered = exceedsPercent || exceedsBytes;
+
   console.log('Static asset size report');
   console.log(`  Root:            ${path.relative(REPO_ROOT, STATIC_ROOT)}`);
   console.log(`  Total bytes:     ${totalBytes}`);
@@ -57,19 +67,28 @@ test('static asset growth stays within the measured budget', () => {
   console.log(`  Baseline files:  ${baseline.files}`);
   console.log(`  Delta bytes:     ${deltaBytes}`);
   console.log(`  Growth:          ${formatPercent(growthPercent)}%`);
-  console.log(`  Limit:           > ${MAX_GROWTH_PERCENT}% or > ${MAX_GROWTH_BYTES} bytes fails`);
+  console.log(
+    `  Triggers:        > ${TRIGGER_GROWTH_PERCENT}% or > ${TRIGGER_GROWTH_BYTES} bytes ` +
+      `(investigate; ${ENFORCE ? 'enforced' : 'not enforced'})`,
+  );
   console.log('  Five largest files:');
   largest.forEach((file, index) => {
     const relative = path.relative(STATIC_ROOT, file.path);
     console.log(`    ${index + 1}. ${String(file.bytes).padStart(8)} bytes  ${relative}`);
   });
+  if (triggered) {
+    console.log(
+      `  Investigation trigger: +${deltaBytes} bytes (${formatPercent(growthPercent)}%) ` +
+        `against baseline ${baseline.bytes} bytes. Record what grew and why.`,
+    );
+  }
 
-  const exceedsPercent = growthPercent > MAX_GROWTH_PERCENT;
-  const exceedsBytes = deltaBytes > MAX_GROWTH_BYTES;
-
-  assert.ok(
-    !exceedsPercent && !exceedsBytes,
-    `static asset growth exceeded budget: +${deltaBytes} bytes (${formatPercent(growthPercent)}%) ` +
-      `against baseline ${baseline.bytes} bytes; limits are ${MAX_GROWTH_PERCENT}% and ${MAX_GROWTH_BYTES} bytes`,
-  );
+  if (ENFORCE) {
+    assert.ok(
+      !triggered,
+      `static asset growth crossed the enforced trigger: +${deltaBytes} bytes ` +
+        `(${formatPercent(growthPercent)}%) against baseline ${baseline.bytes} bytes; ` +
+        `thresholds are ${TRIGGER_GROWTH_PERCENT}% and ${TRIGGER_GROWTH_BYTES} bytes`,
+    );
+  }
 });

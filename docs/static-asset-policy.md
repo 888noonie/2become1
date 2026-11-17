@@ -34,6 +34,23 @@ delete a useful behaviour to satisfy a historical byte ceiling.** If growth is
 real and the journeys still hold, record it and carry on. If growth is real and
 a journey degrades, fix the cause.
 
+## The 15% / 50,000-byte thresholds are triggers, not gates
+
+`tests/frontend/static-size.test.js` reports the measured total, file count,
+delta and largest files on every run. Crossing **15%** or **50,000 bytes**
+against the recorded baseline prints an *investigation trigger* and names the
+delta; it does not fail the default suite. That matches the owner decision of
+2026-11-17: these are reporting and investigation thresholds, not automatic
+release-rejection thresholds.
+
+A release job that wants the old strictness may set `STATIC_GROWTH_ENFORCE=1`.
+The same thresholds then become a failing assertion. Recording the
+investigation and its outcome remains required either way.
+
+This relaxation covers the **frontend static-asset budget only**. It does not
+relax audio memory safety: the Stem Desk keeps its bounded per-stem and total
+decoded-PCM limits and its truthful refusal for over-long tracks.
+
 ## Measurement procedure
 
 ```bash
@@ -51,10 +68,12 @@ report.
 | Date | Commit | Uncompressed bytes | Note |
 | --- | --- | --- | --- |
 | 2026-11-17 | `763e1d9` | 650,905 | preserved baseline; 905 B over the retired cap |
-| 2026-11-17 | `c88d64e` (`feature/stem-desk`) | 678,582 | +27,677 B (+4.25%) for the four-lane Stem Performance Desk |
+| 2026-11-17 | `c88d64e` (`feature/stem-desk`) | 678,605 | +27,700 B (+4.26%) for the four-lane Stem Performance Desk |
 
 The Stem Desk is eligible for reconsideration under this policy: its growth is
-measured, explained, and covered by the desktop and mobile journeys.
+measured, explained, and covered by the desktop and mobile journeys. On the
+integration branch it measures 678,605 bytes, still under both triggers, so
+the recorder reports the growth without opening an investigation.
 
 ## Historical documents
 
