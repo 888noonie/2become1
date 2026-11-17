@@ -135,12 +135,12 @@ test('the desk lists tracks, loads four stems and labels them with provenance', 
   container.querySelector('button.button--sm').click();
   await flush();
 
-  const rows = container.querySelectorAll('.stem-row');
+  const rows = container.querySelectorAll('.stem-desk__row');
   assert.equal(rows.length, 4);
-  assert.equal(rows[0].querySelector('.stem-row__name').textContent, 'Vocals');
-  assert.match(rows[0].querySelector('.stem-row__meta').textContent, /demucs/);
-  assert.match(rows[0].querySelector('.stem-row__meta').textContent, /htdemucs@4\.1\.0/);
-  assert.equal(rows[3].querySelector('.stem-row__name').textContent, 'Other');
+  assert.equal(rows[0].querySelector('.stem-desk__name').textContent, 'Vocals');
+  assert.match(rows[0].querySelector('.stem-desk__meta').textContent, /demucs/);
+  assert.match(rows[0].querySelector('.stem-desk__meta').textContent, /htdemucs@4\.1\.0/);
+  assert.equal(rows[3].querySelector('.stem-desk__name').textContent, 'Other');
   assert.deepEqual(desk.calls[0], ['load', ['vocals', 'drums', 'bass', 'other']]);
   assert.equal(desk.lanes.length, 4);
   assert.equal(calls.some(([name]) => name === 'createDesk'), true);
@@ -154,18 +154,18 @@ test('mute and solo are separate controls and report pressed state', async () =>
   container.querySelector('button.button--sm').click();
   await flush();
 
-  const row = container.querySelectorAll('.stem-row')[1]; // drums
-  const [mute, solo] = row.querySelectorAll('.stem-row__actions button');
+  const row = container.querySelectorAll('.stem-desk__row')[1]; // drums
+  const [mute, solo] = row.querySelectorAll('.stem-desk__actions button');
 
   mute.click();
   await flush();
   assert.deepEqual(desk.calls.at(-1), ['setMuted', 'drums', true]);
-  assert.equal(container.querySelectorAll('.stem-row')[1].querySelectorAll('button')[0].getAttribute('aria-pressed'), 'true');
+  assert.equal(container.querySelectorAll('.stem-desk__row')[1].querySelectorAll('button')[0].getAttribute('aria-pressed'), 'true');
 
   solo.click();
   await flush();
   assert.deepEqual(desk.calls.at(-1), ['setSolo', 'drums', true]);
-  assert.equal(container.querySelectorAll('.stem-row')[1].querySelectorAll('button')[1].getAttribute('aria-pressed'), 'true');
+  assert.equal(container.querySelectorAll('.stem-desk__row')[1].querySelectorAll('button')[1].getAttribute('aria-pressed'), 'true');
 });
 
 test('a gain change targets one stem and shows the new dB value', async () => {
@@ -176,14 +176,14 @@ test('a gain change targets one stem and shows the new dB value', async () => {
   container.querySelector('button.button--sm').click();
   await flush();
 
-  const row = container.querySelectorAll('.stem-row')[2]; // bass
+  const row = container.querySelectorAll('.stem-desk__row')[2]; // bass
   const gain = row.querySelector('input[type="range"]');
   gain.value = '-12';
   gain.dispatchEvent(new window.Event('input', { bubbles: true }));
   await flush();
 
   assert.deepEqual(desk.calls.at(-1), ['setGain', 'bass', -12]);
-  const refreshed = container.querySelectorAll('.stem-row')[2];
+  const refreshed = container.querySelectorAll('.stem-desk__row')[2];
   assert.match(refreshed.textContent, /-12 dB/);
   assert.equal(desk.lanes.find((lane) => lane.name === 'vocals').gainDb, 0);
 });
@@ -194,7 +194,7 @@ test('a track with no separated stems says so instead of showing an empty desk',
   container.querySelector('button.button--sm').click();
   await flush();
   assert.match(container.textContent, /no separated stems/i);
-  assert.equal(container.querySelectorAll('.stem-row').length, 0);
+  assert.equal(container.querySelectorAll('.stem-desk__row').length, 0);
 });
 
 test('a fallback center/sides split is labelled honestly and never as vocals', async () => {
@@ -208,7 +208,7 @@ test('a fallback center/sides split is labelled honestly and never as vocals', a
   container.querySelector('button.button--sm').click();
   await flush();
 
-  const rows = [...container.querySelectorAll('.stem-row')];
+  const rows = [...container.querySelectorAll('.stem-desk__row')];
   assert.equal(rows.length, 2);
   assert.match(rows[0].textContent, /Center \(mid\)/);
   assert.match(rows[0].textContent, /center\/side fallback/);
@@ -224,8 +224,8 @@ test('play and stop drive the one transport and a stop resets the clock label', 
   container.querySelector('button.button--sm').click();
   await flush();
 
-  const transportButtons = container.querySelectorAll('.stem-row__actions')[0].querySelectorAll('button');
-  // transport row is the first .stem-row__actions rendered outside a stem row
+  const transportButtons = container.querySelectorAll('.stem-desk__actions')[0].querySelectorAll('button');
+  // transport row is the first .stem-desk__actions rendered outside a stem row
   const allButtons = [...container.querySelectorAll('button')];
   const play = allButtons.find((button) => button.textContent === 'Play');
   const stop = allButtons.find((button) => button.textContent === 'Stop');
@@ -266,7 +266,7 @@ test('the desk prefers four Demucs lanes when a fallback set also exists, never 
 
   assert.equal(desk.lanes.length, 4);
   assert.deepEqual(desk.lanes.map((lane) => lane.name), ['vocals', 'drums', 'bass', 'other']);
-  assert.equal(container.querySelectorAll('.stem-row').length, 4);
+  assert.equal(container.querySelectorAll('.stem-desk__row').length, 4);
 });
 
 test('the panel owns and passes ownsContext so the desk can close its own context', async () => {
@@ -332,11 +332,11 @@ test('the real StemDesk runtime renders four lanes through the panel', async () 
   container.querySelector('button.button--sm').click();
   await flush();
 
-  const rows = container.querySelectorAll('.stem-row');
+  const rows = container.querySelectorAll('.stem-desk__row');
   assert.equal(rows.length, 4);
-  const [mute] = rows[0].querySelectorAll('.stem-row__actions button');
+  const [mute] = rows[0].querySelectorAll('.stem-desk__actions button');
   mute.click();
   await flush();
-  assert.equal(container.querySelectorAll('.stem-row')[0].querySelectorAll('button')[0].getAttribute('aria-pressed'), 'true');
+  assert.equal(container.querySelectorAll('.stem-desk__row')[0].querySelectorAll('button')[0].getAttribute('aria-pressed'), 'true');
   dispose();
 });

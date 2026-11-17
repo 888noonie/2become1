@@ -70,26 +70,26 @@ export function mountStemDeskPanel({
   if (!container) throw new Error('mountStemDeskPanel requires a container');
 
   const root = createElement('section', {
-    class: 'stem-crate stem-desk',
+    class: 'stem-desk',
     'aria-label': 'Stem Performance Desk',
   });
-  const title = createElement('h2', { class: 'stem-crate__title', text: 'Stem Performance Desk' });
-  const status = createElement('p', { class: 'stem-crate__outcome', role: 'status', text: 'Choose a separated track.' });
-  const trackSelect = createElement('select', { class: 'stem-crate__search', 'aria-label': 'Track with separated stems' }, [
+  const title = createElement('h2', { class: 'stem-desk__title', text: 'Stem Performance Desk' });
+  const status = createElement('p', { class: 'stem-desk__status', role: 'status', text: 'Choose a separated track.' });
+  const trackSelect = createElement('select', { class: 'stem-desk__select', 'aria-label': 'Track with separated stems' }, [
     createElement('option', { value: '', text: 'Choose a track…' }),
   ]);
   const loadButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Load stems' });
   const playButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Play', disabled: 'true' });
   const stopButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Stop', disabled: 'true' });
-  const positionLabel = createElement('span', { class: 'stem-row__meta', text: '0.0 s' });
-  const transport = createElement('div', { class: 'stem-row__actions' }, [playButton, stopButton, positionLabel]);
+  const positionLabel = createElement('span', { class: 'stem-desk__meta', text: '0.0 s' });
+  const transport = createElement('div', { class: 'stem-desk__actions' }, [playButton, stopButton, positionLabel]);
   const lanesMount = createElement('div', {});
-  const note = createElement('p', { class: 'stem-crate__outcome', hidden: 'true' });
+  const note = createElement('p', { class: 'stem-desk__note', hidden: 'true' });
 
   container.replaceChildren(root);
   replaceChildren(root, [
     title,
-    createElement('div', { class: 'stem-crate__toolbar' }, [trackSelect, loadButton]),
+    createElement('div', { class: 'stem-desk__toolbar' }, [trackSelect, loadButton]),
     status,
     transport,
     lanesMount,
@@ -148,7 +148,7 @@ export function mountStemDeskPanel({
         value: String(lane.gainDb),
         'aria-label': `${stemLabel(lane.name)} gain`,
       });
-      const gainText = createElement('span', { class: 'stem-row__meta', text: `${lane.gainDb} dB` });
+      const gainText = createElement('span', { class: 'stem-desk__meta', text: `${lane.gainDb} dB` });
 
       mute.addEventListener('click', () => {
         const next = !lane.muted;
@@ -168,12 +168,12 @@ export function mountStemDeskPanel({
         renderLanes(nextState);
       });
 
-      return createElement('div', { class: 'stem-row' }, [
+      return createElement('div', { class: 'stem-desk__row' }, [
         createElement('div', {}, [
-          createElement('div', { class: 'stem-row__name', text: stemLabel(lane.name) }),
-          createElement('div', { class: 'stem-row__meta', text: provenanceLabel(lane) }),
+          createElement('div', { class: 'stem-desk__name', text: stemLabel(lane.name) }),
+          createElement('div', { class: 'stem-desk__meta', text: provenanceLabel(lane) }),
         ]),
-        createElement('div', { class: 'stem-row__actions' }, [mute, solo, gain, gainText]),
+        createElement('div', { class: 'stem-desk__actions' }, [mute, solo, gain, gainText]),
       ]);
     }));
   }

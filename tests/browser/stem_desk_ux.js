@@ -139,7 +139,7 @@ try {
     await page.getByRole('button', { name: 'Load stems' }).click();
     await sleep(2500);
 
-    const rows = page.locator('.stem-desk .stem-row');
+    const rows = page.locator('.stem-desk .stem-desk__row');
     if ((await rows.count()) !== 4) fail(`expected 4 stem lanes, saw ${await rows.count()}`);
     const text = await desk.innerText();
     for (const label of ['Vocals', 'Drums', 'Bass', 'Other']) {
