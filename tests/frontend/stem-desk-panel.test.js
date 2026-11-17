@@ -68,7 +68,16 @@ class FakeDesk {
   }
 
   async resume() { this.calls.push(['resume']); return this.state(); }
-  play() { this.calls.push(['play']); this.status = 'playing'; return this.state(); }
+  play() {
+    this.calls.push(['play']);
+    if (this.contextState === 'suspended' || this.contextState === 'interrupted') {
+      const error = new Error('the audio context is suspended by the browser');
+      error.code = 'S_CONTEXT_SUSPENDED';
+      throw error;
+    }
+    this.status = 'playing';
+    return this.state();
+  }
   stop() { this.calls.push(['stop']); this.status = 'ready'; this.position = 0; return this.state(); }
   setGain(name, db) {
     this.calls.push(['setGain', name, Number(db)]);
@@ -296,7 +305,8 @@ test('a browser-suspended audio context is reported instead of claimed as playin
   await flush();
   [...container.querySelectorAll('button')].find((button) => button.textContent === 'Play').click();
   await flush();
-  assert.match(container.textContent, /blocking audio/i);
+  assert.doesNotMatch(container.textContent, /Playing \d+ stems together/);
+  assert.match(container.textContent, /suspended by the browser|blocking audio/i);
   dispose();
 });
 

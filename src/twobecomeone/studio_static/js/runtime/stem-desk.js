@@ -238,7 +238,7 @@ export class StemDesk {
     if (this._status !== 'ready' && this._status !== 'playing') {
       throw new StemDeskError('S_NOT_READY', 'the stem desk is not ready to play');
     }
-    if (this._ctx?.state === 'suspended' && !this._offline()) {
+    if (['suspended', 'interrupted'].includes(this._ctx?.state) && !this._offline()) {
       throw new StemDeskError(
         'S_CONTEXT_SUSPENDED',
         'the audio context is suspended by the browser; press Play again to allow sound',
