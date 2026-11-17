@@ -18,6 +18,7 @@ import { mountGhostCard } from '../components/ghost-card.js';
 import { mountCommittedLayers } from '../components/committed-layers.js';
 import { mountPerformanceDeck } from '../components/performance-deck.js';
 import { mountStemCratePanel } from '../components/stem-crate-panel.js';
+import { mountStemDeskPanel } from '../components/stem-desk-panel.js';
 import { mountLiveCrossfader } from '../components/live-crossfader.js';
 import { mountUrlQueuePanel } from '../components/url-queue-panel.js';
 import { mountDawCommandBar } from '../components/daw-command-bar.js';
@@ -159,6 +160,7 @@ export function mountStudio({ container }) {
   let committedLayersDisposer = null;
   let performanceDeckDisposer = null;
   let crateDisposer = null;
+  let stemDeskDisposer = null;
   let liveCrossfaderDisposer = null;
   let queueDisposer = null;
   let dawDisposer = null;
@@ -181,6 +183,7 @@ export function mountStudio({ container }) {
   const retryContainer = createElement('div', { class: 'studio__retry-container' });
   const performanceDeckContainer = createElement('div', { class: 'studio__performance-deck-container' });
   const crateMount = createElement('div', { class: 'studio__stem-crate', hidden: 'true' });
+  const stemDeskMount = createElement('div', { class: 'studio__stem-desk' });
   const decksContainer = createElement('div', { class: 'studio__decks' });
   const swapBar = createElement('div', { class: 'studio__swap-bar' });
   const crossfaderContainer = createElement('div', { class: 'studio__crossfader-container' });
@@ -202,6 +205,7 @@ export function mountStudio({ container }) {
   studioRoot.appendChild(retryContainer);
   studioRoot.appendChild(performanceDeckContainer);
   studioRoot.appendChild(crateMount);
+  studioRoot.appendChild(stemDeskMount);
   studioRoot.appendChild(swapBar);
   studioRoot.appendChild(crossfaderContainer);
   studioRoot.appendChild(decksContainer);
@@ -320,6 +324,7 @@ export function mountStudio({ container }) {
     container: crateMount, store, onAnnounce, stackController: stemStackController,
     ghostController, liveMixer,
   });
+  stemDeskDisposer = mountStemDeskPanel({ container: stemDeskMount, onAnnounce });
   planDisposer = mountPlan({ container: planContainer, store, projectManager });
   renderActionsDisposer = mountRenderActions({
     container: renderActionsContainer, store, projectManager,
@@ -389,6 +394,7 @@ export function mountStudio({ container }) {
     if (committedLayersDisposer) committedLayersDisposer();
     if (performanceDeckDisposer) performanceDeckDisposer();
     if (crateDisposer) crateDisposer();
+    if (stemDeskDisposer) stemDeskDisposer();
     if (liveCrossfaderDisposer) liveCrossfaderDisposer();
     if (queueDisposer) queueDisposer();
     if (dawDisposer) dawDisposer();
