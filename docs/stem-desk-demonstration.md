@@ -45,7 +45,7 @@ serve `763e1d9`, not the integration branch.
 ## Quick start: the already-prepared musical library
 
 The separated musical track already exists at
-`/tmp/opencode/musical-demo2` (track `7439aa13…`, stem set `857f73c9…`, four
+`/tmp/opencode/musical-demo2` (track `0e3eb9aa…`, stem set `857f73c9…`, four
 stems, `htdemucs@4.1.0`, CUDA). To audition it directly:
 
 ```bash
