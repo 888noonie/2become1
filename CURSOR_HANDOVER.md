@@ -12,14 +12,14 @@ This section supersedes the older "Start here" below for the next session.
   generation tokens guarding every async boundary, element-replacement
   attribution, a canonical `{ type, deck, state }` event contract, and
   table-backed error codes. 43/43 focused + 388/388 frontend tests green.
-- **Static budget (Richard, 2026-09-12):** the 500,000-byte ceiling is retired.
-  Measured payload at `e39898f` is 499,988 uncompressed HTML/CSS/JS bytes
-  (~144 KB gzip). Through Phases 14–16: **soft checkpoint 600,000** (explain
-  meaningful growth) and **hard ceiling 650,000**. Report the total on every
-  frontend-bearing PR. Do not delete behaviour, compress readability, or
-  minify merely to pass the number. After Phase 16, replace this allowance
-  with measured initial-load, startup, memory, and audio-performance budgets.
-  CI does not yet enforce the ceiling; add that check later.
+- **Static policy (owner decision, 2026-11-17):** the byte ceiling is retired.
+  The 650,000 hard cap and 600,000 soft checkpoint are withdrawn; the preserved
+  baseline `763e1d9` already measured 650,905 bytes, so the cap could not
+  distinguish a regression from an accepted cost. Record total uncompressed
+  bytes, file count, largest files and the delta on every frontend-bearing
+  change, explain meaningful growth, and keep the desktop/mobile, accessibility
+  and audio journeys green. Do not delete behaviour, compress readability or
+  minify merely to pass a number. See `docs/static-asset-policy.md`.
 - **Phase 15A wiring is on `main` at `2a4ccce`** (Zeus PASS `faea508..2a4ccce`,
   Gate A+B demo, Richard merge 2026-09-12). Decks A/B play together via
   LiveMixer. Footer/library preview remains `audioController`. Static at that
@@ -87,7 +87,7 @@ uv build --wheel --sdist
 git diff --check
 ```
 
-Run the workflow's desktop/mobile browser commands for changes affecting playback, requests, or UI. Use actual installed Chromium or the workflow's pinned installation. Report skipped optional tests explicitly. Keep frontend static assets at or under 650,000 uncompressed bytes (soft checkpoint 600,000: explain meaningful growth). Do not bump versions or create release tags as a side effect of maintenance.
+Run the workflow's desktop/mobile browser commands for changes affecting playback, requests, or UI. Use actual installed Chromium or the workflow's pinned installation. Report skipped optional tests explicitly. Record frontend static bytes and their growth against `docs/static-asset-policy.md`; explain meaningful growth instead of enforcing a byte ceiling. Do not bump versions or create release tags as a side effect of maintenance.
 
 ## What just shipped
 

@@ -9,9 +9,11 @@ Richard is out; he will merge `main` himself after a return audit.
 - `faea508` — Phase 14B.1 stem-crate API (`stem_crate_items`, `/api/stem-crate`).
 - `2a4ccce` — Phase 15A LiveMixer **wired**: decks A and B can play together.
   Footer/library preview stays the `audioController` singleton.
-- Static budget through Phases 14–16: soft **600,000** / hard **650,000**
-  uncompressed HTML/CSS/JS. Report the total on every frontend-bearing change.
-  Do not delete behaviour, squeeze comments, or minify to hit the number.
+- Static policy (owner decision, 2026-11-17): the soft **600,000** / hard
+  **650,000** byte ceilings are retired. Record total uncompressed bytes, the
+  file count, the largest files and the growth on every frontend-bearing
+  change (`docs/static-asset-policy.md`). Do not delete behaviour, squeeze
+  comments, or minify to hit a number.
 
 ## Still not true (do not claim)
 

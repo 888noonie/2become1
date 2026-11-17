@@ -63,6 +63,17 @@ real view functions with `node --test tests/frontend/*.js`.
 - Unknown mix phrases with no model return `PR_PROVIDER_UNAVAILABLE` and apply
   nothing.
 
+## Static assets
+
+- There is no byte ceiling. Record the total uncompressed bytes under
+  `src/twobecomeone/studio_static`, the file count, the largest files and the
+  delta against the last recorded baseline for every frontend-bearing change.
+  Explain meaningful growth; never minify, compress readability or delete a
+  useful behaviour to satisfy a historical number.
+- Keep desktop `1280x800` and mobile `390x844` journeys, the accessibility
+  audits and the OfflineAudioContext audio capture passing where the change
+  touches playback or UI. See `docs/static-asset-policy.md`.
+
 ## Commits
 
 Stage the source, tests, and docs for the change. Leave personal documents,
