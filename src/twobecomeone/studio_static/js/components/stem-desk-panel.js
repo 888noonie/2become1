@@ -159,7 +159,11 @@ export function mountStemDeskPanel({
       solo.addEventListener('click', () => {
         const next = !lane.solo;
         const nextState = desk.setSolo(lane.name, next);
-        say(`${next ? 'Solo' : 'Solo released for'} ${stemLabel(lane.name)}.`);
+        const stateLane = nextState.lanes.find((entry) => entry.name === lane.name);
+        const silentNote = next && stateLane?.silent
+          ? ' This stem is effectively silent in this separation.'
+          : '';
+        say(`${next ? 'Solo' : 'Solo released for'} ${stemLabel(lane.name)}.${silentNote}`);
         renderLanes(nextState);
       });
       gain.addEventListener('input', (event) => {
@@ -172,6 +176,12 @@ export function mountStemDeskPanel({
         createElement('div', {}, [
           createElement('div', { class: 'stem-desk__name', text: stemLabel(lane.name) }),
           createElement('div', { class: 'stem-desk__meta', text: provenanceLabel(lane) }),
+          ...(lane.silent
+            ? [createElement('div', {
+              class: 'stem-desk__meta stem-desk__silent',
+              text: 'effectively silent in this separation',
+            })]
+            : []),
         ]),
         createElement('div', { class: 'stem-desk__actions' }, [mute, solo, gain, gainText]),
       ]);
@@ -299,7 +309,15 @@ export function mountStemDeskPanel({
         const missing = (state.error.failures || []).map((entry) => entry.name).join(', ');
         say(`Loaded ${state.lanes.length} stems. Unavailable: ${missing || 'some stems'}.`);
       } else {
-        say(`Loaded ${state.lanes.length} separated stems on one transport.`);
+        const silent = state.lanes
+          .filter((entry) => entry.silent)
+          .map((entry) => stemLabel(entry.name));
+        say(
+          silent.length
+            ? `Loaded ${state.lanes.length} separated stems. ${silent.join(', ')} ` +
+              `${silent.length === 1 ? 'is' : 'are'} effectively silent in this separation.`
+            : `Loaded ${state.lanes.length} separated stems on one transport.`,
+        );
       }
     } catch (err) {
       say(`Could not load stems: ${err?.message || 'request failed'}`);

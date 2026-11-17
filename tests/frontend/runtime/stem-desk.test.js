@@ -54,7 +54,7 @@ class FakeSource {
 }
 
 class FakeContext {
-  constructor({ duration = 30, channels = 2 } = {}) {
+  constructor({ duration = 30, channels = 2, amplitude = 0.1, amplitudes = null } = {}) {
     this.currentTime = 10;
     this.state = 'running';
     this.resumeCalls = 0;
@@ -63,6 +63,8 @@ class FakeContext {
     this.closed = false;
     this.duration = duration;
     this.channels = channels;
+    this.amplitude = amplitude;
+    this.amplitudes = amplitudes;
     this.decodeCalls = 0;
   }
 
@@ -77,11 +79,15 @@ class FakeContext {
   }
 
   async decodeAudioData() {
+    const index = this.decodeCalls;
     this.decodeCalls += 1;
+    const amplitude = this.amplitudes ? (this.amplitudes[index] ?? 0) : this.amplitude;
+    const samples = Float32Array.from({ length: 64 }, () => amplitude);
     return {
       duration: this.duration,
       length: Math.round(this.duration * 4000),
       numberOfChannels: this.channels,
+      getChannelData: () => samples,
     };
   }
 
@@ -355,4 +361,22 @@ test('an oversized Content-Length is refused before the body is read', async () 
   const state = await desk.load([lane('vocals')]);
   assert.equal(state.error.code, 'S_STEM_TOO_LARGE');
   assert.equal(bodyRead, false);
+});
+
+test('a near-silent stem is labelled honestly and still obeys solo without stopping', async () => {
+  const ctx = new FakeContext({ amplitudes: [0.1, 0] });
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  const loaded = await desk.load([lane('vocals'), lane('drums')]);
+  const vocals = loaded.lanes.find((entry) => entry.name === 'vocals');
+  const drums = loaded.lanes.find((entry) => entry.name === 'drums');
+  assert.equal(vocals.silent, false);
+  assert.equal(drums.silent, true);
+  assert.ok(drums.rmsDb <= STEM_DESK_LIMITS.silentRmsDb);
+  assert.ok(vocals.rmsDb > STEM_DESK_LIMITS.silentRmsDb);
+
+  desk.play();
+  const after = desk.setSolo('drums', true);
+  assert.equal(after.status, 'playing', 'solo must not stop the transport');
+  assert.equal(after.lanes.find((entry) => entry.name === 'drums').effectiveGain, 1);
+  assert.equal(after.lanes.find((entry) => entry.name === 'vocals').effectiveGain, 0);
 });

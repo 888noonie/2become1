@@ -26,6 +26,7 @@ class FakeDesk {
     this.calls = [];
     this.disposed = false;
     this.lanes = [];
+    this.silentNames = [];
     this.status = 'idle';
     this.position = 0;
   }
@@ -37,6 +38,8 @@ class FakeDesk {
       gainDb: 0,
       muted: false,
       solo: false,
+      silent: this.silentNames.includes(lane.name),
+      rmsDb: this.silentNames.includes(lane.name) ? -68 : -24,
     }));
     this.status = 'ready';
     return this.state();
@@ -62,6 +65,8 @@ class FakeDesk {
         muted: lane.muted,
         solo: lane.solo,
         audible: anySolo ? lane.solo : !lane.muted,
+        rmsDb: lane.rmsDb,
+        silent: lane.silent,
         effectiveGain: (anySolo ? lane.solo : !lane.muted) ? Math.pow(10, lane.gainDb / 20) : 0,
       })),
     };
@@ -102,9 +107,10 @@ class FakeDesk {
   dispose() { this.disposed = true; }
 }
 
-function mount({ variants, tracks = [{ id: 'track-1', name: 'night-drive.wav' }] } = {}) {
+function mount({ variants, tracks = [{ id: 'track-1', name: 'night-drive.wav' }], silentNames = [] } = {}) {
   const container = document.createElement('div');
   const desk = new FakeDesk();
+  desk.silentNames = silentNames;
   const calls = [];
   const dispose = mountStemDeskPanel({
     container,
@@ -321,7 +327,12 @@ test('the real StemDesk runtime renders four lanes through the panel', async () 
     destination: {},
     createGain: () => new Gains(),
     createBufferSource: () => new Sources(),
-    decodeAudioData: async () => ({ duration: 8, length: 8000, numberOfChannels: 2 }),
+    decodeAudioData: async () => ({
+      duration: 8,
+      length: 8000,
+      numberOfChannels: 2,
+      getChannelData: () => Float32Array.from({ length: 64 }, () => 0.1),
+    }),
     resume: async () => {},
   };
 
@@ -349,4 +360,25 @@ test('the real StemDesk runtime renders four lanes through the panel', async () 
   await flush();
   assert.equal(container.querySelectorAll('.stem-desk__row')[0].querySelectorAll('button')[0].getAttribute('aria-pressed'), 'true');
   dispose();
+});
+
+test('an effectively silent stem is labelled and its solo says why nothing is heard', async () => {
+  const { container } = mount({
+    variants: [variant('vocals'), variant('drums'), variant('bass'), variant('other')],
+    silentNames: ['vocals'],
+  });
+  await flush();
+  container.querySelector('button.button--sm').click();
+  await flush();
+
+  const rows = container.querySelectorAll('.stem-desk__row');
+  assert.match(rows[0].textContent, /effectively silent in this separation/);
+  assert.doesNotMatch(rows[1].textContent, /effectively silent/);
+
+  const solo = rows[0].querySelectorAll('.stem-desk__actions button')[1];
+  solo.click();
+  await flush();
+  const status = container.querySelector('.stem-desk__status').textContent;
+  assert.match(status, /Solo Vocals/);
+  assert.match(status, /effectively silent/);
 });

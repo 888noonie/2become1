@@ -28,7 +28,37 @@ export const STEM_DESK_LIMITS = Object.freeze({
   startLeadSeconds: 0.05,
   minGainDb: -60,
   maxGainDb: 6,
+  /**
+   * A lane at or below this RMS is "effectively silent in this separation".
+   * It is a truthful label, not a mixer rule: the lane still loads, still
+   * obeys mute/solo/gain, and is never removed. The 2026-11-17 audition
+   * failure happened because two stems were near-silent and soloing them
+   * looked like Stop.
+   */
+  silentRmsDb: -50,
 });
+
+/** Peak and RMS of a decoded buffer, used only to describe the lane honestly. */
+function measureBuffer(buffer) {
+  let sumSquares = 0;
+  let peak = 0;
+  let count = 0;
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const data = buffer.getChannelData(channel);
+    for (let i = 0; i < data.length; i += 1) {
+      const value = data[i];
+      sumSquares += value * value;
+      const absolute = value < 0 ? -value : value;
+      if (absolute > peak) peak = absolute;
+      count += 1;
+    }
+  }
+  const rms = count ? Math.sqrt(sumSquares / count) : 0;
+  return {
+    rmsDb: 20 * Math.log10(rms + 1e-12),
+    peakDb: 20 * Math.log10(peak + 1e-12),
+  };
+}
 
 export class StemDeskError extends Error {
   constructor(code, message) {
@@ -170,6 +200,7 @@ export class StemDesk {
       );
     }
     this._decodedBytes += decodedBytes;
+    const measured = measureBuffer(buffer);
 
     return {
       name: lane.name,
@@ -185,6 +216,9 @@ export class StemDesk {
       source: null,
       decodedBytes,
       durationSeconds: buffer.duration,
+      rmsDb: measured.rmsDb,
+      peakDb: measured.peakDb,
+      silent: measured.rmsDb <= STEM_DESK_LIMITS.silentRmsDb,
     };
   }
 
@@ -395,6 +429,9 @@ export class StemDesk {
         muted: lane.muted,
         solo: lane.solo,
         audible: this.audible(lane.name),
+        rmsDb: lane.rmsDb,
+        peakDb: lane.peakDb,
+        silent: lane.silent,
         effectiveGain: (this._lanes.some((item) => item.solo) ? lane.solo : !lane.muted)
           ? dbToLinear(lane.gainDb)
           : 0,
