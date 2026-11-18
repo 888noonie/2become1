@@ -49,8 +49,8 @@ The separated musical track already exists at
 stems, `htdemucs@4.1.0`, CUDA). To audition it directly:
 
 ```bash
-cd /tmp/opencode/2become1-family-together
-PYTHONPATH=$PWD/src /home/richardn/2become1/.venv/bin/twobecomeone web \
+# run from the repository root of this checkout
+PYTHONPATH=$PWD/src .venv/bin/twobecomeone web \
   --port 8766 --data-dir /tmp/opencode/musical-demo2
 ```
 

@@ -478,8 +478,8 @@ must not imply that it does.
 Run the desk against that temporary library:
 
 ```bash
-cd /tmp/opencode/octopussy-desk
-PYTHONPATH=$PWD/src /home/richardn/2become1/.venv/bin/twobecomeone web \
+# run from the repository root of this checkout
+PYTHONPATH=$PWD/src .venv/bin/twobecomeone web \
   --port 8767 --data-dir /tmp/opencode/octopussy-demo
 ```
 
