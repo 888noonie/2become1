@@ -80,8 +80,10 @@ full evidence: `docs/milestone-2026-11-18-eight-stem-desk.md`. Procedures,
 commands and the failure-mode table: `docs/stem-desk-engineering-guide.md`.
 Earlier audio history: `docs/stem-desk-audio-diagnosis.md`.
 
-- One `AudioContext` per mounted panel, owned by the panel; one `when` for every
-  lane in a play. Never add a second context, transport or master to add a track.
+- One `AudioContext` per mounted panel, owned by the panel, and one Play. Every
+  stem inside a group shares that group's onset; a stored per-group entry nudge
+  may delay that group's onset, which is still one clock and one transport, not
+  a second one. Never add a second context, transport or master to add a track.
 - Per-lane gain feeds a per-group gain; group gain is the equal-power crossfade
   **times** the track level, so a crossfade move cannot overwrite a level. The
   master feeds a soft-clip ceiling that is linear below 0.8.

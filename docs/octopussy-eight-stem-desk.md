@@ -180,11 +180,14 @@ existing rows rather than inventing new state.
 
 ## 6. Honesty: one clock is not beat matching
 
-Both groups share one AudioContext clock and start with one `when`. That means
-**sample-start alignment**, not tempo sync, beat grid alignment, warp or beat
-matching. The demonstration tracks are different tempos (100 BPM and 120 BPM);
-the desk does not time-stretch either group to match the other. A future beat
-matcher would need a separate, explicitly tested contract.
+Both groups share one AudioContext clock and one Play. Within a group every
+stem starts on that group's onset; a stored per-group entry nudge (§5, +/− ms)
+can delay or already-advance that group relative to the other. Even with a nudge
+this is **sample-start alignment of two groups**, not tempo sync, beat grid
+alignment, warp or beat matching. The demonstration tracks are different tempos
+and the desk does not time-stretch either group; a nudge aligns one entry point
+and the material still drifts if the tempos differ. A future beat matcher would
+need a separate, explicitly tested contract.
 
 The headless PCM/browser gates prove graph values and captured samples. They do
 not prove that sound reached a speaker. **Audible acceptance remains the PM's
