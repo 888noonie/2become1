@@ -104,7 +104,7 @@ try {
       freq,
     }));
 
-    async function render({ crossfader = 50, stemSeconds = 1, renderSeconds = 1.6, offset = 0, levels = {}, amplitude = AMP } = {}) {
+    async function render({ crossfader = 50, stemSeconds = 1, renderSeconds = 1.6, offset = 0, levels = {}, laneGainDb = null, amplitude = AMP } = {}) {
       const ctx = new OfflineAudioContext(1, Math.round(RATE * renderSeconds), RATE);
       const freqByUrl = new Map();
       for (const groupId of ['A', 'B']) {
@@ -129,6 +129,9 @@ try {
       }
       desk.setCrossfader(crossfader);
       for (const [trackId, db] of Object.entries(levels)) desk.setTrackLevel(trackId, db);
+      if (laneGainDb !== null) {
+        for (const entry of loaded.lanes) desk.setGain(entry.key, laneGainDb);
+      }
       const started = desk.play({ loop: false, offset });
       const rendered = await ctx.startRendering();
       const channel = rendered.getChannelData(0);
@@ -168,7 +171,8 @@ try {
       level_b_minus_12: await render({ crossfader: 50, levels: { B: -12 } }),
       // Worst allowed case: loud lanes, both tracks at +6 dB, both groups open.
       hot_boosted: await render({
-        crossfader: 50, levels: { A: 6, B: 6 }, amplitude: 0.9, stemSeconds: 1.2, renderSeconds: 1.4,
+        crossfader: 50, levels: { A: 6, B: 6 }, laneGainDb: 6,
+        amplitude: 0.9, stemSeconds: 1.2, renderSeconds: 1.4,
       }),
     };
     return { rate: RATE, amplitude: AMP, scenarios };

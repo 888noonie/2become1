@@ -374,6 +374,15 @@ export class StemDesk {
         `stem ${lane.name} decodes to ${decodedBytes} bytes; the desk holds at most ${STEM_DESK_LIMITS.maxStemDecodedBytes} per stem`,
       );
     }
+    // The output ceiling is per destination channel; a >2-channel stem would be
+    // downmixed into stereo after it, where channels can sum past full scale.
+    // The desk serves separated stems, which are mono or stereo.
+    if (buffer.numberOfChannels > 2) {
+      throw new StemDeskError(
+        'S_STEM_LAYOUT',
+        `stem ${lane.name} has ${buffer.numberOfChannels} channels; the desk accepts mono or stereo`,
+      );
+    }
     const measured = measureBuffer(buffer);
 
     return {

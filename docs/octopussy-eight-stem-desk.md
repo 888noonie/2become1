@@ -406,7 +406,7 @@ track.
 ## 14. Full verification run (final HEAD)
 
 ```bash
-npm test                     # 508 tests, 508 pass, 0 fail
+npm test                     # 513 tests, 513 pass, 0 fail
 .venv/bin/pytest -q          # 580 passed, 1 skipped
 node tests/browser/run.js --viewport 1280x800   # 39 checks, 0 failures
 node tests/browser/run.js --viewport 390x844    # 39 checks, 5 failures
@@ -430,8 +430,20 @@ NEEDS CHANGES with two blocking findings. Both were reproduced, then fixed:
 
 | Finding | Reproduction | Fix and proof |
 | --- | --- | --- |
-| Both track levels at +6 dB push the documented demo peak (−3.14 dBFS) past full scale; nothing protects the master | arithmetic on the measured real-stem peak | output soft-clip ceiling (§2); `hot_boosted` PCM case renders loud lanes at +6 dB lane and +6 dB track for both groups and asserts peak ≤ 1.0 and > 0.5 — measured 1.000 with the ceiling, 2.101 without |
-| Play pressed while a group is still loading leaves the old sources running behind a rebuilt graph | in-memory reproduction: old source not stopped, lane disconnected, status still `playing` at 0.0 s after the load | the commit path re-reads the transport and stops sources; unit test “a load that completes during playback stops the old transport” asserts every prior source is stopped and status is `ready` |
+| Both track levels at +6 dB push the documented demo peak (−3.14 dBFS) past full scale; nothing protects the master | arithmetic on the measured real-stem peak | output soft-clip ceiling (§2); `hot_boosted` renders loud lanes with **+6 dB on every lane and +6 dB on both track levels** and asserts peak ≤ 1.0 and > 0.5 — measured **1.000** with the ceiling (2.101 without) |
+| Play pressed while a group is still loading leaves the old sources running behind a rebuilt graph | in-memory reproduction: old source not stopped, lane disconnected, status still `playing` at 0.0 s after the load | the commit path re-reads the transport and stops sources; the unit test uses the failing order (load B pending → Play → B completes) and asserts every prior source is stopped and status is `ready` |
+
+The second fix has its own negative control against the pre-fix runtime
+(`/tmp/opencode/octopussy-evidence/transport-control/`):
+
+| Runtime | Status after the load | Live sources | Old source still running |
+| --- | --- | --- | --- |
+| pre-fix `2a24c20` | `playing` | 1 | **yes** |
+| this HEAD | `ready` | 0 | no |
+
+A stem with more than two channels is now refused with `S_STEM_LAYOUT` rather
+than downmixed after the ceiling, where channels could sum past full scale
+(the desk serves separated stems, which are mono or stereo).
 
 Three non-blocking observations were also taken:
 

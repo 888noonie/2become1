@@ -650,14 +650,19 @@ test('a load that completes during playback stops the old transport', async () =
     },
   });
   await desk.loadGroups([{ trackId: 'A', lanes: [lane('vocals')] }]);
+
+  // The failing order: the load BEGINS before Play, then playback starts while
+  // the fetch is still pending, then B completes. An implementation that read
+  // the transport only at load entry would leave A's loop running.
+  const pending = desk.loadGroups([{ trackId: 'B', lanes: [lane('vocals', { audioUrl: '/api/stems/B' })] }]);
   const playing = desk.play({ loop: true });
   assert.equal(playing.status, 'playing');
-
-  const pending = desk.loadGroups([{ trackId: 'B', lanes: [lane('vocals', { audioUrl: '/api/stems/B' })] }]);
+  assert.ok(desk._sources.length > 0, 'A is playing while B is pending');
   release();
   const loaded = await pending;
 
   assert.equal(loaded.status, 'ready', 'a completed load returns the desk to ready');
+  assert.equal(desk._sources.length, 0, 'the pre-load transport is torn down');
   assert.equal(desk._sources.length, 0, 'no old source keeps running behind the new graph');
   for (const source of ctx.createdSources) {
     assert.equal(source.stopped, true, 'every source from the previous transport was stopped');
@@ -682,4 +687,13 @@ test('the master output is limited so boosted lanes cannot hard clip', async () 
   assert.ok(Math.max(...curve) <= 1.0000001, 'never exceeds full scale');
   assert.ok(Math.min(...curve) >= -1.0000001, 'never below negative full scale');
   assert.equal(desk._master.connected.includes(desk._ceiling), true);
+});
+
+test('a stem with more than two channels is refused rather than downmixed', async () => {
+  const ctx = new FakeContext({ channels: 4 });
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  const state = await desk.load([lane('vocals')]);
+  assert.equal(state.status, 'unavailable');
+  assert.equal(state.error.code, 'S_STEM_LAYOUT');
+  assert.match(state.error.message, /mono or stereo/);
 });
