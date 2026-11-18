@@ -52,6 +52,7 @@ class FakeDesk {
         silent: this.silentNames.includes(lane.name),
         rmsDb: this.silentNames.includes(lane.name) ? -68 : -24,
       })),
+      entryOffsetMs: 0,
     };
   }
 
@@ -68,8 +69,10 @@ class FakeDesk {
       this.calls.push(['loadGroups', trackId, group.lanes.map((lane) => lane.name)]);
       const next = this.setLanes(trackId, title, group.lanes);
       const index = this.groups.findIndex((entry) => entry.trackId === trackId);
-      if (index >= 0) this.groups[index] = next;
-      else this.groups.push(next);
+      if (index >= 0) {
+        next.entryOffsetMs = this.groups[index].entryOffsetMs || 0;
+        this.groups[index] = next;
+      } else this.groups.push(next);
     }
     this.status = this.groups.length ? 'ready' : 'unavailable';
     this.error = null;
@@ -111,6 +114,7 @@ class FakeDesk {
           * Math.pow(10, (group.levelDb || 0) / 20),
         xfadeGain: this.groups.length === 1 ? 1 : (index === 0 ? crossfader.gainA : crossfader.gainB),
         levelDb: group.levelDb || 0,
+        entryOffsetMs: group.entryOffsetMs || 0,
         laneCount: group.lanes.length,
         laneKeys: group.lanes.map((lane) => lane.key),
       })),
@@ -181,6 +185,18 @@ class FakeDesk {
     this.calls.push(['setTrackLevel', trackId, Number(db)]);
     const group = this.groups.find((entry) => entry.trackId === trackId);
     if (group) group.levelDb = Number(db);
+    return this.state();
+  }
+
+  setGroupEntryOffset(trackId, ms) {
+    this.calls.push(['setGroupEntryOffset', trackId, Number(ms)]);
+    const group = this.groups.find((entry) => entry.trackId === trackId);
+    const value = Number(ms);
+    if (group) {
+      group.entryOffsetMs = Number.isFinite(value)
+        ? Math.max(-4000, Math.min(4000, value))
+        : 0;
+    }
     return this.state();
   }
 
@@ -1208,4 +1224,30 @@ test('an empty library still opens Choose Track', async () => {
   await flush();
   assert.equal(opened, 1);
   assert.match(container.querySelector('.stem-desk__status').textContent, /No tracks are available|empty/i);
+});
+
+test('earlier, later and reset show a signed group offset and do not start playback', async () => {
+  const { container, desk } = mount({ variants: DEMUCS_QUAD });
+  await flush();
+  await loadGroup(container, 'A');
+
+  const earlier = container.querySelector('button[aria-label="Group A earlier"]');
+  const later = container.querySelector('button[aria-label="Group A later"]');
+  const reset = container.querySelector('button[aria-label="Group A reset entry"]');
+  assert.ok(earlier && later && reset, 'each loaded group has earlier, later and reset');
+  assert.match(container.querySelector('.stem-desk__timing').textContent, /Takes effect on the next Play/);
+
+  earlier.click();
+  assert.equal(desk.calls.some(([name]) => name === 'play'), false);
+  assert.equal(container.querySelector('.stem-desk__offset').textContent, '−10 ms');
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Group A entry −10 ms/);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /next Play/);
+
+  later.click();
+  later.click();
+  assert.equal(container.querySelector('.stem-desk__offset').textContent, '+10 ms');
+
+  reset.click();
+  assert.equal(container.querySelector('.stem-desk__offset').textContent, '0 ms');
+  assert.equal(desk.calls.filter(([name]) => name === 'setGroupEntryOffset').length, 4);
 });

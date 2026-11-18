@@ -13,11 +13,11 @@
 //     an over-budget group is refused without touching groups already loaded;
 //   * a stopped or unloaded desk disconnects every node it made.
 //
-// Sync model: every source is scheduled with the same `when` (one shared
-// context clock, one look-ahead offset), so stems cannot drift apart by
-// construction. That is start alignment, not beat matching or tempo sync.
-// `startedAt` is the context time that `when` refers to, and `position()` is
-// derived from the context clock, not from a media element.
+// Sync model: one shared AudioContext clock and one look-ahead. Stems inside
+// a group share that group's start. A manual entry offset can place one
+// group earlier or later than the other; it does not change playback rate,
+// pitch, or tempo, and it is not beat matching. `startedAt` is the context
+// time of the un-nudged Play, and `position()` follows that clock.
 
 import { equalPowerGains } from './crossfader.js';
 
@@ -43,6 +43,12 @@ export const STEM_DESK_LIMITS = Object.freeze({
    */
   minLevelDb: -40,
   maxLevelDb: 6,
+  /**
+   * How far one group may enter ahead of or behind the shared Play.
+   * Negative is earlier (that group is already underway). Positive is later.
+   * This is a manual entry nudge, not beat matching or a tempo change.
+   */
+  maxEntryOffsetMs: 4000,
   /**
    * A lane at or below this RMS is "effectively silent in this separation".
    * It is a truthful label, not a mixer rule: the lane still loads, still
@@ -374,6 +380,7 @@ export class StemDesk {
       title: spec.title,
       lanes: loaded,
       levelDb: existing?.levelDb ?? 0,
+      entryOffsetMs: existing?.entryOffsetMs ?? 0,
       node: null,
     };
     this._groups = [...currentOthers, group];
@@ -585,13 +592,17 @@ export class StemDesk {
     const safeOffset = duration > 0
       ? Math.max(0, Math.min(Number.isFinite(requested) ? requested : 0, duration - 0.001))
       : 0;
-    const when = this._now() + STEM_DESK_LIMITS.startLeadSeconds;
-    const endAt = loop ? null : when + Math.max(0, duration - safeOffset);
+    const when0 = this._now() + STEM_DESK_LIMITS.startLeadSeconds;
+    let latestEnd = null;
 
     for (const lane of this._lanes) {
-      // A lane shorter than the requested start offset contributes nothing;
-      // do not schedule a source that would start in the past.
-      if (safeOffset >= lane.durationSeconds) {
+      const entryMs = this._group(lane.trackId)?.entryOffsetMs ?? 0;
+      const entrySeconds = (Number.isFinite(entryMs) ? entryMs : 0) / 1000;
+      // Positive: this group starts later. Negative: it is already underway,
+      // which is a buffer offset, never a `when` in the past.
+      const when = when0 + Math.max(0, entrySeconds);
+      const bufferOffset = safeOffset + Math.max(0, -entrySeconds);
+      if (bufferOffset >= lane.durationSeconds) {
         lane.source = null;
         continue;
       }
@@ -599,24 +610,24 @@ export class StemDesk {
       source.buffer = lane.buffer;
       source.loop = loop;
       if (loop) {
-        // The whole buffer loops; there is deliberately no per-lane loopEnd,
-        // so lanes of different lengths never define separate loop points.
         source.loopStart = 0;
       }
       source.connect(lane.node);
-      source.start(when, safeOffset);
-      if (endAt !== null && typeof source.stop === 'function') {
+      source.start(when, bufferOffset);
+      if (!loop && typeof source.stop === 'function') {
+        const laneEnd = when + Math.max(0, lane.durationSeconds - bufferOffset);
         try {
-          source.stop(endAt);
+          source.stop(laneEnd);
         } catch {
           // A source that cannot take an end time is still stopped on state().
         }
+        latestEnd = latestEnd == null ? laneEnd : Math.max(latestEnd, laneEnd);
       }
       lane.source = source;
       this._sources.push(source);
     }
-    this._startedAt = when;
-    this._endAt = endAt;
+    this._startedAt = when0;
+    this._endAt = loop ? null : (latestEnd ?? when0);
     this._offset = safeOffset;
     this._loop = loop;
     this._status = 'playing';
@@ -721,8 +732,21 @@ export class StemDesk {
     return this.state();
   }
 
-  /** Crossfade the two groups with the same equal-power law as LiveMixer. */
-  /** Independent per-track level, in dB, applied on top of the crossfade. */
+  /**
+   * Store a manual entry nudge for one group. It is applied on the next
+   * play(); a source that has already started is left where it is.
+   * Negative is earlier. Positive is later. Units are milliseconds.
+   */
+  setGroupEntryOffset(trackId, entryOffsetMs) {
+    const group = this._requireGroup(trackId);
+    const value = Number(entryOffsetMs);
+    const limit = STEM_DESK_LIMITS.maxEntryOffsetMs;
+    group.entryOffsetMs = Number.isFinite(value)
+      ? Math.min(limit, Math.max(-limit, value))
+      : 0;
+    return this.state();
+  }
+
   setTrackLevel(trackId, db) {
     const group = this._requireGroup(trackId);
     const value = Number(db);
@@ -833,8 +857,8 @@ export class StemDesk {
       sync: {
         clock: 'audiocontext',
         startLeadSeconds: STEM_DESK_LIMITS.startLeadSeconds,
-        // Every lane is started with the same `when`, so this is a claim about
-        // the schedule, not a measurement of speakers, tempo or beat grid.
+        // One clock. A group entry offset may delay that group. This is not
+        // a measurement of speakers, tempo, or a beat grid.
         scheduledTogether: this._status === 'playing',
         beatMatched: false,
       },
@@ -845,6 +869,7 @@ export class StemDesk {
         gain: this._groupGainValue(group),
         xfadeGain: this._xfadeValue(group),
         levelDb: group.levelDb ?? 0,
+        entryOffsetMs: group.entryOffsetMs ?? 0,
         laneCount: group.lanes.length,
         laneKeys: group.lanes.map((lane) => lane.key),
       })),

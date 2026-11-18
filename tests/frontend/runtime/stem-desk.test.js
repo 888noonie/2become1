@@ -904,3 +904,117 @@ test('a load that finishes after dispose does not commit decoded audio', async (
   assert.equal(desk._decodedBytes, 0);
   assert.equal(state.status, 'idle');
 });
+
+const STEM_NAMES = ['vocals', 'drums', 'bass', 'other'];
+
+async function loadBothGroups(desk) {
+  return desk.loadGroups(['A', 'B'].map((trackId) => ({
+    trackId,
+    title: trackId === 'A' ? 'Lantern' : 'Copper',
+    lanes: STEM_NAMES.map((name) => lane(name)),
+  })));
+}
+
+function scheduled(desk, trackId) {
+  return desk._lanes
+    .filter((entry) => entry.trackId === trackId)
+    .map((entry) => entry.source?.started ?? null);
+}
+
+test('a group entry offset is stored, bounded, and applied only on the next play', async () => {
+  const ctx = new FakeContext();
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  await loadBothGroups(desk);
+
+  assert.throws(
+    () => desk.setGroupEntryOffset('C', -10),
+    (error) => error.code === 'S_UNKNOWN_TRACK',
+  );
+  assert.equal(desk.setGroupEntryOffset('B', Number.NaN).groups.find((group) => group.trackId === 'B').entryOffsetMs, 0);
+  assert.equal(desk.setGroupEntryOffset('B', 9000).groups.find((group) => group.trackId === 'B').entryOffsetMs, 4000);
+  assert.equal(desk.setGroupEntryOffset('B', -9000).groups.find((group) => group.trackId === 'B').entryOffsetMs, -4000);
+
+  desk.setGroupEntryOffset('B', 200);
+  const before = ctx.createdSources.length;
+  desk.setGroupEntryOffset('B', -200);
+  assert.equal(ctx.createdSources.length, before, 'changing the offset does not start sources');
+
+  const when0 = ctx.currentTime + STEM_DESK_LIMITS.startLeadSeconds;
+  desk.play();
+  const groupA = scheduled(desk, 'A');
+  const groupB = scheduled(desk, 'B');
+  assert.equal(groupA.length, 4);
+  assert.equal(groupB.length, 4);
+  assert.ok(groupA.every((start) => start.when === when0 && start.offset === 0));
+  assert.ok(groupB.every((start) => start.when === when0 && start.offset === 0.2));
+  assert.ok(groupB.every((start, index) => start.when === groupB[0].when && start.offset === groupB[0].offset),
+    'the four stems of a group keep one entry');
+  for (const source of ctx.createdSources) {
+    assert.equal(source.playbackRate, undefined, 'the nudge must not set a playback rate');
+  }
+
+  desk.stop();
+  assert.equal(desk.state().groups.find((group) => group.trackId === 'B').entryOffsetMs, -200);
+  desk.setGroupEntryOffset('B', 200);
+  desk.play();
+  const delayed = scheduled(desk, 'B');
+  assert.ok(delayed.every((start) => start.when === when0 + 0.2 && start.offset === 0));
+  assert.ok(scheduled(desk, 'A').every((start) => start.when === when0 && start.offset === 0));
+  assert.equal(ctx.createdSources.length, 16, 'stop then play replaces the eight sources once');
+  assert.ok(ctx.createdSources.slice(0, 8).every((source) => source.stopped));
+});
+
+test('a delayed group is not cut off when the other group ends', async () => {
+  const ctx = new FakeContext({ duration: 2 });
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  await loadBothGroups(desk);
+  desk.setGroupEntryOffset('B', 1000);
+  const playing = desk.play();
+  const when0 = playing.sync.startLeadSeconds + 10;
+  assert.equal(desk._endAt, when0 + 3);
+
+  ctx.currentTime = when0 + 2.1;
+  assert.equal(desk.state().status, 'playing', 'group B is still inside its delayed buffer');
+  assert.equal(desk.position(), 2, 'the programme clock stays on the buffer, not the nudge');
+
+  ctx.currentTime = when0 + 3.05;
+  assert.equal(desk.state().status, 'ready');
+  assert.equal(desk.state().groups.find((group) => group.trackId === 'B').entryOffsetMs, 1000);
+});
+
+test('an entry that skips past a buffer stays silent and a reload keeps the nudge', async () => {
+  const ctx = new FakeContext({ duration: 1 });
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  await loadBothGroups(desk);
+  desk.setGroupEntryOffset('B', -4000);
+  desk.play();
+  assert.ok(scheduled(desk, 'B').every((start) => start === null));
+  assert.ok(scheduled(desk, 'A').every((start) => start.offset === 0));
+  desk.stop();
+  const reloaded = await desk.loadGroups([{
+    trackId: 'B',
+    title: 'Copper',
+    lanes: STEM_NAMES.map((name) => lane(name)),
+  }]);
+  assert.equal(reloaded.groups.find((group) => group.trackId === 'B').entryOffsetMs, -4000);
+  desk.dispose();
+  assert.ok(ctx.createdSources.every((source) => source.stopped));
+  assert.equal(desk._sources.length, 0);
+});
+
+test('mute, solo and crossfade still apply while a group entry is offset', async () => {
+  const desk = new StemDesk({ audioContext: new FakeContext(), fetchImpl: fakeFetch() });
+  await loadBothGroups(desk);
+  desk.setGroupEntryOffset('A', -80);
+  desk.setGroupEntryOffset('B', 120);
+  desk.play();
+  desk.setMuted('B:drums', true);
+  assert.equal(desk.state().lanes.find((lane) => lane.key === 'B:drums').effectiveGain, 0);
+  desk.setSolo('A:vocals', true);
+  const soloed = desk.state();
+  assert.equal(soloed.lanes.find((lane) => lane.key === 'A:vocals').audible, true);
+  assert.ok(soloed.lanes.filter((lane) => lane.key !== 'A:vocals').every((lane) => lane.audible === false));
+  const faded = desk.setCrossfader(0);
+  assert.equal(faded.crossfader.gainB, 0);
+  assert.ok(faded.groups.find((group) => group.trackId === 'B').gain === 0);
+});
