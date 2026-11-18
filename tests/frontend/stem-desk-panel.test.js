@@ -51,6 +51,7 @@ class FakeDesk {
         solo: false,
         silent: this.silentNames.includes(lane.name),
         rmsDb: this.silentNames.includes(lane.name) ? -68 : -24,
+        peakDb: this.silentNames.includes(lane.name) ? -68 : -6,
       })),
       entryOffsetMs: 0,
     };
@@ -133,6 +134,7 @@ class FakeDesk {
         solo: lane.solo,
         audible: anySolo ? lane.solo : !lane.muted,
         rmsDb: lane.rmsDb,
+        peakDb: lane.peakDb,
         silent: lane.silent,
         effectiveGain: (anySolo ? lane.solo : !lane.muted) ? Math.pow(10, lane.gainDb / 20) : 0,
       })),
@@ -1250,4 +1252,73 @@ test('earlier, later and reset show a signed group offset and do not start playb
   reset.click();
   assert.equal(container.querySelector('.stem-desk__offset').textContent, '0 ms');
   assert.equal(desk.calls.filter(([name]) => name === 'setGroupEntryOffset').length, 4);
+});
+
+test('ask, preview, reject, and approve do not apply a proposal before approval', async () => {
+  const { container, desk } = mount({
+    tracks: [
+      { id: 'track-1', name: 'night-drive.wav' },
+      { id: 'track-2', name: 'slow-burn.wav' },
+    ],
+    variantsByTrack: {
+      'track-1': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-aaa' })),
+      'track-2': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-bbb' })),
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  selectFor(container, 'A').value = 'track-1';
+  selectFor(container, 'B').value = 'track-2';
+  await loadGroup(container, 'A');
+  const buttons = [...container.querySelectorAll('.stem-desk__proposal button')];
+  const [askButton, previewButton, approveButton, rejectButton] = buttons;
+  assert.equal(askButton.textContent, 'Ask for a proposal');
+  askButton.click();
+  assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /Proposal incomplete/);
+  assert.equal(desk.calls.some(([name]) => name === 'setMuted'), false);
+
+  await loadGroup(container, 'B');
+  const before = desk.calls.length;
+  askButton.click();
+  assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /Proposal not approved/);
+  assert.equal(previewButton.disabled, false);
+  assert.equal(approveButton.disabled, true);
+  previewButton.click();
+  assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /Preview only/);
+  assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /Nothing is applied until Approve/);
+  assert.equal(desk.calls.length, before);
+  assert.equal(desk.state().lanes.find((lane) => lane.key === 'A:vocals').muted, false);
+
+  rejectButton.click();
+  assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /Proposal not approved/);
+  assert.equal(desk.calls.length, before);
+  assert.equal(approveButton.disabled, true);
+
+  askButton.click();
+  previewButton.click();
+  approveButton.click();
+  assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /Proposal approved/);
+  assert.equal(desk.state().lanes.find((lane) => lane.key === 'A:vocals').muted, true);
+  assert.equal(desk.state().lanes.find((lane) => lane.key === 'A:drums').muted, false);
+  assert.equal(desk.state().lanes.find((lane) => lane.key === 'B:vocals').muted, false);
+  assert.equal(desk.state().lanes.find((lane) => lane.key === 'B:drums').muted, true);
+  assert.equal(desk.state().lanes.find((lane) => lane.key === 'A:vocals').method, 'demucs');
+  assert.equal(desk.state().lanes.find((lane) => lane.key === 'B:vocals').stemSetId, 'set-bbb');
+  assert.equal(desk.calls.some(([name]) => name === 'play'), false);
+  const applied = desk.calls.length;
+  approveButton.click();
+  assert.equal(desk.calls.length, applied);
+
+  askButton.click();
+  container.querySelector('button[aria-label="Group A earlier"]').click();
+  assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /Proposal not approved/);
+  assert.equal(container.querySelector('.stem-desk__proposal button:nth-child(3)').disabled, true);
+
+  desk.setSolo('B:vocals', true);
+  const soloCalls = desk.calls.length;
+  askButton.click();
+  assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /clear solo/);
+  assert.equal(desk.calls.length, soloCalls);
+  assert.equal(container.querySelector('.stem-desk__proposal button:nth-child(3)').disabled, true);
 });

@@ -110,6 +110,10 @@ export function validateStemDeskProposal(raw, deskState) {
   if (soloed) {
     return reject('SOLO_HELD', `clear solo on ${soloed.key} before approving a proposal`);
   }
+  const omitted = [...loadedGroups.keys()].find((trackId) => !proposal.tracks[trackId]);
+  if (omitted) {
+    return reject('GROUP_OMITTED', `group ${omitted} is loaded, so a proposal has to name it before the shared crossfader can move`);
+  }
   for (const trackId of trackIds) {
     const track = proposal.tracks[trackId];
     const trackExtra = extraKey(track, TRACK_KEYS);

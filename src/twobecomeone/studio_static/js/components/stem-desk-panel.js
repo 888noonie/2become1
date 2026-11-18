@@ -13,6 +13,11 @@
 import { createElement, replaceChildren } from '../dom.js';
 import { listJobs, listStems, listTracks, submitSeparation, watchJob } from '../api.js';
 import { StemDesk, STEM_DESK_LIMITS } from '../runtime/stem-desk.js';
+import {
+  approveStemDeskProposal,
+  suggestStemDeskProposal,
+  validateStemDeskProposal,
+} from '../runtime/stem-desk-proposal.js';
 
 const STEM_ORDER = ['vocals', 'drums', 'bass', 'other', 'center', 'sides'];
 const GROUP_IDS = ['A', 'B'];
@@ -212,6 +217,25 @@ export function mountStemDeskPanel({
   const stopButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Stop', disabled: 'true' });
   const positionLabel = createElement('span', { class: 'stem-desk__meta', text: '0.0 s' });
   const transport = createElement('div', { class: 'stem-desk__actions stem-desk__transport' }, [playButton, stopButton, positionLabel]);
+  const askButton = createElement('button', {
+    class: 'button button--sm', type: 'button', text: 'Ask for a proposal', disabled: 'true',
+  });
+  const previewButton = createElement('button', {
+    class: 'button button--sm', type: 'button', text: 'Preview', disabled: 'true',
+  });
+  const approveButton = createElement('button', {
+    class: 'button button--sm', type: 'button', text: 'Approve', disabled: 'true',
+  });
+  const rejectButton = createElement('button', {
+    class: 'button button--danger button--sm', type: 'button', text: 'Reject', disabled: 'true',
+  });
+  const proposalRow = createElement('div', {
+    class: 'stem-desk__proposal', role: 'group', 'aria-label': 'Stem proposal',
+  }, [askButton, previewButton, approveButton, rejectButton]);
+  const proposalStatus = createElement('p', { class: 'stem-desk__proposal-status', role: 'status' });
+  const PROPOSAL_UNAPPROVED = 'Proposal not approved. Groups A and B stay on the stem desk. Entry offsets take effect on the next Play.';
+  const PROPOSAL_APPROVED = 'Proposal approved. Groups A and B stay loaded on one transport. Entry offsets take effect on the next Play.';
+  const PROPOSAL_INCOMPLETE = 'Proposal incomplete. Only one group is included. The other group stays as it is, and any entry offset takes effect on the next Play.';
   const crossfaderInput = createElement('input', {
     type: 'range',
     min: '0',
@@ -241,6 +265,8 @@ export function mountStemDeskPanel({
     title,
     groupControls,
     status,
+    proposalRow,
+    proposalStatus,
     transport,
     crossfader,
     policy,
@@ -257,8 +283,18 @@ export function mountStemDeskPanel({
   let tracksLoaded = false;
   let tracksPending = null;
   let loadingCount = 0;
+  let pendingProposal = null;
+  let proposalPreviewed = false;
   const rowViews = new Map();
   const groupViews = new Map();
+
+  function syncProposalButtons() {
+    const groups = desk?.state()?.groups?.length || 0;
+    askButton.disabled = loadingCount > 0 || groups < 1 ? 'true' : undefined;
+    previewButton.disabled = pendingProposal ? undefined : 'true';
+    approveButton.disabled = pendingProposal && proposalPreviewed ? undefined : 'true';
+    rejectButton.disabled = pendingProposal ? undefined : 'true';
+  }
 
   function syncLoadButtons() {
     for (const id of GROUP_IDS) {
@@ -266,6 +302,24 @@ export function mountStemDeskPanel({
       if (!button) continue;
       button.disabled = loadingCount > 0 ? 'true' : undefined;
     }
+    syncProposalButtons();
+  }
+
+  function sayProposal(message) {
+    proposalStatus.textContent = message;
+    try {
+      onAnnounce?.(message);
+    } catch {
+      // An announcement listener is a viewer, not the approval path.
+    }
+  }
+
+  function dropPendingProposal() {
+    const had = pendingProposal !== null || proposalPreviewed;
+    pendingProposal = null;
+    proposalPreviewed = false;
+    if (had) sayProposal(PROPOSAL_UNAPPROVED);
+    syncProposalButtons();
   }
 
   function say(message) {
@@ -588,6 +642,7 @@ export function mountStemDeskPanel({
 
     mute.addEventListener('click', () => {
       if (!view.lane) return;
+      dropPendingProposal();
       const label = `${groupLabel(view.lane.trackId)} · ${stemLabel(view.lane.name)}`;
       const next = !view.lane.muted;
       const nextState = desk.setMuted(view.lane.key, next);
@@ -596,6 +651,7 @@ export function mountStemDeskPanel({
     });
     solo.addEventListener('click', () => {
       if (!view.lane) return;
+      dropPendingProposal();
       const label = `${groupLabel(view.lane.trackId)} · ${stemLabel(view.lane.name)}`;
       const next = !view.lane.solo;
       const nextState = desk.setSolo(view.lane.key, next);
@@ -608,6 +664,7 @@ export function mountStemDeskPanel({
     });
     gain.addEventListener('input', (event) => {
       if (!view.lane) return;
+      dropPendingProposal();
       const nextState = desk.setGain(view.lane.key, event.target.value);
       const stateLane = nextState.lanes.find((entry) => entry.key === view.key);
       if (stateLane) view.lane = stateLane;
@@ -662,12 +719,14 @@ export function mountStemDeskPanel({
         const rows = createElement('div', { class: 'stem-desk__group-rows' });
         const level = groupLevelRow(group.trackId, (value) => {
           if (!desk) return;
+          dropPendingProposal();
           const next = desk.setTrackLevel(group.trackId, value);
           refreshTransport(next);
           say(`Group ${group.trackId} level ${value} dB.`);
         });
         const timing = groupTimingRow(group.trackId, (delta) => {
           if (!desk) return;
+          dropPendingProposal();
           const current = desk.state().groups
             .find((entry) => entry.trackId === group.trackId)?.entryOffsetMs ?? 0;
           const nextMs = delta == null ? 0 : current + delta;
@@ -708,6 +767,7 @@ export function mountStemDeskPanel({
         rowViews.delete(key);
       }
     }
+    syncProposalButtons();
   }
 
   function updateCrossfader(state) {
@@ -793,8 +853,64 @@ export function mountStemDeskPanel({
     say('Stem desk stopped.');
   });
 
+  askButton.addEventListener('click', () => {
+    if (!desk || loadingCount > 0) return;
+    const groups = desk.state().groups || [];
+    if (groups.length < 2) {
+      dropPendingProposal();
+      sayProposal(PROPOSAL_INCOMPLETE);
+      return;
+    }
+    const suggestion = suggestStemDeskProposal(desk.state());
+    if (!suggestion.ok) {
+      dropPendingProposal();
+      sayProposal(suggestion.message);
+      return;
+    }
+    pendingProposal = suggestion.proposal;
+    proposalPreviewed = false;
+    sayProposal(PROPOSAL_UNAPPROVED);
+    syncProposalButtons();
+  });
+
+  previewButton.addEventListener('click', () => {
+    if (!desk || !pendingProposal) return;
+    const checked = validateStemDeskProposal(pendingProposal, desk.state());
+    if (!checked.ok) {
+      pendingProposal = null;
+      proposalPreviewed = false;
+      sayProposal(checked.message);
+      syncProposalButtons();
+      return;
+    }
+    proposalPreviewed = true;
+    sayProposal(`Preview only. ${pendingProposal.rationale} Nothing is applied until Approve.`);
+    syncProposalButtons();
+  });
+
+  approveButton.addEventListener('click', () => {
+    if (!desk || !pendingProposal || !proposalPreviewed) return;
+    const result = approveStemDeskProposal(pendingProposal, desk);
+    pendingProposal = null;
+    proposalPreviewed = false;
+    syncProposalButtons();
+    if (!result.ok) {
+      sayProposal(result.message);
+      return;
+    }
+    renderLanes(result.state);
+    refreshTransport(result.state);
+    sayProposal(PROPOSAL_APPROVED);
+  });
+
+  rejectButton.addEventListener('click', () => {
+    if (!pendingProposal) return;
+    dropPendingProposal();
+  });
+
   crossfaderInput.addEventListener('input', (event) => {
     if (!desk) return;
+    dropPendingProposal();
     const state = desk.setCrossfader(event.target.value);
     updateCrossfader(state);
     say(`Crossfader A ${state.crossfader.gainA.toFixed(2)} / B ${state.crossfader.gainB.toFixed(2)}.`);
@@ -877,6 +993,7 @@ export function mountStemDeskPanel({
     select.addEventListener('pointerdown', () => { void ensureTracks(); });
     select.addEventListener('change', () => {
       stopSeparationWatch(groupId);
+      dropPendingProposal();
       void reportReadiness(groupId);
     });
     groupChoose[groupId].addEventListener('click', () => { void onChoose(groupId); });
@@ -886,6 +1003,7 @@ export function mountStemDeskPanel({
       // Reserve the single load slot BEFORE any await: two clicks while the
       // library is still being fetched used to start two concurrent loads.
       if (loadingCount > 0) return;
+      dropPendingProposal();
       loadingCount += 1;
       syncLoadButtons();
       // Everything after the reservation lives inside this try/finally, so no

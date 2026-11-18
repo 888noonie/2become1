@@ -1556,6 +1556,17 @@
   min-height: var(--target-min);
   min-width: var(--target-min);
 }
+.stem-desk__proposal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.stem-desk__proposal .button {
+  min-height: var(--target-min);
+  min-width: var(--target-min);
+}
 .stem-desk__timing {
   display: flex;
   flex-wrap: wrap;

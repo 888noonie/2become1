@@ -211,6 +211,46 @@ function groupAOnly(state) {
   };
 }
 
+test('a proposal that omits a loaded group cannot move the shared crossfader', async () => {
+  const { ctx, desk } = await loadedDesk();
+  const before = snapshot(desk);
+  const result = approveStemDeskProposal(groupAOnly(desk.state()), desk);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'GROUP_OMITTED');
+  assert.deepEqual(snapshot(desk), before);
+  assert.equal(ctx.createdSources.length, 0);
+});
+
+test('approving the same suggestion twice does not start playback or change provenance', async () => {
+  const { ctx, desk } = await loadedDesk();
+  const suggestion = suggestStemDeskProposal(desk.state());
+  assert.equal(suggestion.ok, true);
+  const first = approveStemDeskProposal(suggestion.proposal, desk);
+  const second = approveStemDeskProposal(suggestion.proposal, desk);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.deepEqual(
+    second.state.lanes.map((lane) => [lane.key, lane.muted, lane.gainDb, lane.method, lane.stemSetId]),
+    first.state.lanes.map((lane) => [lane.key, lane.muted, lane.gainDb, lane.method, lane.stemSetId]),
+  );
+  assert.equal(ctx.createdSources.length, 0);
+  assert.equal(second.state.sync.beatMatched, false);
+});
+
+test('one loaded group is not a two-group suggestion', async () => {
+  const ctx = new FakeContext();
+  const desk = new StemDesk({
+    audioContext: ctx,
+    fetchImpl: async () => ({ ok: true, status: 200, arrayBuffer: async () => new Uint8Array(64).buffer }),
+  });
+  await desk.loadGroups([{ trackId: 'A', title: 'A', lanes: NAMES.map((name) => lane('A', name)) }]);
+  const before = snapshot(desk);
+  const suggestion = suggestStemDeskProposal(desk.state());
+  assert.equal(suggestion.ok, false);
+  assert.equal(suggestion.code, 'TRACK_NOT_LOADED');
+  assert.deepEqual(snapshot(desk), before);
+});
+
 test('solo on a group the proposal does not name leaves the mix unchanged', async () => {
   const { ctx, desk } = await loadedDesk();
   desk.setSolo('B:vocals', true);
