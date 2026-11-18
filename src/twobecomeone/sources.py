@@ -15,7 +15,7 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
-from .common import UserError
+from .common import MAX_MEDIA_BYTES, UserError
 
 
 def _require_ytdlp() -> None:
@@ -96,24 +96,33 @@ def canonicalize_youtube_url(value: str) -> str:
 
 
 def from_youtube(url: str, out_dir: Path, fmt: str = "bestaudio/best") -> Path:
-    """Download audio-only from a YouTube URL using yt-dlp."""
-    url = url.strip()
-    if not is_youtube_url(url):
-        raise UserError("enter a valid youtube.com or youtu.be URL")
+    """Download one canonical YouTube video into ``out_dir``.
+
+    The child receives only ``https://www.youtube.com/watch?v=ID``. The file
+    that is accepted is ``{id}.mp3`` inside the resolved work directory. A
+    path printed by the child is not opened.
+    """
+    canonical = canonicalize_youtube_url(url)
+    video_id = urllib.parse.parse_qs(urllib.parse.urlparse(canonical).query)["v"][0]
     _require_ytdlp()
+    out_dir = Path(out_dir)
+    if out_dir.is_symlink():
+        raise UserError("YouTube work directory must not be a symlink")
     out_dir.mkdir(parents=True, exist_ok=True)
-    output_template = str(out_dir / "%(title)s.%(ext)s")
+    root = out_dir.resolve()
+    output_template = str(root / "%(id)s.%(ext)s")
     cmd = [
         "yt-dlp",
-        "-x",                      # extract audio
+        "--ignore-config",
+        "--no-playlist",
+        "--continue",
+        "--max-filesize", str(MAX_MEDIA_BYTES),
+        "-x",
         "--audio-format", "mp3",
-        "--audio-quality", "0",    # best
-        "--continue",              # resume interrupted partial downloads
+        "--audio-quality", "0",
         "-o", output_template,
         "-f", fmt,
-        "--no-playlist",
-        "--print", "after_move:filepath",  # emit the final file path to stdout
-        url,
+        canonical,
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=_YTDLP_TIMEOUT)
@@ -124,15 +133,10 @@ def from_youtube(url: str, out_dir: Path, fmt: str = "bestaudio/best") -> Path:
         message = detail[-1] if detail else "unknown download error"
         raise UserError(f"yt-dlp failed: {message[:500]}")
 
-    # Extract the last produced file path from stdout
-    lines = proc.stdout.decode().splitlines()
-    produced = [ln for ln in lines if ln.strip().endswith(".mp3")]
-    if not produced:
-        raise UserError("yt-dlp did not report an output mp3")
-    result = Path(produced[-1].strip())
-    if not result.exists():
-        raise UserError(f"yt-dlp reported a missing file: {result.name}")
-    return result
+    expected = root / f"{video_id}.mp3"
+    if expected.is_symlink() or not expected.is_file() or not expected.resolve().is_relative_to(root):
+        raise UserError("yt-dlp did not produce the video file inside the work directory")
+    return expected
 
 
 # ---------------------------------------------------------------------------

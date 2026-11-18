@@ -52,6 +52,11 @@ real view functions with `node --test tests/frontend/*.js`.
   next Play. Negative is earlier, positive is later, and Reset is zero. It
   moves the whole group together and does not change playback rate, pitch,
   or tempo. It is not beat matching.
+- `sources.from_youtube` downloads only after `canonicalize_youtube_url`.
+  The child receives the canonical watch URL, `--ignore-config`, and
+  `--max-filesize`. The only accepted file is `{video-id}.mp3` inside the
+  work directory; a path printed by the child is not opened. `ingest_youtube`
+  still stores the caller’s original string as `source_ref`.
 - `source_adapter.validate` classifies one slot as a YouTube link, an
   already-staged upload, or a library track. It does not download. A public
   URL is not authorisation: `authorised` must be the caller's own True, or
