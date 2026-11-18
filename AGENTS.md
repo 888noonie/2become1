@@ -74,11 +74,15 @@ real view functions with `node --test tests/frontend/*.js`.
   Renaming updates the label only: the track id, content hash, stem-set id,
   source URL, and media paths stay. A blank or whitespace-only name is
   rejected. A name longer than 200 characters is rejected rather than cut.
-  Separation finishing later does not replace a name already stored.
+  Import writes the label only while `display_name` is still NULL, in one
+  conditional update. A rename that lands while import completion is still
+  running keeps the saved name. Separation finishing later does not replace it.
 - The Stem Desk still defaults to 40 MiB fetched and 40 MiB decoded per stem,
   160 MiB per group, and 320 MiB for eight lanes. A 30, 60, or 90 second
   section is cut with ffmpeg before the browser decodes, at the file's own
-  sample rate and channel count, and the same start and length are sent for
+  sample rate, channel count, and sample format. The cut seeks by sample
+  index. 16-bit stays 16-bit, wider integer PCM stays wide enough to hold
+  the samples, and float stays float. The same start and length are sent for
   every stem in that group. A section that would still decode past 40 MiB is
   refused with the estimate. Full length is explicit: 128 MiB per stem,
   512 MiB per group, and 1024 MiB for the desk. Those three move together.
@@ -138,7 +142,9 @@ Earlier audio history: `docs/stem-desk-audio-diagnosis.md`.
   lane; a short stem must never wrap under a longer one.
 - A successful load stops playback and returns to `ready`. Re-read the transport
   at commit time, merge overlapping loads against the current group set, and
-  re-check track/lane/byte budgets there.
+  re-check track/lane/byte budgets there. `unload()` and `dispose()` retire the
+  in-flight load. A decode that resolves afterwards does not commit, and
+  aborting the signal during decode does not commit that lane.
 - Lane labels carry method, model, device and stem-set id. Never label
   center/sides or user material as vocals or Demucs.
 - Never claim beat matching. A shared start on one clock is not tempo or phrase

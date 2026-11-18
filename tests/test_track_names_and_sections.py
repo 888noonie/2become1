@@ -195,6 +195,45 @@ class TestTrackNames:
         finally:
             service.close()
 
+    def test_a_rename_during_import_completion_keeps_the_saved_name(self, tmp_path, monkeypatch):
+        _no_demucs(monkeypatch)
+        monkeypatch.setattr(
+            StudioService, "_queue_auto_separation", lambda self, track_id: None,
+        )
+        service = StudioService(tmp_path / "data")
+        try:
+            tone = _tone(tmp_path / "take.wav", root=220.0)
+            with tone.open("rb") as handle:
+                track = service.ingest(handle, "take.wav")
+            before = _row(service, track["id"])
+            assert before["display_name"] is None
+            digest = before["content_sha256"]
+            path = before["path"]
+            original = service._set_display_name_if_unset
+
+            def rename_in_the_gap(track_id, cleaned):
+                service.update_track(track_id, display_name="Owner")
+                return original(track_id, cleaned)
+
+            service._set_display_name_if_unset = rename_in_the_gap
+            finished = service._apply_import_display_name(
+                track, {"display_name": "Import"}, {"title": "Video title"},
+            )
+            assert finished["name"] == "Owner"
+            service._set_display_name_if_unset = original
+            again = service._apply_import_display_name(
+                finished, {"display_name": "Import"}, {"title": "Video title"},
+            )
+            assert again["name"] == "Owner"
+            after = _row(service, track["id"])
+            assert after["display_name"] == "Owner"
+            assert after["original_name"] == "take.wav"
+            assert after["content_sha256"] == digest
+            assert after["path"] == path
+            assert after["id"] == track["id"]
+        finally:
+            service.close()
+
 
 class TestStemSections:
     def test_limits_move_together_for_the_reported_stem(self):
@@ -316,3 +355,40 @@ class TestStemSections:
             assert str(tmp_path) not in str(caught.value)
         finally:
             service.close()
+
+    def test_seek_lands_on_the_sample_and_wider_pcm_is_kept(self, tmp_path):
+        service = StudioService.__new__(StudioService)
+        narrow = tmp_path / "two.wav"
+        with wave.open(str(narrow), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(48000)
+            handle.writeframes(struct.pack("<hh", 0, 1))
+        original = narrow.read_bytes()
+        service.stem_audio_path = lambda *_args, **_kwargs: narrow
+        window = service.stem_audio_window("set", "vocals", start=1 / 48000, duration=30)
+        assert narrow.read_bytes() == original
+        assert len(window) < 4096
+        with wave.open(io.BytesIO(window), "rb") as handle:
+            assert handle.getframerate() == 48000
+            assert handle.getnchannels() == 1
+            assert handle.getsampwidth() == 2
+            assert handle.readframes(1) == struct.pack("<h", 1)
+        with pytest.raises(UserError, match="past the end"):
+            service.stem_audio_window("set", "vocals", start=0.001, duration=30)
+
+        wide = tmp_path / "wide24.wav"
+        with wave.open(str(wide), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(3)
+            handle.setframerate(44100)
+            handle.writeframes(b"\x01\x00\x00" * 44100)
+        wide_bytes = wide.read_bytes()
+        service.stem_audio_path = lambda *_args, **_kwargs: wide
+        kept = service.stem_audio_window("set", "vocals", start=0, duration=30)
+        assert wide.read_bytes() == wide_bytes
+        with wave.open(io.BytesIO(kept), "rb") as handle:
+            assert handle.getframerate() == 44100
+            assert handle.getnchannels() == 1
+            assert handle.getsampwidth() == 3
+            assert handle.readframes(1) == b"\x01\x00\x00"

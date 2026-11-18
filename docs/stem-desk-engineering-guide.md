@@ -120,9 +120,12 @@ replacement refusal cannot read as a success.
 - Default budgets: 40 MiB fetch and 40 MiB decoded per stem, 160 MiB per track,
   320 MiB per desk, mono or stereo only (`S_STEM_LAYOUT`).
 - A 30, 60, or 90 second section is prepared with ffmpeg before
-  `decodeAudioData`. The cut keeps the file rate and channel count. Every stem
-  in the group is given the same start and length. The estimate uses the
-  higher of the file rate and the 48 kHz playback context, and a section that
+  `decodeAudioData`. The cut keeps the file rate, channel count, and sample
+  format, and it seeks by sample index rather than a rounded millisecond.
+  16-bit PCM stays 16-bit. Wider integer PCM and float stay wide enough to
+  hold the source samples. Every stem in the group is given the same start
+  and length. The estimate uses the higher of the file rate and the 48 kHz
+  playback context, and a section that
   would still pass 40 MiB is refused before the cut. Full length is a separate
   choice: 128 MiB per stem, 512 MiB per group, 1024 MiB for eight lanes.
   Raising only one of those three still refuses a group. Available RAM is not
@@ -134,8 +137,11 @@ replacement refusal cannot read as a success.
   compressed buffer and the float buffer can both be live). A section refuses
   on the estimate before ffmpeg writes the slice.
 - `unloadGroup()` frees one group and its bytes; `unload()`/`dispose()` clear
-  both. The browser reclaims lazily: measure with a forced GC and with repeated
-  cycles, and report "no per-cycle growth" rather than "immediate reclamation".
+  both and retire any load still decoding. A buffer that finishes after that
+  does not commit. Aborting the fetch signal during `decodeAudioData` does
+  not commit the lane either. The browser reclaims lazily: measure with a
+  forced GC and with repeated cycles, and report "no per-cycle growth"
+  rather than "immediate reclamation".
 - Re-measure on the target machine before quoting a ceiling; one headless
   Chromium is not a mobile guarantee.
 
@@ -143,7 +149,9 @@ replacement refusal cannot read as a success.
 
 - Two loads may overlap. Merge at commit time against the current group set and
   re-check tracks, lanes and bytes there; a load that commits from its entry
-  snapshot drops the other track.
+  snapshot drops the other track. `unload()` and `dispose()` bump the load
+  epoch first. A decode that belongs to an older epoch does not commit, and
+  neither does a decode whose fetch signal aborted while it was in flight.
 - Reserve a single load slot in the UI **before any `await`**, and release it in
   a `finally` that covers no-track, empty-library, failed-request and
   throwing-listener paths.

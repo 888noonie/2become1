@@ -57,6 +57,24 @@ _STORED_STEM_DECODED_BYTES = 128 * 1024 * 1024
 _STORED_TRACK_DECODED_BYTES = 512 * 1024 * 1024
 
 
+def _window_pcm_codec(sample_fmt: str, bits: int | None) -> str:
+    """Pick a WAV codec that keeps the source samples.
+
+    16-bit stays 16-bit. Wider integer PCM stays wide enough to hold those
+    samples. Float stays float. The cut is not an excuse to narrow the file.
+    """
+    fmt = (sample_fmt or "").lower()
+    if fmt in {"flt", "fltp", "dbl", "dblp"}:
+        return "pcm_f32le"
+    if bits is not None and bits > 24:
+        return "pcm_s32le"
+    if bits is not None and bits > 16:
+        return "pcm_s24le"
+    if fmt in {"s32", "s32p"}:
+        return "pcm_s32le"
+    return "pcm_s16le"
+
+
 def clean_track_display_name(value: object) -> str:
     """Return a stored track label, or reject a blank or over-long one.
 
@@ -1863,30 +1881,40 @@ class StudioService:
         }
 
     def _apply_import_display_name(self, track: dict, request: dict, metadata: dict | None) -> dict:
-        """Set the label once, when the track is first stored.
+        """Set the label once, and only while the column is still unset.
 
-        A name the PM already saved is left alone. Separation finishes later
-        and must not replace it. The file name stays in ``original_name``.
+        The decision and the write are one conditional update. A rename that
+        lands while import completion is between its read and its write keeps
+        the saved name. Separation finishes later and must not replace it.
+        The file name stays in ``original_name``.
         """
-        if self._display_name_is_set(track["id"]):
-            return self.get_track(track["id"])
         chosen = request.get("display_name")
         if isinstance(chosen, str) and chosen:
-            return self.update_track(track["id"], display_name=chosen)
-        title = metadata.get("title") if isinstance(metadata, dict) else None
-        if isinstance(title, str):
-            try:
-                return self.update_track(track["id"], display_name=title)
-            except UserError:
-                return track
-        return track
+            candidate = chosen
+            required = True
+        else:
+            title = metadata.get("title") if isinstance(metadata, dict) else None
+            if not isinstance(title, str):
+                return self.get_track(track["id"])
+            candidate = title
+            required = False
+        try:
+            cleaned = clean_track_display_name(candidate)
+        except UserError:
+            if required:
+                raise
+            return self.get_track(track["id"])
+        self._set_display_name_if_unset(track["id"], cleaned)
+        return self.get_track(track["id"])
 
-    def _display_name_is_set(self, track_id: str) -> bool:
+    def _set_display_name_if_unset(self, track_id: str, cleaned: str) -> None:
+        """Store a label only when no label has been saved yet."""
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT display_name FROM tracks WHERE id = ?", (track_id,)
-            ).fetchone()
-        return bool(row and row["display_name"])
+            conn.execute(
+                """UPDATE tracks SET display_name = ?
+                   WHERE id = ? AND display_name IS NULL""",
+                (cleaned, track_id),
+            )
 
     def _queue_auto_separation(self, track_id: str) -> None:
         try:
@@ -2475,10 +2503,11 @@ class StudioService:
     def stem_audio_window(self, stem_set_id: str, name: str, *, start: float, duration: int) -> bytes:
         """Cut one stem to a shared musical section before the browser sees it.
 
-        The cut keeps the file's sample rate and channel count. It does not
-        resample, downmix, or replace the stored stem. A section that would
-        still decode past the desk's ordinary per-stem ceiling is refused
-        with the estimated byte count.
+        The cut keeps the file's sample rate, channel count, and sample
+        format. It seeks by sample index, not by a rounded millisecond, and
+        it does not resample, downmix, narrow the PCM, or replace the stored
+        stem. A section that would still decode past the desk's ordinary
+        per-stem ceiling is refused with the estimated byte count.
         """
         if isinstance(duration, bool) or not isinstance(duration, int) or duration not in _SECTION_SECONDS:
             raise UserError("a section must be 30, 60, or 90 seconds")
@@ -2501,15 +2530,22 @@ class StudioService:
                 f"{_DEFAULT_STEM_DECODED_BYTES} per stem"
             )
 
+        rate = layout["sample_rate"]
+        start_sample = int(round(start_seconds * rate))
+        if start_sample < 0:
+            start_sample = 0
+        end_sample = start_sample + duration * rate
         command = [
             "ffmpeg", "-hide_banner", "-nostdin",
             "-protocol_whitelist", "file,pipe",
             "-i", str(source),
-            "-ss", f"{start_seconds:.3f}",
-            "-t", str(int(duration)),
             "-map", "0:a:0",
             "-vn",
-            "-c:a", "pcm_s16le",
+            "-af", (
+                f"atrim=start_sample={start_sample}:end_sample={end_sample},"
+                "asetpts=PTS-STARTPTS"
+            ),
+            "-c:a", _window_pcm_codec(layout["sample_fmt"], layout["bits_per_sample"]),
             "-f", "wav",
             "pipe:1",
         ]
@@ -2532,7 +2568,8 @@ class StudioService:
                 [
                     "ffprobe", "-v", "error",
                     "-select_streams", "a:0",
-                    "-show_entries", "stream=sample_rate,channels:format=duration",
+                    "-show_entries",
+                    "stream=sample_rate,channels,sample_fmt,bits_per_raw_sample:format=duration",
                     "-of", "json",
                     str(path),
                 ],
@@ -2551,6 +2588,9 @@ class StudioService:
             if raw_duration is None:
                 raw_duration = payload.get("format", {}).get("duration")
             duration = float(raw_duration)
+            sample_fmt = str(stream.get("sample_fmt") or "")
+            raw_bits = stream.get("bits_per_raw_sample")
+            bits = int(raw_bits) if raw_bits not in (None, "", "N/A") else None
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise UserError("the recording's sample rate could not be read") from exc
         if rate <= 0 or channels < 1 or not math.isfinite(duration) or duration < 0:
@@ -2559,7 +2599,13 @@ class StudioService:
             raise UserError(
                 f"the recording has {channels} channels; the desk accepts mono or stereo"
             )
-        return {"sample_rate": rate, "channels": channels, "duration": duration}
+        return {
+            "sample_rate": rate,
+            "channels": channels,
+            "duration": duration,
+            "sample_fmt": sample_fmt,
+            "bits_per_sample": bits,
+        }
 
     # ------------------------------------------------------------------
     # Owner-supplied (already separated) stems

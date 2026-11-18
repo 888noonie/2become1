@@ -183,6 +183,14 @@ function budgetFailure(group, detail) {
   };
 }
 
+function cancelledLoad(group) {
+  return {
+    name: group.trackId,
+    code: 'S_LOAD_CANCELLED',
+    message: `group ${group.trackId} load was cancelled`,
+  };
+}
+
 export class StemDesk {
   constructor({ audioContext, fetchImpl = null, now = null, ownsContext = false } = {}) {
     if (!audioContext) {
@@ -206,6 +214,9 @@ export class StemDesk {
     this._crossfader = 50;
     this._ownsContext = Boolean(ownsContext);
     this._decodedBytes = 0;
+    // Bumped by unload and dispose. A decode that resolves afterwards belongs
+    // to a retired load and must not commit.
+    this._loadEpoch = 0;
   }
 
   get status() {
@@ -230,6 +241,7 @@ export class StemDesk {
     // A disposed desk holds no audio; a load arriving afterwards is refused
     // without downloading anything.
     if (this._disposed) return this.state();
+    const epoch = this._loadEpoch;
     if (!Array.isArray(groups) || groups.length === 0) {
       throw new StemDeskError('S_NO_STEMS', 'no stem groups were supplied');
     }
@@ -248,10 +260,17 @@ export class StemDesk {
     const byteLimits = activeByteLimits(limits);
 
     for (const spec of specs) {
-      const outcome = await this._loadGroup(spec, signal, byteLimits);
+      if (this._loadEpoch !== epoch) return this.state();
+      const outcome = await this._loadGroup(spec, signal, byteLimits, epoch);
+      // unload() or dispose() retired this load while it was decoding. Leave
+      // the desk as that call left it, including a newer load's audio.
+      if (this._disposed || this._loadEpoch !== epoch) return this.state();
       failures.push(...outcome.failures);
       if (outcome.committed) changed = true;
+      if (signal?.aborted) break;
     }
+
+    if (this._disposed || this._loadEpoch !== epoch) return this.state();
 
     if (changed) {
       // Re-read the transport here, not at entry: the owner can press Play
@@ -294,7 +313,12 @@ export class StemDesk {
     return this.state();
   }
 
-  async _loadGroup(spec, signal, limits = STEM_DESK_LIMITS) {
+  async _loadGroup(spec, signal, limits = STEM_DESK_LIMITS, epoch = this._loadEpoch) {
+    const retired = () => this._disposed || this._loadEpoch !== epoch;
+    if (retired()) return { committed: false, failures: [] };
+    if (signal?.aborted) {
+      return { committed: false, failures: [cancelledLoad(spec)] };
+    }
     const existing = this._group(spec.trackId);
     const otherGroups = this._groups.filter((group) => group.trackId !== spec.trackId);
     const existingBytes = existing
@@ -322,8 +346,16 @@ export class StemDesk {
     let groupBytes = 0;
 
     for (const lane of spec.lanes) {
+      if (retired()) return { committed: false, failures: [] };
+      if (signal?.aborted) {
+        return { committed: false, failures: [...failures, cancelledLoad(spec)] };
+      }
       try {
         const decoded = await this._decodeLane(lane, spec.trackId, signal, limits);
+        if (retired()) return { committed: false, failures: [] };
+        if (signal?.aborted) {
+          return { committed: false, failures: [...failures, cancelledLoad(spec)] };
+        }
         const nextGroupBytes = groupBytes + decoded.decodedBytes;
         if (nextGroupBytes > limits.maxTrackDecodedBytes) {
           return {
@@ -354,6 +386,10 @@ export class StemDesk {
       }
     }
 
+    if (retired()) return { committed: false, failures: [] };
+    if (signal?.aborted) {
+      return { committed: false, failures: [...failures, cancelledLoad(spec)] };
+    }
     if (loaded.length === 0) {
       return { committed: false, failures };
     }
@@ -946,6 +982,7 @@ export class StemDesk {
 
   /** Drop decoded audio and nodes; the desk can be loaded again. */
   unload() {
+    this._loadEpoch += 1;
     this._stopSources();
     this._teardownNodes();
     this._groups = [];

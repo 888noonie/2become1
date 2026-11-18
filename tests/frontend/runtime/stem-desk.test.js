@@ -1076,6 +1076,89 @@ test('a cancelled fetch leaves the desk without that stem', async () => {
   assert.equal(state.status, 'unavailable');
 });
 
+function quietBuffer() {
+  return {
+    duration: 1,
+    length: 8,
+    numberOfChannels: 1,
+    sampleRate: 48000,
+    getChannelData: () => new Float32Array(8),
+  };
+}
+
+test('a decode that finishes after unload does not commit the lane', async () => {
+  let releaseDecode;
+  const decodeGate = new Promise((resolve) => { releaseDecode = resolve; });
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const ctx = new FakeContext();
+  ctx.decodeAudioData = async () => {
+    markStarted();
+    await decodeGate;
+    return quietBuffer();
+  };
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  const pending = desk.load([lane('vocals')]);
+  await started;
+  desk.unload();
+  assert.equal(desk.state().lanes.length, 0);
+  releaseDecode();
+  const finished = await pending;
+  assert.equal(finished.lanes.length, 0);
+  assert.equal(desk.state().status, 'idle');
+});
+
+test('aborting during decode does not commit the lane', async () => {
+  let releaseDecode;
+  const decodeGate = new Promise((resolve) => { releaseDecode = resolve; });
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const controller = new AbortController();
+  const ctx = new FakeContext();
+  ctx.decodeAudioData = async () => {
+    markStarted();
+    await decodeGate;
+    return quietBuffer();
+  };
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  const pending = desk.load([lane('vocals')], { signal: controller.signal });
+  await started;
+  controller.abort();
+  releaseDecode();
+  const finished = await pending;
+  assert.equal(finished.lanes.length, 0);
+  assert.equal(finished.status, 'unavailable');
+  assert.equal(desk.state().lanes.length, 0);
+});
+
+test('overlapping loads of two groups both commit', async () => {
+  let releaseFirst;
+  let releaseSecond;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+  let decodeCalls = 0;
+  let markBoth;
+  const bothStarted = new Promise((resolve) => { markBoth = resolve; });
+  const ctx = new FakeContext();
+  ctx.decodeAudioData = async () => {
+    decodeCalls += 1;
+    const gate = decodeCalls === 1 ? firstGate : secondGate;
+    if (decodeCalls === 2) markBoth();
+    await gate;
+    return quietBuffer();
+  };
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  const loadA = desk.loadGroups([{ trackId: 'A', lanes: [lane('vocals')] }]);
+  const loadB = desk.loadGroups([{ trackId: 'B', lanes: [lane('vocals')] }]);
+  await bothStarted;
+  releaseFirst();
+  releaseSecond();
+  await Promise.all([loadA, loadB]);
+  const state = desk.state();
+  assert.deepEqual(state.groups.map((group) => group.trackId).sort(), ['A', 'B']);
+  assert.equal(state.lanes.length, 2);
+});
+
 test('unloading drops the decoded lanes before the next load', async () => {
   const ctx = new FakeContext();
   const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
