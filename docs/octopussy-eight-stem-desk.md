@@ -549,3 +549,29 @@ Four findings, all fixed at the source:
 | The asset investigation record was stale and did not mention the crossed byte trigger | §“Static asset report” now records the measured 708,866 bytes / +57,961 (+8.90%) and what grew |
 
 Tests were added for the disposal race and the throwing listener.
+
+## 20. Live owner path (final HEAD)
+
+The Studio was started against the prepared two-track library and driven through
+the real UI, not a fixture, with
+`tests/browser/demo_two_track_smoke.js`:
+
+```
+PASS  the Studio serves the two-track Stem Desk
+PASS  the temporary library offers two separated tracks — trackB.wav | trackA.wav
+PASS  two distinct tracks are selected — trackA.wav / trackB.wav
+PASS  eight stem lanes are loaded — 8 rows
+PASS  provenance names Demucs and the stem set for both sets — 8 model labels, 8 set labels
+PASS  the policy line states the tempo truth
+PASS  the demonstrated combination is set through visible controls — true, true, true, true
+PASS  exactly four lanes remain unmuted — Mute A · Drums | Mute A · Bass | Mute B · Vocals | Mute B · Other
+PASS  play reports a shared-clock start
+PASS  the transport advances — 1.4 s
+PASS  unmuting is reversible from the same controls
+PASS  stop reports a stopped transport
+PASS  no uncaught page errors
+13/13 demonstration readiness checks passed
+```
+
+That is readiness and control behaviour. It is **not** an audible claim: the PM
+listens next.
