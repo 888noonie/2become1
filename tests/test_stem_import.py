@@ -589,3 +589,92 @@ class TestHttpStagingGuards:
                 )
             assert refused.status_code == 400
             assert "WAV" in refused.text
+
+class TestSetIntegrity:
+    def test_two_partial_sets_never_form_a_mixed_quad(self, tmp_path):
+        import json
+        import sqlite3
+        import time
+
+        service = _service(tmp_path)
+        try:
+            track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
+            track_sha = service._track_content_hash(track["id"])
+
+            def publish(set_id, roles, method, created):
+                folder = service.stem_dir / set_id
+                folder.mkdir(parents=True)
+                paths = {}
+                for role in roles:
+                    stem_wav(folder / f"{role}.wav", freq=ROLE_FREQ[role])
+                    paths[role] = f"stems/{set_id}/{role}.wav"
+                with sqlite3.connect(service.data_dir / "studio.sqlite3") as conn:
+                    conn.execute(
+                        "INSERT INTO stem_sets (id, track_id, method, model, device, status,"
+                        " paths_json, track_sha256, model_name, created_at)"
+                        " VALUES (?, ?, ?, 'x', 'cpu', 'complete', ?, ?, ?, ?)",
+                        (set_id, track["id"], method, json.dumps(paths), track_sha, set_id, created),
+                    )
+
+            publish("imported-three", ("vocals", "drums", "bass"), "imported", time.time())
+            publish("demucs-other", ("other",), "demucs", time.time() - 10)
+
+            listing = service.list_stems(track["id"])
+            quad = [v for v in listing["variants"] if v["name"] in {"vocals", "drums", "bass", "other"}]
+            assert {v["stem_set_id"] for v in quad} == {"imported-three"}
+            assert [v["name"] for v in quad] == ["bass", "drums", "vocals"], "no fourth lane is invented"
+        finally:
+            service.close()
+
+    def test_reimport_repairs_a_row_whose_media_went_missing(self, tmp_path):
+        service = _service(tmp_path)
+        try:
+            track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
+            files = make_stems(tmp_path / "stems")
+            first = service.import_stem_set(track["id"], _stage_all(service, files))
+            # Delete one published lane, as a disk problem would.
+            (service.stem_dir / first["stem_set_id"] / "other.wav").unlink()
+
+            second = service.import_stem_set(track["id"], _stage_all(service, files))
+            assert second["cached"] is False, "a broken row is repaired, not reused"
+            assert (service.stem_dir / second["stem_set_id"] / "other.wav").is_file()
+            imported = [
+                v for v in service.list_stems(track["id"])["variants"] if v.get("method") == "imported"
+            ]
+            assert len(imported) == 4
+        finally:
+            service.close()
+
+    def test_a_lane_that_only_fits_at_the_file_rate_is_refused(self, tmp_path):
+        import math as maths
+        import struct
+        import wave
+        from twobecomeone.studio import UserError
+
+        # 115 s stereo at 44.1 kHz: 40.6 MB decoded at 44.1 kHz (under the old
+        # check) but 44.2 MB at the 48 kHz playback context (over the ceiling).
+        def long_silence(path: Path, seconds: float = 115.0) -> Path:
+            frames = int(round(seconds * 44100))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(path), "wb") as out:
+                out.setnchannels(2)
+                out.setsampwidth(2)
+                out.setframerate(44100)
+                block = b"\x00\x00\x00\x00" * 4096
+                remaining = frames
+                while remaining > 0:
+                    chunk = min(4096, remaining)
+                    out.writeframes(block[: chunk * 4])
+                    remaining -= chunk
+            return path
+
+        service = _service(tmp_path)
+        try:
+            track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
+            files = {role: long_silence(tmp_path / "long" / f"{role}.wav") for role in ROLE_FREQ}
+            with pytest.raises(UserError) as excinfo:
+                service.import_stem_set(track["id"], _stage_all(service, files))
+            assert "decodes to" in str(excinfo.value)
+            assert not [p for p in service.stem_dir.iterdir() if p.is_dir()]
+        finally:
+            service.close()

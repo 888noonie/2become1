@@ -2328,6 +2328,10 @@ class StudioService:
                 for name, rel in other_paths.items():
                     if name in valid or name in extra:
                         continue
+                    # Quad lanes must all come from the chosen set; only other
+                    # variant kinds (center/sides) may come from another row.
+                    if name in lane_order:
+                        continue
                     if self._validated_stem_path(rel, name) is not None:
                         extra[name] = other
             for name in sorted(valid):
@@ -2512,8 +2516,12 @@ class StudioService:
                 probed = self._probe_stem_audio(entry["_path"])
             except UserError as exc:
                 raise UserError(f"stem role '{role}': {exc}")
+            # The browser decodes at its context rate (48 kHz here), not the
+            # file's. Check the stricter case so an imported set can never be
+            # published ready and then refused by the desk.
+            playback_rate = max(48000, probed["sample_rate"])
             decoded_bytes = int(round(
-                probed["duration"] * probed["sample_rate"] * probed["channels"] * 4
+                probed["duration"] * playback_rate * probed["channels"] * 4
             ))
             if decoded_bytes > 40 * 1024 * 1024:
                 raise UserError(
@@ -2570,6 +2578,19 @@ class StudioService:
         track_sha256 = self._track_content_hash(track_id)
 
         cached = self._find_cached_stem_set(track_sha256, "imported", model_name)
+        if cached is not None:
+            cached_paths = cached.get("stems") or {}
+            intact = all(
+                self._validated_stem_path(cached_paths.get(role, ""), role) is not None
+                for role in STEM_IMPORT_ROLES
+            )
+            if not intact:
+                # The row survived but its media did not; this re-import is the
+                # repair path. Drop the unusable row and publish again.
+                with self._connect() as conn:
+                    conn.execute("DELETE FROM stem_sets WHERE id = ?", (cached["id"],))
+                shutil.rmtree(self.stem_dir / cached["id"], ignore_errors=True)
+                cached = None
         if cached is not None:
             for path in staged:
                 try:
