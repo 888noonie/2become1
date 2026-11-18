@@ -170,6 +170,7 @@ export class StemDesk {
     this._lanes = [];
     this._master = null;
     this._ceiling = null;
+    this._disposed = false;
     this._sources = [];
     this._status = 'idle';
     this._error = null;
@@ -201,6 +202,9 @@ export class StemDesk {
    * S_DESK_FULL and the groups already loaded stay intact.
    */
   async loadGroups(groups, { signal } = {}) {
+    // A disposed desk holds no audio; a load arriving afterwards is refused
+    // without downloading anything.
+    if (this._disposed) return this.state();
     if (!Array.isArray(groups) || groups.length === 0) {
       throw new StemDeskError('S_NO_STEMS', 'no stem groups were supplied');
     }
@@ -234,6 +238,12 @@ export class StemDesk {
       this._offset = 0;
       this._rebuildGraph();
       if (playingNow) this._status = 'ready';
+    }
+
+    if (this._disposed) {
+      // The panel went away while this load was decoding; leave the desk in
+      // its released state rather than reporting a failed available desk.
+      return this.state();
     }
 
     this._decodedBytes = this._groups.reduce(
@@ -320,6 +330,12 @@ export class StemDesk {
 
     if (loaded.length === 0) {
       return { committed: false, failures };
+    }
+
+    if (this._disposed) {
+      // The owner unmounted the panel while this decode was in flight; keep no
+      // decoded audio and report the load as not committed.
+      return { committed: false, failures: [{ name: spec.trackId, code: 'S_DISPOSED', message: 'the desk was disposed' }] };
     }
 
     // Recompute against the desk as it is NOW, not as it was when this load
@@ -899,6 +915,7 @@ export class StemDesk {
 
   /** Release everything. A context owned by the desk is closed; a shared one is not. */
   dispose() {
+    this._disposed = true;
     this.unload();
     if (this._ownsContext && typeof this._ctx.close === 'function') {
       this._ctx.close().catch(() => {});

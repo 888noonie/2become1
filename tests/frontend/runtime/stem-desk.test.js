@@ -883,3 +883,24 @@ test('play during a multi-group load builds the graph instead of throwing', asyn
     assert.ok(entry.node, `lane ${entry.key} has a gain node`);
   }
 });
+
+test('a load that finishes after dispose does not commit decoded audio', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ctx = new FakeContext();
+  const desk = new StemDesk({
+    audioContext: ctx,
+    fetchImpl: async () => {
+      await gate;
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(64).buffer };
+    },
+  });
+  const pending = desk.loadGroups([{ trackId: 'A', lanes: [lane('vocals')] }]);
+  desk.ownsContext = true;
+  desk.dispose();
+  release();
+  const state = await pending;
+  assert.equal(state.lanes.length, 0, 'a disposed desk holds no lanes');
+  assert.equal(desk._decodedBytes, 0);
+  assert.equal(state.status, 'idle');
+});

@@ -195,7 +195,12 @@ export function mountStemDeskPanel({
 
   function say(message) {
     status.textContent = message;
-    onAnnounce?.(message);
+    try {
+      onAnnounce?.(message);
+    } catch {
+      // An announcement listener is a viewer, not the load path; its failure
+      // must not escape a transport or load handler.
+    }
   }
 
   function ensureDesk() {
@@ -388,7 +393,9 @@ export function mountStemDeskPanel({
         positionLabel.textContent = '0.0 s';
         refreshTransport(state);
         renderLanes(state);
-        if (state.status === 'ready') say('The stem desk reached the end.');
+        // A load in flight stops the transport by design; that is not the
+        // programme reaching its end and must not be announced as such.
+        if (state.status === 'ready' && loadingCount === 0) say('The stem desk reached the end.');
         return;
       }
       positionLabel.textContent = `${state.positionSeconds.toFixed(1)} s`;
@@ -499,6 +506,7 @@ export function mountStemDeskPanel({
       let controller = null;
       try {
         if (!tracksLoaded) await ensureTracks();
+        if (disposed) return;
         const trackId = select.value;
         if (!trackId) {
           say(`Choose a track for group ${groupId} first.`);
@@ -511,6 +519,7 @@ export function mountStemDeskPanel({
         say(`Loading separated stems for group ${groupId}...`);
         const stems = await listStemsImpl(trackId, controller?.signal);
         if (disposed) return;
+
         const variants = Array.isArray(stems?.variants) ? stems.variants : [];
         const lanes = selectLanes(variants);
         if (!lanes.length) {

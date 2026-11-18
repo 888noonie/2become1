@@ -741,3 +741,24 @@ test('an empty library or no chosen track never leaves the Load buttons disabled
   dispose();
   disposeFail();
 });
+
+test('a throwing announcement listener cannot break the load path or the buttons', async () => {
+  const container = document.createElement('div');
+  const desk = new FakeDesk();
+  const dispose = mountStemDeskPanel({
+    container,
+    audioContextFactory: () => ({ name: 'fake-context' }),
+    createDesk: () => desk,
+    listTracksImpl: async () => ({ items: [{ id: 'track-1', name: 'night-drive.wav' }] }),
+    listStemsImpl: async () => ({ variants: [variant('vocals'), variant('drums')] }),
+    onAnnounce: () => { throw new Error('announcement viewer failed'); },
+  });
+  await flush();
+  const loadA = container.querySelector('button[aria-label="Load stems A"]');
+  loadA.click();
+  await flush();
+  await flush();
+  assert.equal(desk.calls.filter(([name]) => name === 'loadGroups').length, 1);
+  assert.equal(loadA.disabled, false, 'the button is usable after a throwing listener');
+  dispose();
+});

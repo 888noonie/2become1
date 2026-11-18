@@ -269,10 +269,29 @@ Real-stem gate (100/120 BPM demonstration sets):
 | two-track midpoint RMS / peak | −18.58 dBFS / −3.14 dBFS (no clip) |
 | end tail | peak 0, status `ready`, `playing:false` |
 
-Static asset report from the frontend run: 69 files, 696,930 bytes, baseline
-650,905 bytes, **+46,025 bytes (+7.07%)**. The growth is the two-group runtime
-and panel plus their tests; the 15% / 50,000-byte investigation trigger was not
-reached.
+Static asset report from the frontend run (`tests/frontend/static-size.test.js`):
+
+| Measurement | Value |
+| --- | --- |
+| total | **708,866 bytes across 69 files** |
+| baseline | 650,905 bytes across 67 files |
+| delta | **+57,961 bytes (+8.90%)** |
+| trigger | +50,000 bytes crossed; 15% not crossed |
+
+That crosses the byte trigger, so the investigation is recorded here per
+`docs/static-asset-policy.md`:
+
+- `js/runtime/stem-desk.js` 23,247 → **31,989 bytes** (+8,742): two group
+  gains, the second gain layer, the output ceiling, the layout guard and the
+  commit-time merge.
+- `js/components/stem-desk-panel.js` 12,905 → **~20,900 bytes**: two track
+  pickers, per-group level, crossfader, policy line, in-place row updates.
+- `js/runtime/crossfader.js` and the rest are unchanged (only imported).
+- The growth is behaviour the owner asked for, not padding; the journeys at
+  both viewports still pass and no file was minified or compressed.
+
+The five largest files remain `ghost-controller.js` (55,945), `live-mixer.js`
+(39,556), `stem-desk.js` (31,989), `studio.css` (30,601) and `plan.js` (27,543).
 
 `git diff --check bdad67a769a8eaca0ef0d9f77993f2927634a1b9..HEAD` was clean.
 
@@ -406,7 +425,7 @@ track.
 ## 14. Full verification run (final HEAD)
 
 ```bash
-npm test                     # 522 tests, 522 pass, 0 fail
+npm test                     # 524 tests, 524 pass, 0 fail
 .venv/bin/pytest -q          # 580 passed, 1 skipped
 node tests/browser/run.js --viewport 1280x800   # 39 checks, 0 failures
 node tests/browser/run.js --viewport 390x844    # 39 checks, 5 failures
@@ -472,7 +491,7 @@ are re-checked against that current state. The panel also keeps one load in
 flight at a time so the buttons do not invite the race. A unit test starts both
 loads before either can commit and asserts that both groups survive.
 
-The broader frontend suite (`npm test`) is 522/522 on this HEAD. The reviewer
+The broader frontend suite (`npm test`) is 524/524 on this HEAD. The reviewer
 saw `mashup-session.test.js` and `url-queue-panel.test.js` fail in its own run;
 both pass in isolation and in the full suite here, and neither touches the Stem
 Desk.
@@ -513,3 +532,16 @@ A control against the previous runtime records the defect directly:
 | this HEAD | yes | 0 |
 
 The control is in `/tmp/opencode/octopussy-evidence/play-control/`.
+
+## 19. Sixth pass: disposal, announcements and the asset trigger
+
+Four findings, all fixed at the source:
+
+| Finding | Fix |
+| --- | --- |
+| A panel disposed during a library lookup still announced and started a stem request afterwards | a post-await disposal check; the runtime also refuses to commit a decode that finishes after `dispose()` and leaves the desk `idle` with no lanes |
+| A throwing announcement listener escaped the handler as an unhandled rejection | `say()` catches the listener; the load path and the buttons are unaffected |
+| A load during playback announced “The stem desk reached the end”, because the load stops the transport by design | the end message is suppressed while a load is in flight |
+| The asset investigation record was stale and did not mention the crossed byte trigger | §“Static asset report” now records the measured 708,866 bytes / +57,961 (+8.90%) and what grew |
+
+Tests were added for the disposal race and the throwing listener.
