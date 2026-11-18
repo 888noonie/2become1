@@ -451,14 +451,35 @@ export function mountStemDeskPanel({
     rememberTrack(track, groupId);
     stopSeparationWatch(groupId);
     const name = track.title || track.name || track.id;
-    say(`Imported ${name}. The full mix is in the library. Separation is a separate step and is not finished yet.`);
+    const imported = `Imported ${name}. The full mix is in the library.`;
+    let active = null;
     try {
-      const active = await findActiveSeparation(track.id);
-      if (disposed || groupSelects[groupId].value !== track.id || !active) return;
-      watchSeparation(groupId, track.id, active);
+      active = await findActiveSeparation(track.id);
     } catch {
-      // The import sentence stays. A later Process click can request the job.
+      active = null;
     }
+    if (disposed || groupSelects[groupId].value !== track.id) return;
+    if (active) {
+      say(`${imported} Separation is a separate step and is not finished yet.`);
+      watchSeparation(groupId, track.id, active);
+      return;
+    }
+    let variants = [];
+    try {
+      variants = await readVariants(track.id);
+    } catch {
+      variants = [];
+    }
+    if (disposed || groupSelects[groupId].value !== track.id) return;
+    if (demucsQuad(variants)) {
+      say(`${imported} Separation has since finished: Four Demucs stems are ready. Load ${groupId} to play them.`);
+      return;
+    }
+    if (variants.some((variant) => variant && (variant.name === 'center' || variant.name === 'sides'))) {
+      say(`${imported} Separation finished as a center/sides split, not four Demucs stems.`);
+      return;
+    }
+    say(`${imported} Separation is a separate step and is not finished yet.`);
   }
 
   function trackTitle(trackId) {

@@ -844,6 +844,27 @@ test('adding a track opens Choose Track and does not treat the import as separat
   assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
 });
 
+test('a fast separation is reported only after the stem list is read', async () => {
+  const { container, desk } = mount({
+    tracks: [{ id: 'track-1', name: 'night-drive.wav' }],
+    variantsByTrack: { 'track-1': DEMUCS_QUAD, fresh: DEMUCS_QUAD },
+    listJobsImpl: async () => ({ items: [] }),
+    openPicker: async (_store, _slot, options) => {
+      await options.onImported({ id: 'fresh', name: 'fresh.wav' });
+      return 'close';
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  addButton(container, 'A').click();
+  await flush();
+  const status = container.querySelector('.stem-desk__status').textContent;
+  assert.match(status, /full mix is in the library/i);
+  assert.match(status, /Four Demucs stems are ready/);
+  assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
+});
+
 test('a track without Demucs stems requests processing and does not claim a center/sides result', async () => {
   const submitted = [];
   let onUpdate = null;
