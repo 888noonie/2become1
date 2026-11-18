@@ -106,6 +106,10 @@ export function validateStemDeskProposal(raw, deskState) {
 
   const loadedLanes = laneMap(deskState);
   const loadedGroups = groupMap(deskState);
+  const soloed = [...loadedLanes.values()].find((lane) => lane.solo);
+  if (soloed) {
+    return reject('SOLO_HELD', `clear solo on ${soloed.key} before approving a proposal`);
+  }
   for (const trackId of trackIds) {
     const track = proposal.tracks[trackId];
     const trackExtra = extraKey(track, TRACK_KEYS);
@@ -128,9 +132,6 @@ export function validateStemDeskProposal(raw, deskState) {
     const lanesForTrack = [...loadedLanes.values()].filter((lane) => lane.trackId === trackId);
     if (!lanesForTrack.length || lanesForTrack.some((lane) => lane.stemSetId !== track.stemSetId)) {
       return reject('TRACK_NOT_LOADED', `group ${trackId} is not the stem set ${track.stemSetId}`);
-    }
-    if (lanesForTrack.some((lane) => lane.solo)) {
-      return reject('SOLO_HELD', `clear solo on group ${trackId} before approving a proposal`);
     }
   }
 

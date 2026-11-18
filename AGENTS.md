@@ -66,7 +66,8 @@ real view functions with `node --test tests/frontend/*.js`.
   `suggestStemDeskProposal` only returns data: A keeps drums and bass, B keeps
   vocals and other, silent lanes stay muted, and both entry offsets stay 0.
   `approveStemDeskProposal` is the only function that may apply one, and only
-  after it matches the loaded stem-set ids and lane measurements. It does not
+  after it matches the loaded stem-set ids and lane measurements. Any soloed
+  lane blocks it, including a lane on a group the proposal does not name. It does not
   call `play`. Unknown fields, including playback rate and pitch, reject the
   whole proposal and leave the mix unchanged.
 - The Studio sidebar queue adds a track that is already in the library. It has

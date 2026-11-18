@@ -194,6 +194,35 @@ test('an approved proposal applies mute, gain, crossfader, and entry offset', as
   for (const source of ctx.createdSources) assert.equal(source.playbackRate, undefined);
 });
 
+function groupAOnly(state) {
+  return {
+    schema: 'stem-desk-proposal/v1',
+    tracks: { A: { stemSetId: 'stem-set-a' } },
+    groups: { A: { levelDb: -6, entryOffsetMs: 100 } },
+    lanes: { 'A:vocals': { muted: true, gainDb: -3 } },
+    crossfader: 10,
+    rationale: 'Change only group A.',
+    evidence: evidenceFrom(state, ['A:vocals']),
+    caveats: {
+      tempo: 'Entry offsets are manual milliseconds. The desk reports beatMatched false.',
+      key: 'The desk has no pitch control.',
+    },
+    confidence: 0.5,
+  };
+}
+
+test('solo on a group the proposal does not name leaves the mix unchanged', async () => {
+  const { ctx, desk } = await loadedDesk();
+  desk.setSolo('B:vocals', true);
+  const before = snapshot(desk);
+  const result = approveStemDeskProposal(groupAOnly(desk.state()), desk);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'SOLO_HELD');
+  assert.deepEqual(snapshot(desk), before);
+  assert.equal(ctx.createdSources.length, 0);
+  assert.equal(desk.state().lanes.find((lane) => lane.key === 'B:vocals').solo, true);
+});
+
 test('a proposal for an unloaded track or a soloed lane is refused', async () => {
   const { desk } = await loadedDesk();
   const missing = legalProposal(desk.state());
