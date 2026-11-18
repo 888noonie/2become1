@@ -406,7 +406,7 @@ track.
 ## 14. Full verification run (final HEAD)
 
 ```bash
-npm test                     # 517 tests, 517 pass, 0 fail
+npm test                     # 522 tests, 522 pass, 0 fail
 .venv/bin/pytest -q          # 580 passed, 1 skipped
 node tests/browser/run.js --viewport 1280x800   # 39 checks, 0 failures
 node tests/browser/run.js --viewport 390x844    # 39 checks, 5 failures
@@ -472,7 +472,7 @@ are re-checked against that current state. The panel also keeps one load in
 flight at a time so the buttons do not invite the race. A unit test starts both
 loads before either can commit and asserts that both groups survive.
 
-The broader frontend suite (`npm test`) is 517/517 on this HEAD. The reviewer
+The broader frontend suite (`npm test`) is 522/522 on this HEAD. The reviewer
 saw `mashup-session.test.js` and `url-queue-panel.test.js` fail in its own run;
 both pass in isolation and in the full suite here, and neither touches the Stem
 Desk.
@@ -489,3 +489,27 @@ Three more edge cases were reproduced and closed at the source:
 
 A throwing announcement listener could also leave both Load buttons disabled;
 the announcement now runs inside the same `try` as the load.
+
+## 18. Fifth pass: the two proofs and the lockout
+
+Two more findings were reproduced and fixed.
+
+**A reserved load slot could lock both buttons.** The handler reserved the
+single slot and then returned early when no track was chosen (or the library was
+empty or its request failed), before reaching the `finally` that releases the
+slot. Everything after the reservation now lives inside one `try/finally`, with
+a regression test for the empty-library and failed-request cases.
+
+**The play-during-load proof was not deterministic.** It waited a single
+microtask and used a fake source that accepted a null destination, so it passed
+on the broken revision. It now waits for the actual missing-node window
+(a second group still fetching while the first has been published), asserts
+every lane has a gain node, and asserts every scheduled source connected to one.
+A control against the previous runtime records the defect directly:
+
+| Runtime | In the window | Sources connected to null |
+| --- | --- | --- |
+| previous `3cce7b2` | yes | **1** |
+| this HEAD | yes | 0 |
+
+The control is in `/tmp/opencode/octopussy-evidence/play-control/`.

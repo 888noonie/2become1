@@ -763,6 +763,110 @@ test('play during a multi-group load builds the graph instead of throwing', asyn
     },
   });
   await desk.loadGroups([{ trackId: 'A', lanes: [lane('vocals')] }]);
+  const sourcesBefore = ctx.createdSources.length;
+
+  // Two groups in one call: A commits while B is still fetching, which is the
+  // window where lanes are published but the graph has not been rebuilt.
+  const pending = desk.loadGroups([
+    { trackId: 'A', lanes: [lane('vocals', { audioUrl: '/A' })] },
+    { trackId: 'B', lanes: [lane('vocals', { audioUrl: '/B' })] },
+  ]);
+  for (let i = 0; i < 50 && !desk._lanes.some((entry) => !entry.node); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.ok(
+    desk._lanes.length > 0 && desk._lanes.some((entry) => !entry.node),
+    'the test is inside the missing-node window',
+  );
+
+  const state = desk.play({ loop: true });
+  assert.equal(state.status, 'playing', 'Play survived the mid-load window');
+  for (const entry of desk._lanes) {
+    assert.ok(entry.node && entry.node.gain, `lane ${entry.key} has a gain node`);
+  }
+  const created = ctx.createdSources.slice(sourcesBefore);
+  assert.ok(created.length > 0, 'sources were scheduled');
+  for (const source of created) {
+    assert.ok(source.node && source.node.gain, 'every source connects to a gain node, not null');
+  }
+  releaseB();
+  await pending;
+});
+
+test('a stem with more than two channels is refused rather than downmixed', async () => {
+  const ctx = new FakeContext({ channels: 4 });
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  const state = await desk.load([lane('vocals')]);
+  assert.equal(state.status, 'unavailable');
+  assert.equal(state.error.code, 'S_STEM_LAYOUT');
+  assert.match(state.error.message, /mono or stereo/);
+});
+
+test('two overlapping loads keep both groups instead of dropping the first', async () => {
+  const ctx = new FakeContext();
+  let releaseA;
+  let releaseB;
+  const gateA = new Promise((resolve) => { releaseA = resolve; });
+  const gateB = new Promise((resolve) => { releaseB = resolve; });
+  const desk = new StemDesk({
+    audioContext: ctx,
+    fetchImpl: async (url) => {
+      if (url.includes('/A')) await gateA;
+      if (url.includes('/B')) await gateB;
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(64).buffer };
+    },
+  });
+
+  // Both loads are in flight before either commits: the stale-snapshot case.
+  const loadA = desk.loadGroups([{ trackId: 'A', lanes: [lane('vocals', { audioUrl: '/A' })] }]);
+  const loadB = desk.loadGroups([{ trackId: 'B', lanes: [lane('vocals', { audioUrl: '/B' })] }]);
+  releaseA();
+  const afterA = await loadA;
+  assert.deepEqual(afterA.groups.map((group) => group.trackId), ['A']);
+  releaseB();
+  const afterB = await loadB;
+
+  assert.deepEqual(afterB.groups.map((group) => group.trackId).sort(), ['A', 'B'],
+    'the group that finished first is not discarded');
+  assert.deepEqual(afterB.lanes.map((entry) => entry.key).sort(), ['A:vocals', 'B:vocals']);
+});
+
+test('a third track is refused at commit, not just at entry', async () => {
+  const desk = new StemDesk({ audioContext: new FakeContext(), fetchImpl: fakeFetch() });
+  let releaseC;
+  const gateC = new Promise((resolve) => { releaseC = resolve; });
+  const slowFetch = async (url) => {
+    if (url.includes('/C')) await gateC;
+    return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(64).buffer };
+  };
+  const racing = new StemDesk({ audioContext: new FakeContext(), fetchImpl: slowFetch });
+  await racing.loadGroups([{ trackId: 'A', lanes: [lane('vocals')] }]);
+
+  const loadC = racing.loadGroups([{ trackId: 'C', lanes: [lane('vocals', { audioUrl: '/C' })] }]);
+  const loadB = racing.loadGroups([{ trackId: 'B', lanes: [lane('vocals', { audioUrl: '/B' })] }]);
+  await loadB;
+  releaseC();
+  const after = await loadC;
+
+  assert.deepEqual(after.groups.map((group) => group.trackId).sort(), ['A', 'B'],
+    'a third overlapping group is refused rather than accepted');
+  assert.equal(after.error.code, 'S_DESK_FULL');
+  assert.match(after.error.message, /at most 2 tracks/);
+  assert.equal(desk.state().status, 'idle');
+});
+
+test('play during a multi-group load builds the graph instead of throwing', async () => {
+  const ctx = new FakeContext();
+  let releaseB;
+  const gateB = new Promise((resolve) => { releaseB = resolve; });
+  const desk = new StemDesk({
+    audioContext: ctx,
+    fetchImpl: async (url) => {
+      if (url.includes('/B')) await gateB;
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(64).buffer };
+    },
+  });
+  await desk.loadGroups([{ trackId: 'A', lanes: [lane('vocals')] }]);
 
   // A multi-group load publishes A's lanes before it rebuilds the graph.
   const pending = desk.loadGroups([

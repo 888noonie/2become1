@@ -705,3 +705,39 @@ test('two quick Load clicks start only one load, even before the library resolve
     'the button is usable again after the load settles');
   dispose();
 });
+
+test('an empty library or no chosen track never leaves the Load buttons disabled', async () => {
+  const container = document.createElement('div');
+  const desk = new FakeDesk();
+  const dispose = mountStemDeskPanel({
+    container,
+    audioContextFactory: () => ({ name: 'fake-context' }),
+    createDesk: () => desk,
+    listTracksImpl: async () => ({ items: [] }),
+    listStemsImpl: async () => ({ variants: [] }),
+  });
+  await flush();
+
+  const loadA = container.querySelector('button[aria-label="Load stems A"]');
+  loadA.click();               // empty library, no track selected
+  await flush();
+  assert.equal(loadA.disabled, false, 'button recovers after an empty library');
+
+  // A failing library request must also release the slot.
+  const failContainer = document.createElement('div');
+  const failDesk = new FakeDesk();
+  const disposeFail = mountStemDeskPanel({
+    container: failContainer,
+    audioContextFactory: () => ({ name: 'fake-context' }),
+    createDesk: () => failDesk,
+    listTracksImpl: async () => { throw new Error('library request failed'); },
+    listStemsImpl: async () => ({ variants: [] }),
+  });
+  await flush();
+  const failLoad = failContainer.querySelector('button[aria-label="Load stems A"]');
+  failLoad.click();
+  await flush();
+  assert.equal(failLoad.disabled, false, 'button recovers after a failed library request');
+  dispose();
+  disposeFail();
+});

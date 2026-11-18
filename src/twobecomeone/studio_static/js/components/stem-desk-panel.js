@@ -493,19 +493,21 @@ export function mountStemDeskPanel({
       if (loadingCount > 0) return;
       loadingCount += 1;
       syncLoadButtons();
-      if (!tracksLoaded) await ensureTracks();
-      const trackId = select.value;
-      if (!trackId) {
-        say(`Choose a track for group ${groupId} first.`);
-        return;
-      }
-      aborts.get(groupId)?.abort();
-      const controller = typeof AbortController === 'function' ? new AbortController() : null;
-      if (controller) aborts.set(groupId, controller);
-      const button = groupButtons[groupId];
+      // Everything after the reservation lives inside this try/finally, so no
+      // early return (no track chosen, empty library, a throwing listener) can
+      // leave both buttons disabled for the life of the panel.
+      let controller = null;
       try {
-        // Inside the try: an announcement listener that throws must not leave
-        // both buttons disabled for the rest of the session.
+        if (!tracksLoaded) await ensureTracks();
+        const trackId = select.value;
+        if (!trackId) {
+          say(`Choose a track for group ${groupId} first.`);
+          return;
+        }
+        aborts.get(groupId)?.abort();
+        controller = typeof AbortController === 'function' ? new AbortController() : null;
+        if (controller) aborts.set(groupId, controller);
+
         say(`Loading separated stems for group ${groupId}...`);
         const stems = await listStemsImpl(trackId, controller?.signal);
         if (disposed) return;
