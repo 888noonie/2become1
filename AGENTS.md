@@ -52,6 +52,11 @@ real view functions with `node --test tests/frontend/*.js`.
   next Play. Negative is earlier, positive is later, and Reset is zero. It
   moves the whole group together and does not change playback rate, pitch,
   or tempo. It is not beat matching.
+- `source_adapter.validate` classifies one slot as a YouTube link, an
+  already-staged upload, or a library track. It does not download. A public
+  URL is not authorisation: `authorised` must be the caller's own True, or
+  the result is `NOT_AUTHORISED`. The handoff names `submit_youtube_import`,
+  `submit_upload_import`, or `assign_deck`. It does not start that call.
 - The Studio sidebar queue adds a track that is already in the library. It has
   no YouTube paste box. YouTube import stays in Choose Track. The queue is not
   persisted.
