@@ -42,6 +42,12 @@ real view functions with `node --test tests/frontend/*.js`.
   specifically about Demucs.
 - The Library **+** pane calls `openSourcePicker(store, null)`. That dialog
   keeps its Library, Upload, and YouTube choices.
+- The Stem Performance Desk uses the same dialog. Choose from Library picks a
+  stored track into group A or B and does not assign a deck. Add / Process
+  Track opens that dialog for a new upload or YouTube import, or requests
+  `submit_separation(method="demucs")` when the selected track has no complete
+  Demucs vocals/drums/bass/other set. It watches the existing job. A finished
+  import is not a finished separation, and center/sides stay a channel split.
 - The Studio sidebar queue adds a track that is already in the library. It has
   no YouTube paste box. YouTube import stays in Choose Track. The queue is not
   persisted.

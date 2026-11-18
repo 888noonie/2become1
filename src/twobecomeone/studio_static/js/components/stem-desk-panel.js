@@ -7,11 +7,11 @@
 //
 // Bounded by design: the panel loads each group on demand, aborts a stale
 // request for that group, and disposes its desk (and its own AudioContext) on
-// unmount. It reuses existing read-only stem endpoints; it never writes a
-// stem, project or render.
+// unmount. Library intake reuses Choose Track. Separation reuses the existing
+// job. The panel does not write stem files, projects, or renders itself.
 
 import { createElement, replaceChildren } from '../dom.js';
-import { listTracks, listStems } from '../api.js';
+import { listJobs, listStems, listTracks, submitSeparation, watchJob } from '../api.js';
 import { StemDesk, STEM_DESK_LIMITS } from '../runtime/stem-desk.js';
 
 const STEM_ORDER = ['vocals', 'drums', 'bass', 'other', 'center', 'sides'];
@@ -97,8 +97,13 @@ function groupLabel(trackId) {
 
 export function mountStemDeskPanel({
   container,
+  store = null,
+  openPicker = null,
   listTracksImpl = listTracks,
   listStemsImpl = listStems,
+  listJobsImpl = listJobs,
+  submitSeparationImpl = submitSeparation,
+  watchJobImpl = watchJob,
   createDesk = (options) => new StemDesk(options),
   audioContextFactory = () => new AudioContext(),
   onAnnounce = null,
@@ -114,11 +119,25 @@ export function mountStemDeskPanel({
   const groupControls = createElement('div', { class: 'stem-desk__groups' });
   const groupSelects = {};
   const groupButtons = {};
+  const groupChoose = {};
+  const groupProcess = {};
   for (const groupId of GROUP_IDS) {
     const select = createElement('select', {
       class: 'stem-desk__select',
       'aria-label': `Track for group ${groupId}`,
     }, [createElement('option', { value: '', text: 'Choose a track…' })]);
+    const chooseLibrary = createElement('button', {
+      class: 'button button--sm',
+      type: 'button',
+      text: 'Choose from Library',
+      'aria-label': `Choose from Library for group ${groupId}`,
+    });
+    const addOrProcess = createElement('button', {
+      class: 'button button--sm',
+      type: 'button',
+      text: 'Add / Process Track',
+      'aria-label': `Add / Process Track for group ${groupId}`,
+    });
     const loadButton = createElement('button', {
       class: 'button button--sm stem-desk__load',
       type: 'button',
@@ -129,10 +148,14 @@ export function mountStemDeskPanel({
     const row = createElement('div', { class: 'stem-desk__group-controls', dataset: { group: groupId } }, [
       createElement('span', { class: 'stem-desk__group-label', text: `Group ${groupId}` }),
       select,
+      chooseLibrary,
+      addOrProcess,
       loadButton,
     ]);
     groupSelects[groupId] = select;
     groupButtons[groupId] = loadButton;
+    groupChoose[groupId] = chooseLibrary;
+    groupProcess[groupId] = addOrProcess;
     groupControls.appendChild(row);
   }
   const playButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Play', disabled: 'true' });
@@ -177,6 +200,8 @@ export function mountStemDeskPanel({
 
   let desk = null;
   const aborts = new Map();
+  const separationWatches = new Map();
+  const readinessTokens = { A: 0, B: 0 };
   let positionTimer = null;
   let disposed = false;
   let tracksLoaded = false;
@@ -209,6 +234,231 @@ export function mountStemDeskPanel({
     // closed here, and this one is closed when the panel is disposed.
     desk = createDesk({ audioContext: audioContextFactory(), ownsContext: true });
     return desk;
+  }
+
+  function stopSeparationWatch(groupId) {
+    const watch = separationWatches.get(groupId);
+    if (!watch) return;
+    try { watch.unsub?.(); } catch { /* a watcher must not block the next track */ }
+    separationWatches.delete(groupId);
+  }
+
+  function rememberTrack(track, groupId) {
+    const label = track.title || track.name || track.originalName || track.id;
+    for (const id of GROUP_IDS) {
+      const select = groupSelects[id];
+      const existing = [...select.options].find((entry) => entry.value === track.id);
+      if (!existing) {
+        select.appendChild(createElement('option', { value: track.id, text: label }));
+      }
+      select.disabled = undefined;
+    }
+    groupSelects[groupId].value = track.id;
+    tracksLoaded = true;
+  }
+
+  function demucsQuad(variants) {
+    const byName = new Map();
+    for (const variant of variants) {
+      if (!variant || variant.method !== 'demucs' || !variant.name || variant.name === 'full') continue;
+      byName.set(variant.name, variant);
+    }
+    const lanes = ['vocals', 'drums', 'bass', 'other'].map((name) => byName.get(name));
+    return lanes.every(Boolean) ? lanes : null;
+  }
+
+  async function readVariants(trackId) {
+    const stems = await listStemsImpl(trackId);
+    return Array.isArray(stems?.variants) ? stems.variants : [];
+  }
+
+  async function reportReadiness(groupId, trackId = groupSelects[groupId].value) {
+    const token = ++readinessTokens[groupId];
+    if (!trackId) {
+      say(`Choose a track for group ${groupId} first.`);
+      return;
+    }
+    let variants = [];
+    try {
+      variants = await readVariants(trackId);
+    } catch (err) {
+      if (readinessTokens[groupId] !== token || groupSelects[groupId].value !== trackId) return;
+      say(`Could not read stems for group ${groupId}: ${err?.message || 'request failed'}`);
+      return;
+    }
+    if (disposed || readinessTokens[groupId] !== token || groupSelects[groupId].value !== trackId) return;
+    const name = trackTitle(trackId);
+    const demucsNames = ['vocals', 'drums', 'bass', 'other'].filter((stemName) => (
+      variants.some((variant) => variant && variant.name === stemName && variant.method === 'demucs')
+    ));
+    if (demucsNames.length === 4) {
+      say(`Four Demucs stems are ready for ${name}. Load ${groupId} to play them.`);
+      return;
+    }
+    if (demucsNames.length > 0) {
+      say(`${name} has ${demucsNames.length} of 4 Demucs stems. The set is not ready. Load ${groupId} plays only the lanes that exist.`);
+      return;
+    }
+    const channelSplit = variants.some((variant) => variant && (variant.name === 'center' || variant.name === 'sides'));
+    if (channelSplit) {
+      say(`${name} has a center/sides split, not four Demucs stems. Load ${groupId} plays that channel split. Add / Process Track requests Demucs.`);
+      return;
+    }
+    say(`${name} has no separated stems yet. Use Add / Process Track to separate it.`);
+  }
+
+  async function findActiveSeparation(trackId) {
+    const page = await listJobsImpl({ kind: 'separate', limit: 50 });
+    const items = Array.isArray(page?.items) ? page.items : (Array.isArray(page) ? page : []);
+    return items.find((job) => (
+      job
+      && (job.kind == null || job.kind === 'separate')
+      && job.request
+      && job.request.track_id === trackId
+      && (job.status === 'queued' || job.status === 'running')
+    )) || null;
+  }
+
+  function jobDetail(job) {
+    const detail = job.progress_detail;
+    const percent = detail && typeof detail === 'object' && detail.percent != null
+      ? ` ${Math.round(Number(detail.percent))}%`
+      : '';
+    const message = job.message || job.error || '';
+    return `${job.status}${percent}${message ? ` — ${message}` : ''}`;
+  }
+
+  async function onSeparationUpdate(groupId, trackId, job) {
+    if (disposed || !job) return;
+    const watch = separationWatches.get(groupId);
+    if (!watch || watch.trackId !== trackId || watch.jobId !== job.id) return;
+    if (groupSelects[groupId].value !== trackId) return;
+    const name = trackTitle(trackId);
+    if (job.status === 'queued' || job.status === 'running') {
+      say(`Separating ${name}: ${jobDetail(job)}.`);
+      return;
+    }
+    if (job.status === 'complete') {
+      let variants = [];
+      try {
+        variants = await readVariants(trackId);
+      } catch {
+        variants = [];
+      }
+      if (disposed || groupSelects[groupId].value !== trackId) return;
+      const still = separationWatches.get(groupId);
+      if (!still || still.jobId !== job.id) return;
+      if (demucsQuad(variants)) {
+        say(`Separation complete for ${name}. Four Demucs stems are ready. Load ${groupId} to play them.`);
+      } else if (variants.some((variant) => variant && (variant.name === 'center' || variant.name === 'sides'))) {
+        say(`Separation finished for ${name}, but the result is a center/sides split, not four Demucs stems.`);
+      } else {
+        say(`Separation finished for ${name}, but four Demucs stems are not available.`);
+      }
+      stopSeparationWatch(groupId);
+      return;
+    }
+    if (job.status === 'failed' || job.status === 'cancelled' || job.status === 'interrupted') {
+      const reason = job.error || job.message || job.status;
+      say(`Separation ${job.status} for ${name}: ${reason}. Use Add / Process Track to retry.`);
+      stopSeparationWatch(groupId);
+    }
+  }
+
+  function watchSeparation(groupId, trackId, job) {
+    stopSeparationWatch(groupId);
+    if (!job?.id) return;
+    const unsub = watchJobImpl(job.id, (updated) => {
+      void onSeparationUpdate(groupId, trackId, updated);
+    });
+    separationWatches.set(groupId, { trackId, jobId: job.id, unsub });
+    void onSeparationUpdate(groupId, trackId, job);
+  }
+
+  async function startSeparation(groupId, trackId) {
+    let active = null;
+    try {
+      active = await findActiveSeparation(trackId);
+    } catch (err) {
+      if (groupSelects[groupId].value !== trackId) return;
+      say(`Could not read separation jobs for group ${groupId}: ${err?.message || 'request failed'}`);
+      return;
+    }
+    if (disposed || groupSelects[groupId].value !== trackId) return;
+    if (active) {
+      watchSeparation(groupId, trackId, active);
+      return;
+    }
+    let job = null;
+    try {
+      job = await submitSeparationImpl(trackId, 'demucs');
+    } catch (err) {
+      if (disposed || groupSelects[groupId].value !== trackId) return;
+      say(`Group ${groupId}: Demucs separation is unavailable. ${err?.message || 'request failed'}. Use Add / Process Track to retry when Demucs is available.`);
+      return;
+    }
+    if (disposed || groupSelects[groupId].value !== trackId || !job) return;
+    if (store) {
+      try { store.dispatch({ type: 'jobs/upsert', job }); } catch { /* the status line still follows the job */ }
+    }
+    watchSeparation(groupId, trackId, job);
+  }
+
+  async function openChooseTrack(groupId, mode) {
+    let picker = openPicker;
+    if (!picker) {
+      if (!store) {
+        say('Choose Track needs the Studio library, which is not connected here.');
+        return;
+      }
+      const mod = await import('./source-picker.js');
+      picker = mod.openSourcePicker;
+    }
+    try {
+      await picker(store, null, {
+        initialTab: mode === 'add' ? 'upload' : 'library',
+        onPick: (track) => { void receivePickedTrack(groupId, track, mode); },
+        onImported: (track) => receiveImportedTrack(groupId, track),
+      });
+    } catch (err) {
+      if (!disposed) say(`Choose Track failed: ${err?.message || 'request failed'}`);
+    }
+  }
+
+  async function receivePickedTrack(groupId, track, mode) {
+    if (disposed || !track?.id) return;
+    rememberTrack(track, groupId);
+    stopSeparationWatch(groupId);
+    if (mode === 'add') {
+      let variants = [];
+      try {
+        variants = await readVariants(track.id);
+      } catch (err) {
+        say(`Could not read stems for group ${groupId}: ${err?.message || 'request failed'}`);
+        return;
+      }
+      if (disposed || groupSelects[groupId].value !== track.id) return;
+      if (!demucsQuad(variants)) {
+        await startSeparation(groupId, track.id);
+        return;
+      }
+    }
+    await reportReadiness(groupId, track.id);
+  }
+
+  async function receiveImportedTrack(groupId, track) {
+    if (disposed || !track?.id) return;
+    rememberTrack(track, groupId);
+    stopSeparationWatch(groupId);
+    const name = track.title || track.name || track.id;
+    say(`Imported ${name}. The full mix is in the library. Separation is a separate step and is not finished yet.`);
+    try {
+      const active = await findActiveSeparation(track.id);
+      if (disposed || groupSelects[groupId].value !== track.id || !active) return;
+      watchSeparation(groupId, track.id, active);
+    } catch {
+      // The import sentence stays. A later Process click can request the job.
+    }
   }
 
   function trackTitle(trackId) {
@@ -489,10 +739,45 @@ export function mountStemDeskPanel({
     return tracksPending;
   }
 
+  async function onChoose(groupId) {
+    await ensureTracks();
+    if (disposed) return;
+    await openChooseTrack(groupId, 'choose');
+  }
+
+  async function onAdd(groupId) {
+    await ensureTracks();
+    if (disposed) return;
+    const trackId = groupSelects[groupId].value;
+    if (!trackId) {
+      await openChooseTrack(groupId, 'add');
+      return;
+    }
+    let variants = [];
+    try {
+      variants = await readVariants(trackId);
+    } catch (err) {
+      say(`Could not read stems for group ${groupId}: ${err?.message || 'request failed'}`);
+      return;
+    }
+    if (disposed || groupSelects[groupId].value !== trackId) return;
+    if (demucsQuad(variants)) {
+      await openChooseTrack(groupId, 'add');
+      return;
+    }
+    await startSeparation(groupId, trackId);
+  }
+
   for (const groupId of GROUP_IDS) {
     const select = groupSelects[groupId];
     select.addEventListener('focus', () => { void ensureTracks(); });
     select.addEventListener('pointerdown', () => { void ensureTracks(); });
+    select.addEventListener('change', () => {
+      stopSeparationWatch(groupId);
+      void reportReadiness(groupId);
+    });
+    groupChoose[groupId].addEventListener('click', () => { void onChoose(groupId); });
+    groupProcess[groupId].addEventListener('click', () => { void onAdd(groupId); });
 
     groupButtons[groupId].addEventListener('click', async () => {
       // Reserve the single load slot BEFORE any await: two clicks while the
@@ -524,7 +809,7 @@ export function mountStemDeskPanel({
         const lanes = selectLanes(variants);
         if (!lanes.length) {
           refreshTransport();
-          say(`Group ${groupId}: this track has no separated stems yet. Separate it in the Stem dialog first.`);
+          say(`Group ${groupId}: this track has no separated stems yet. Use Add / Process Track to separate it.`);
           return;
         }
         const state = await ensureDesk().loadGroups([{
@@ -583,6 +868,7 @@ export function mountStemDeskPanel({
   return function dispose() {
     if (disposed) return;
     disposed = true;
+    for (const groupId of GROUP_IDS) stopSeparationWatch(groupId);
     for (const controller of aborts.values()) controller.abort();
     aborts.clear();
     window.clearInterval(positionTimer);

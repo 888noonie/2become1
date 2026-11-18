@@ -119,6 +119,40 @@ test('Source picker renders its selected tab on first open', async () => {
   await result;
 });
 
+test('a library pick can return the track without assigning a deck', async () => {
+  const store = await makeStore();
+  store.dispatch({
+    type: 'library/set',
+    items: [{
+      id: 'track-9', name: 'Crate Track', duration: 30,
+      bpm: 90, key: { tonic: 'C', mode: 'major' }, source: { kind: 'upload' },
+    }],
+    total: 1,
+    limit: 50,
+    offset: 0,
+  });
+
+  const { openSourcePicker } = await import(
+    '../../src/twobecomeone/studio_static/js/components/source-picker.js'
+  );
+  let picked = null;
+  const result = openSourcePicker(store, null, {
+    initialTab: 'library',
+    onPick: (track) => { picked = track; },
+  });
+  const select = [...document.querySelectorAll('.track-card button')]
+    .find((button) => button.textContent === 'Select');
+  assert.ok(select, 'the library tab offers Select');
+  select.click();
+  const outcome = await Promise.race([
+    result,
+    new Promise((resolve) => setTimeout(() => resolve('timeout'), 300)),
+  ]);
+  assert.equal(outcome, 'pick');
+  assert.equal(picked && picked.id, 'track-9');
+  assert.equal(document.querySelector('dialog'), null);
+});
+
 test('Library plus pane opens the Choose Track source dialog', async () => {
   const store = await makeStore();
   globalThis.fetch = async () => ({

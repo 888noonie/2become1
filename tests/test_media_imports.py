@@ -183,6 +183,8 @@ class TestImportJobs:
             full = next(variant for variant in stems["variants"] if variant["name"] == "full")
             assert full["stem_set_id"] is None
             assert full["audio_url"] == f"/api/tracks/{track_id}/audio"
+            assert not any(variant.get("method") == "demucs" for variant in stems["variants"])
+            assert "vocals" not in {variant["name"] for variant in stems["variants"]}
             separation = [
                 item for item in service.list_jobs(limit=20)
                 if item["kind"] == "separate" and item["request"]["track_id"] == track_id

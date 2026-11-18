@@ -19,6 +19,7 @@ import { mountCommittedLayers } from '../components/committed-layers.js';
 import { mountPerformanceDeck } from '../components/performance-deck.js';
 import { mountStemCratePanel } from '../components/stem-crate-panel.js';
 import { mountStemDeskPanel } from '../components/stem-desk-panel.js';
+import { openSourcePicker } from '../components/source-picker.js';
 import { mountLiveCrossfader } from '../components/live-crossfader.js';
 import { mountUrlQueuePanel } from '../components/url-queue-panel.js';
 import { mountDawCommandBar } from '../components/daw-command-bar.js';
@@ -324,7 +325,12 @@ export function mountStudio({ container }) {
     container: crateMount, store, onAnnounce, stackController: stemStackController,
     ghostController, liveMixer,
   });
-  stemDeskDisposer = mountStemDeskPanel({ container: stemDeskMount, onAnnounce });
+  stemDeskDisposer = mountStemDeskPanel({
+    container: stemDeskMount,
+    onAnnounce,
+    store,
+    openPicker: openSourcePicker,
+  });
   planDisposer = mountPlan({ container: planContainer, store, projectManager });
   renderActionsDisposer = mountRenderActions({
     container: renderActionsContainer, store, projectManager,

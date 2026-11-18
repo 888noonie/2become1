@@ -43,7 +43,11 @@ const dataDir = join(outDir, 'stem-desk-ux-data');
 const server = spawn(
   process.env.PYTHON || '.venv/bin/python',
   ['-m', 'tests.browser.fixture_server', '--data-dir', dataDir, '--port', String(port)],
-  { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
+  {
+    cwd: ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, PYTHONPATH: join(ROOT, 'src') },
+  },
 );
 const log = [];
 server.stdout.on('data', (chunk) => log.push(chunk.toString()));

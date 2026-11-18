@@ -48,7 +48,11 @@ const dataDir = join(outDir, 'stem-desk-two-track-data');
 const server = spawn(
   process.env.PYTHON || '.venv/bin/python',
   ['-m', 'tests.browser.fixture_server', '--data-dir', dataDir, '--port', String(port)],
-  { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
+  {
+    cwd: ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, PYTHONPATH: join(ROOT, 'src') },
+  },
 );
 const log = [];
 server.stdout.on('data', (chunk) => log.push(chunk.toString()));
@@ -152,6 +156,21 @@ try {
 
     const desk = page.locator('.stem-desk');
     record('the two-track Stem Desk is mounted', (await desk.count()) === 1);
+    record('group A offers library, add/process, and load',
+      (await page.getByRole('button', { name: 'Choose from Library for group A' }).count()) === 1
+      && (await page.getByRole('button', { name: 'Add / Process Track for group A' }).count()) === 1
+      && (await page.getByRole('button', { name: 'Load stems A' }).count()) === 1);
+    record('group B offers library, add/process, and load',
+      (await page.getByRole('button', { name: 'Choose from Library for group B' }).count()) === 1
+      && (await page.getByRole('button', { name: 'Add / Process Track for group B' }).count()) === 1
+      && (await page.getByRole('button', { name: 'Load stems B' }).count()) === 1);
+    await page.getByRole('button', { name: 'Choose from Library for group A' }).click();
+    await sleep(400);
+    const dialogText = await page.locator('dialog').innerText().catch(() => '');
+    record('Choose from Library opens the existing Choose Track dialog',
+      /Library/.test(dialogText) && /Upload/.test(dialogText) && /YouTube/.test(dialogText));
+    await page.getByRole('button', { name: 'Close' }).click();
+    await sleep(200);
 
     await page.locator('.stem-desk select[aria-label="Track for group A"]').focus();
     await sleep(300);

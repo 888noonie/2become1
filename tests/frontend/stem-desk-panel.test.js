@@ -201,6 +201,13 @@ function mount({
   variantsByTrack = null,
   tracks = [{ id: 'track-1', name: 'night-drive.wav' }],
   silentNames = [],
+  openPicker = async () => 'close',
+  submitSeparationImpl = async () => {
+    throw new Error('separation was not stubbed');
+  },
+  listJobsImpl = async () => ({ items: [] }),
+  watchJobImpl = () => () => {},
+  listStemsImpl = null,
 } = {}) {
   const container = document.createElement('div');
   const desk = new FakeDesk();
@@ -214,18 +221,22 @@ function mount({
       calls.push(['createDesk', options]);
       return desk;
     },
+    openPicker,
+    submitSeparationImpl,
+    listJobsImpl,
+    watchJobImpl,
     listTracksImpl: async () => {
       calls.push(['listTracks']);
       return { items: tracks, total: tracks.length, limit: 50, offset: 0 };
     },
-    listStemsImpl: async (trackId) => {
+    listStemsImpl: listStemsImpl || (async (trackId) => {
       calls.push(['listStems', trackId]);
       const selected = variantsByTrack ? (variantsByTrack[trackId] || []) : variants;
       return {
         stems: ['full', ...selected.map((entry) => entry.name)],
         variants: [{ name: 'full' }, ...selected],
       };
-    },
+    }),
   });
   return { container, desk, calls, dispose };
 }
@@ -247,6 +258,16 @@ async function loadGroup(container, groupId) {
 function selectFor(container, groupId) {
   return container.querySelector(`select[aria-label="Track for group ${groupId}"]`);
 }
+
+function chooseButton(container, groupId) {
+  return container.querySelector(`button[aria-label="Choose from Library for group ${groupId}"]`);
+}
+
+function addButton(container, groupId) {
+  return container.querySelector(`button[aria-label="Add / Process Track for group ${groupId}"]`);
+}
+
+const DEMUCS_QUAD = ['vocals', 'drums', 'bass', 'other'].map((name) => variant(name));
 
 test('the desk lists tracks, loads four stems into group A and labels their provenance', async () => {
   const { container, desk, calls } = mount({
@@ -761,4 +782,376 @@ test('a throwing announcement listener cannot break the load path or the buttons
   assert.equal(desk.calls.filter(([name]) => name === 'loadGroups').length, 1);
   assert.equal(loadA.disabled, false, 'the button is usable after a throwing listener');
   dispose();
+});
+
+test('each group can choose from the library without loading or touching the other group', async () => {
+  let seen = null;
+  const { container, desk } = mount({
+    tracks: [
+      { id: 'track-1', name: 'night-drive.wav' },
+      { id: 'track-2', name: 'slow-burn.wav' },
+    ],
+    variantsByTrack: {
+      'track-1': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-a' })),
+      'track-2': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-b' })),
+    },
+    openPicker: async (_store, slot, options) => {
+      seen = { slot, initialTab: options.initialTab };
+      options.onPick({ id: 'track-2', name: 'slow-burn.wav' });
+      return 'pick';
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  assert.equal(chooseButton(container, 'A').textContent, 'Choose from Library');
+  assert.equal(addButton(container, 'B').textContent, 'Add / Process Track');
+  assert.equal(loadButton(container, 'A').textContent, 'Load A');
+  chooseButton(container, 'B').click();
+  await flush();
+  assert.equal(seen.slot, null);
+  assert.equal(seen.initialTab, 'library');
+  assert.equal(selectFor(container, 'B').value, 'track-2');
+  assert.equal(selectFor(container, 'A').value, 'track-1');
+  assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Four Demucs stems are ready/);
+});
+
+test('adding a track opens Choose Track and does not treat the import as separated', async () => {
+  let seen = null;
+  const { container, desk } = mount({
+    tracks: [{ id: 'track-1', name: 'night-drive.wav' }],
+    variantsByTrack: { 'track-1': DEMUCS_QUAD, fresh: [] },
+    listJobsImpl: async () => ({ items: [] }),
+    openPicker: async (_store, slot, options) => {
+      seen = { slot, initialTab: options.initialTab };
+      await options.onImported({ id: 'fresh', name: 'fresh.wav' });
+      return 'close';
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  addButton(container, 'A').click();
+  await flush();
+  assert.equal(seen.slot, null);
+  assert.equal(seen.initialTab, 'upload');
+  assert.equal(selectFor(container, 'A').value, 'fresh');
+  const status = container.querySelector('.stem-desk__status').textContent;
+  assert.match(status, /full mix is in the library/i);
+  assert.match(status, /not finished/i);
+  assert.doesNotMatch(status, /Four Demucs stems are ready/);
+  assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
+});
+
+test('a track without Demucs stems requests processing and does not claim a center/sides result', async () => {
+  const submitted = [];
+  let onUpdate = null;
+  let stems = [];
+  const { container, desk } = mount({
+    tracks: [{ id: 'track-1', name: 'bare.wav' }],
+    openPicker: async () => { throw new Error('picker should stay closed'); },
+    listJobsImpl: async () => ({ items: [] }),
+    submitSeparationImpl: async (trackId, method) => {
+      submitted.push([trackId, method]);
+      return {
+        id: 'job-1', status: 'queued', message: 'Queued',
+        request: { track_id: trackId, method },
+      };
+    },
+    watchJobImpl: (_id, callback) => {
+      onUpdate = callback;
+      return () => {};
+    },
+    listStemsImpl: async () => ({ variants: [{ name: 'full' }, ...stems] }),
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  addButton(container, 'A').click();
+  await flush();
+  assert.deepEqual(submitted, [['track-1', 'demucs']]);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /queued/i);
+  onUpdate({
+    id: 'job-1', status: 'running', message: 'Separating',
+    request: { track_id: 'track-1', method: 'demucs' },
+    progress_detail: { percent: 40 },
+  });
+  await flush();
+  assert.match(container.querySelector('.stem-desk__status').textContent, /running/);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /40/);
+  stems = [
+    variant('center', { method: 'ffmpeg', model_name: 'center-side-v1' }),
+    variant('sides', { method: 'ffmpeg', model_name: 'center-side-v1' }),
+  ];
+  onUpdate({
+    id: 'job-1', status: 'complete', message: 'Separation complete',
+    request: { track_id: 'track-1', method: 'demucs' },
+  });
+  await flush();
+  const status = container.querySelector('.stem-desk__status').textContent;
+  assert.match(status, /center\/sides/i);
+  assert.match(status, /not four Demucs stems/i);
+  assert.doesNotMatch(status, /Four Demucs stems are ready/);
+  assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
+});
+
+test('a finished Demucs job stays unloaded until Load is pressed', async () => {
+  let onUpdate = null;
+  let ready = false;
+  const { container, desk } = mount({
+    tracks: [{ id: 'track-1', name: 'bare.wav' }],
+    listJobsImpl: async () => ({ items: [] }),
+    submitSeparationImpl: async (trackId) => ({
+      id: 'job-2', status: 'queued', message: 'Queued',
+      request: { track_id: trackId, method: 'demucs' },
+    }),
+    watchJobImpl: (_id, callback) => {
+      onUpdate = callback;
+      return () => {};
+    },
+    listStemsImpl: async () => ({
+      variants: [{ name: 'full' }, ...(ready ? DEMUCS_QUAD : [])],
+    }),
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  addButton(container, 'A').click();
+  await flush();
+  ready = true;
+  onUpdate({
+    id: 'job-2', status: 'complete', message: 'Separation complete',
+    request: { track_id: 'track-1', method: 'demucs' },
+  });
+  await flush();
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Four Demucs stems are ready/);
+  assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
+  await loadGroup(container, 'A');
+  assert.equal(container.querySelectorAll('.stem-desk__row').length, 4);
+});
+
+test('missing Demucs and a cancelled job name the failure and the retry', async () => {
+  const { container } = mount({
+    tracks: [{ id: 'track-1', name: 'bare.wav' }],
+    variants: [],
+    listJobsImpl: async () => ({ items: [] }),
+    submitSeparationImpl: async () => {
+      throw new Error('Demucs is not installed');
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  addButton(container, 'A').click();
+  await flush();
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Demucs is not installed/);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /retry/i);
+
+  let onUpdate = null;
+  const second = mount({
+    tracks: [{ id: 'track-1', name: 'bare.wav' }],
+    variants: [],
+    listJobsImpl: async () => ({ items: [] }),
+    submitSeparationImpl: async (trackId) => ({
+      id: 'job-3', status: 'queued', message: 'Queued',
+      request: { track_id: trackId, method: 'demucs' },
+    }),
+    watchJobImpl: (_id, callback) => {
+      onUpdate = callback;
+      return () => {};
+    },
+  });
+  await flush();
+  selectFor(second.container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  addButton(second.container, 'A').click();
+  await flush();
+  onUpdate({
+    id: 'job-3', status: 'cancelled', message: 'Cancelled',
+    request: { track_id: 'track-1', method: 'demucs' },
+  });
+  await flush();
+  const status = second.container.querySelector('.stem-desk__status').textContent;
+  assert.match(status, /cancelled/i);
+  assert.match(status, /retry/i);
+  second.dispose();
+});
+
+test('a stale separation result cannot describe the track now selected', async () => {
+  let onUpdate = null;
+  const stems = {
+    'track-1': [],
+    'track-2': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-b' })),
+  };
+  const { container } = mount({
+    tracks: [
+      { id: 'track-1', name: 'bare.wav' },
+      { id: 'track-2', name: 'ready.wav' },
+    ],
+    listJobsImpl: async () => ({ items: [] }),
+    submitSeparationImpl: async (trackId) => ({
+      id: 'job-4', status: 'queued', message: 'Queued',
+      request: { track_id: trackId, method: 'demucs' },
+    }),
+    watchJobImpl: (_id, callback) => {
+      onUpdate = callback;
+      return () => {};
+    },
+    listStemsImpl: async (trackId) => ({ variants: [{ name: 'full' }, ...(stems[trackId] || [])] }),
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  addButton(container, 'A').click();
+  await flush();
+  const select = selectFor(container, 'A');
+  select.value = 'track-2';
+  select.dispatchEvent(new window.Event('change'));
+  await flush();
+  stems['track-1'] = [
+    variant('center', { method: 'ffmpeg', model_name: 'center-side-v1' }),
+    variant('sides', { method: 'ffmpeg', model_name: 'center-side-v1' }),
+  ];
+  onUpdate({
+    id: 'job-4', status: 'complete', message: 'Separation complete',
+    request: { track_id: 'track-1', method: 'demucs' },
+  });
+  await flush();
+  const status = container.querySelector('.stem-desk__status').textContent;
+  assert.match(status, /Four Demucs stems are ready/);
+  assert.doesNotMatch(status, /center\/sides/i);
+});
+
+test('a failed load of group B leaves group A playing lanes in place', async () => {
+  const { container } = mount({
+    tracks: [
+      { id: 'track-1', name: 'night-drive.wav' },
+      { id: 'track-2', name: 'broken.wav' },
+    ],
+    listStemsImpl: async (trackId) => {
+      if (trackId === 'track-2') throw new Error('stems unavailable');
+      return { variants: [{ name: 'full' }, ...DEMUCS_QUAD] };
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  selectFor(container, 'A').value = 'track-1';
+  selectFor(container, 'B').value = 'track-2';
+  await loadGroup(container, 'A');
+  assert.equal(container.querySelectorAll('.stem-desk__row').length, 4);
+  await loadGroup(container, 'B');
+  assert.equal(container.querySelectorAll('.stem-desk__row').length, 4);
+  assert.match(container.querySelector('.stem-desk__group-title').textContent, /Group A/);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /group B/i);
+});
+
+test('two ready library tracks keep their own stem sets when both groups load', async () => {
+  const { container } = mount({
+    tracks: [
+      { id: 'track-1', name: 'night-drive.wav' },
+      { id: 'track-2', name: 'slow-burn.wav' },
+    ],
+    variantsByTrack: {
+      'track-1': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-aaa' })),
+      'track-2': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-bbb' })),
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  selectFor(container, 'A').value = 'track-1';
+  selectFor(container, 'B').value = 'track-2';
+  await loadGroup(container, 'A');
+  await loadGroup(container, 'B');
+  const titles = [...container.querySelectorAll('.stem-desk__group-title')].map((node) => node.textContent);
+  assert.match(titles[0], /Group A/);
+  assert.match(titles[1], /Group B/);
+  const metas = [...container.querySelectorAll('.stem-desk__meta')].map((node) => node.textContent);
+  assert.ok(metas.some((text) => text.includes('set set-aaa')));
+  assert.ok(metas.some((text) => text.includes('set set-bbb')));
+  assert.equal(container.querySelectorAll('.stem-desk__row').length, 8);
+});
+
+test('a processing failure on group B leaves a ready group A loaded', async () => {
+  const { container } = mount({
+    tracks: [
+      { id: 'track-1', name: 'ready.wav' },
+      { id: 'track-2', name: 'bare.wav' },
+    ],
+    variantsByTrack: {
+      'track-1': DEMUCS_QUAD,
+      'track-2': [],
+    },
+    listJobsImpl: async () => ({ items: [] }),
+    submitSeparationImpl: async () => {
+      throw new Error('Demucs is not installed');
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  selectFor(container, 'A').value = 'track-1';
+  selectFor(container, 'B').value = 'track-2';
+  await loadGroup(container, 'A');
+  assert.equal(container.querySelectorAll('.stem-desk__row').length, 4);
+  addButton(container, 'B').click();
+  await flush();
+  assert.equal(container.querySelectorAll('.stem-desk__row').length, 4);
+  assert.match(container.querySelector('.stem-desk__group-title').textContent, /Group A/);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /group B/i);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Demucs is not installed/);
+});
+
+test('an in-flight separation is shown and not submitted twice', async () => {
+  const submitted = [];
+  let watched = null;
+  const { container } = mount({
+    tracks: [{ id: 'track-1', name: 'bare.wav' }],
+    variants: [],
+    submitSeparationImpl: async (trackId, method) => {
+      submitted.push([trackId, method]);
+      return { id: 'should-not-run', status: 'queued', request: { track_id: trackId } };
+    },
+    listJobsImpl: async () => ({
+      items: [{
+        id: 'job-live',
+        kind: 'separate',
+        status: 'running',
+        message: 'Working',
+        request: { track_id: 'track-1', method: 'auto' },
+      }],
+    }),
+    watchJobImpl: (id) => {
+      watched = id;
+      return () => {};
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  addButton(container, 'A').click();
+  await flush();
+  assert.deepEqual(submitted, []);
+  assert.equal(watched, 'job-live');
+  assert.match(container.querySelector('.stem-desk__status').textContent, /running/i);
+});
+
+test('an empty library still opens Choose Track', async () => {
+  let opened = 0;
+  const { container } = mount({
+    tracks: [],
+    openPicker: async (_store, slot, options) => {
+      opened += 1;
+      assert.equal(slot, null);
+      assert.equal(options.initialTab, 'library');
+      return 'close';
+    },
+  });
+  await flush();
+  chooseButton(container, 'A').click();
+  await flush();
+  assert.equal(opened, 1);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /No tracks are available|empty/i);
 });

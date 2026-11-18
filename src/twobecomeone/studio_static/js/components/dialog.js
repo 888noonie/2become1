@@ -8,6 +8,11 @@ import { createElement } from '../dom.js';
 
 let activeDialog = null;
 
+/** Close the open dialog, if any. Native cancel and the action buttons use the same path. */
+export function closeDialog(value = '') {
+  if (activeDialog) activeDialog.close(value);
+}
+
 /**
  * Open a modal dialog.
  * @param {object} opts

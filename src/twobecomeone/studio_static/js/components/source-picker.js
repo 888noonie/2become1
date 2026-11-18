@@ -7,7 +7,7 @@
 // selection; closing does not cancel active imports.
 
 import { createElement, replaceChildren } from '../dom.js';
-import { openDialog } from './dialog.js';
+import { closeDialog, openDialog } from './dialog.js';
 import { showToast } from './toast.js';
 import { formatBpm, formatKey, formatTime, sourceLabel } from '../format.js';
 import {
@@ -18,16 +18,21 @@ import { projectManager } from '../app-context.js';
 const TABS = ['library', 'upload', 'youtube'];
 
 /**
- * Open the source picker for a project slot.
+ * Open the source picker for a project slot, or for a caller that wants the
+ * chosen library track back without assigning a deck.
  * @param {import('../js/state.js').StateStore} store
  * @param {'anchor'|'lead'|null} slot
+ * @param {{ initialTab?: 'library'|'upload'|'youtube', onPick?: (track: object) => void, onImported?: (track: object) => void }} [options]
  */
-export async function openSourcePicker(store, slot = null) {
+export async function openSourcePicker(store, slot = null, options = {}) {
+  const onPick = typeof options.onPick === 'function' ? options.onPick : null;
+  const onImported = typeof options.onImported === 'function' ? options.onImported : null;
   store.dispatch({ type: 'sourcePicker/open', slot });
 
   const state = store.getState();
   const hasTracks = state.library.items.length > 0;
-  const initialTab = hasTracks ? 'library' : 'upload';
+  const requested = TABS.includes(options.initialTab) ? options.initialTab : null;
+  const initialTab = requested || (hasTracks ? 'library' : 'upload');
   store.dispatch({ type: 'sourcePicker/tab', tab: initialTab });
 
   const body = createElement('div', { class: 'picker' });
@@ -63,11 +68,11 @@ export async function openSourcePicker(store, slot = null) {
     disposers = [];
 
     if (tab === 'library') {
-      renderLibraryPanel(panel, store, slot, disposers);
+      renderLibraryPanel(panel, store, slot, disposers, onPick);
     } else if (tab === 'upload') {
-      renderUploadPanel(panel, store, slot, disposers);
+      renderUploadPanel(panel, store, slot, disposers, onImported);
     } else {
-      renderYouTubePanel(panel, store, slot, disposers);
+      renderYouTubePanel(panel, store, slot, disposers, onImported);
     }
   };
 
@@ -92,7 +97,7 @@ export async function openSourcePicker(store, slot = null) {
 // Library tab
 // ---------------------------------------------------------------------------
 
-function renderLibraryPanel(panel, store, slot, disposers) {
+function renderLibraryPanel(panel, store, slot, disposers, onPick) {
   const listEl = createElement('div', { class: 'track-list', role: 'list' });
   panel.replaceChildren(listEl);
 
@@ -107,7 +112,7 @@ function renderLibraryPanel(panel, store, slot, disposers) {
     const cards = tracks.map((track) => {
       const btn = createElement('button', {
         class: 'button', type: 'button', text: 'Select',
-        onclick: () => assign(store, slot, track),
+        onclick: () => assign(store, slot, track, onPick),
       });
       return createElement('div', { class: 'track-card', role: 'listitem' }, [
         createElement('div', { class: 'track-card__title', text: track.name }),
@@ -132,7 +137,7 @@ function renderLibraryPanel(panel, store, slot, disposers) {
 // Upload tab
 // ---------------------------------------------------------------------------
 
-function renderUploadPanel(panel, store, slot, disposers) {
+function renderUploadPanel(panel, store, slot, disposers, onImported) {
   const fileInput = createElement('input', { type: 'file', accept: 'audio/*,.mp3,.wav,.flac,.m4a,.ogg,.opus,.aiff,.aac', multiple: 'multiple', hidden: 'true' });
   const drop = createElement('div', {
     class: 'picker__drop', role: 'button', tabindex: '0',
@@ -179,7 +184,7 @@ function renderUploadPanel(panel, store, slot, disposers) {
         store.dispatch({ type: 'jobs/upsert', job });
         // 202 response replaces upload progress with backend job state.
         status.textContent = `Processing ${file.name}…`;
-        await followImport(job, store, slot, status);
+        await followImport(job, store, slot, status, onImported);
       } catch (err) {
         status.textContent = '';
         showToast(err.message, 'danger');
@@ -192,7 +197,7 @@ function renderUploadPanel(panel, store, slot, disposers) {
 // YouTube tab
 // ---------------------------------------------------------------------------
 
-function renderYouTubePanel(panel, store, slot, disposers) {
+function renderYouTubePanel(panel, store, slot, disposers, onImported) {
   const urlInput = createElement('input', {
     class: 'input', type: 'url', inputmode: 'url', autocomplete: 'url',
     placeholder: 'https://youtu.be/…', 'aria-label': 'YouTube URL',
@@ -223,7 +228,7 @@ function renderYouTubePanel(panel, store, slot, disposers) {
       const job = await submitYouTube(url);
       store.dispatch({ type: 'jobs/upsert', job });
       status.textContent = 'Downloading…';
-      await followImport(job, store, slot, status);
+      await followImport(job, store, slot, status, onImported);
     } catch (err) {
       status.textContent = '';
       showToast(err.message, 'danger');
@@ -245,7 +250,7 @@ function renderYouTubePanel(panel, store, slot, disposers) {
 // Shared import follow-up
 // ---------------------------------------------------------------------------
 
-function followImport(job, store, slot, statusEl) {
+function followImport(job, store, slot, statusEl, onImported) {
   return new Promise((resolve) => {
     let settled = false;
     let unsubscribe = () => {};
@@ -260,7 +265,7 @@ function followImport(job, store, slot, statusEl) {
       if (updated.status === 'complete') {
         settled = true;
         unsubscribe();
-        onComplete(updated, store, slot, statusEl).then(resolve);
+        onComplete(updated, store, slot, statusEl, onImported).then(resolve);
       } else if (updated.status === 'failed' || updated.status === 'cancelled' || updated.status === 'interrupted') {
         settled = true;
         unsubscribe();
@@ -279,7 +284,7 @@ function followImport(job, store, slot, statusEl) {
   });
 }
 
-async function onComplete(job, store, slot, statusEl) {
+async function onComplete(job, store, slot, statusEl, onImported) {
   const trackId = job.result?.track_id;
   if (!trackId) {
     statusEl.textContent = '';
@@ -295,13 +300,19 @@ async function onComplete(job, store, slot, statusEl) {
     } else {
       showToast(`Imported "${track.name}".`, 'success');
     }
+    if (onImported) await onImported(track);
   } catch (err) {
     showToast(err.message, 'danger');
   }
   statusEl.textContent = '';
 }
 
-function assign(store, slot, track) {
+function assign(store, slot, track, onPick) {
+  if (onPick) {
+    onPick(track);
+    closeDialog('pick');
+    return;
+  }
   if (slot) {
     projectManager.assign(slot, track.id);
     showToast(`Assigned "${track.name}" as ${slot === 'anchor' ? 'foundation' : 'lead'}.`, 'success');
