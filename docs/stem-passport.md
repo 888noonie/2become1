@@ -19,14 +19,14 @@ timeline with the same start point, and equal length is not proof of alignment.
 | Concern | Rule |
 | --- | --- |
 | Roles | exactly `vocals`, `drums`, `bass`, `other`; never inferred from a filename |
-| Format | WAV only; no transcoding, resampling or time-stretch |
+| Format | WAV only, checked by the **container** (RIFF/WAVE), not just the suffix; no transcoding, resampling or time-stretch |
 | Agreement | one sample rate, one channel count (1 or 2), durations within **10 ms** |
 | Size | staged like any upload (750 MB); refused at import if a lane decodes past the desk's 40 MiB per-stem bound |
 | Publish | four files written under `stems/<set>/<role>.wav`, directory rename is the atomic commit |
-| Failure | no partial set becomes ready; staged inputs are removed |
+| Failure | no partial set becomes ready; a database failure removes the published directory; staged inputs are removed (the commit route, or the dialog's discard call when staging itself fails), and the same staged file cannot fill two roles |
 | Provenance | `method="imported"`, `device="user"`, `model_name = sha256:<set hash>`, per-lane original name + SHA-256 |
 | Reprocessing | never starts a separation job, FFmpeg separation or model call |
-| Desk | a complete imported quad is ready; imported sets are shown ahead of separation output for the same lane; Add / Process does not request Demucs while a complete quad exists |
+| Desk | a complete imported quad is ready; imported sets are shown ahead of separation output for the same lane; Add / Process does not request Demucs while a complete quad exists; **one group is always built from one set**, never from two |
 
 ## Implementation
 
@@ -49,7 +49,7 @@ timeline with the same start point, and equal length is not proof of alignment.
 | --- | --- |
 | Frontend suite | **546/546** |
 | Python suite | **594 passed, 1 skipped** |
-| Import unit + route tests | **14/14** (roles, format, decode, rate/channels, duration, traversal, cache hit, retry, no job, HTTP stage+commit, staged cleanup) |
+| Import unit + route tests | **19/19** (roles, format, decode, rate/channels, duration, traversal, cache hit, retry, no job, HTTP stage+commit, staged cleanup) |
 | Eight-lane PCM with imported A + Demucs B | **9/9** |
 | Browser import journey | **15/15** |
 | Desktop / mobile journeys | 39/0 · 39/5 (same five historical a11y findings) |

@@ -159,6 +159,10 @@ class StemImportBody(BaseModel):
     files: list[StemImportEntry]
 
 
+class StagedDiscardBody(BaseModel):
+    staging_keys: list[str]
+
+
 class SeparationBody(BaseModel):
     method: Literal["auto", "demucs", "ffmpeg"] = "auto"
 
@@ -420,11 +424,18 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
         """
         if not file.filename:
             raise UserError("file name is required")
+        if str(Path(file.filename).suffix).lower() != ".wav":
+            raise UserError("stem files must be WAV; export the four stems as WAV")
         try:
             staging_key = service.stage_upload(file.file, file.filename)
         finally:
             file.file.close()
         return {"staging_key": staging_key, "original_name": file.filename}
+
+    @app.post("/api/stems/stage/discard")
+    def discard_staged_stems(body: StagedDiscardBody):
+        """Remove staged stem inputs an abandoned import no longer needs."""
+        return {"removed": service.discard_staged_stems(body.staging_keys)}
 
     @app.post("/api/tracks/{track_id}/stem-import", status_code=201)
     def import_stems(track_id: str, body: StemImportBody):

@@ -628,7 +628,7 @@ test('an effectively silent stem is labelled and its solo says why nothing is he
   await loadGroup(container, 'A');
 
   const rows = container.querySelectorAll('.stem-desk__row');
-  assert.match(rows[0].textContent, /effectively silent in this separation/);
+  assert.match(rows[0].textContent, /effectively silent in this set/);
   assert.doesNotMatch(rows[1].textContent, /effectively silent/);
 
   const solo = rows[0].querySelectorAll('.stem-desk__actions button')[1];

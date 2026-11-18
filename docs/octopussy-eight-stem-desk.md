@@ -201,9 +201,10 @@ Nothing is inferred from a filename: the owner names vocals, drums, bass and
 other explicitly.
 
 - **Staging.** `POST /api/stems/stage` takes one WAV and returns an opaque
-  staging key, using the existing `incoming/` staging and 750 MB rule. Only WAV
-  is accepted: a `.mp3` renamed to `.wav` would be a lie about the bytes the desk
-  plays, and the importer does not transcode.
+  staging key, using the existing `incoming/` staging and 750 MB rule. The
+  suffix and the RIFF/WAVE container are both checked: a `.mp3` or FLAC renamed
+  to `.wav` would be a lie about the bytes the desk plays, and the importer does
+  not transcode. `POST /api/stems/stage/discard` removes abandoned keys.
 - **Commit.** `POST /api/tracks/{id}/stem-import` takes the four
   `{role, staging_key, original_name}` entries. It validates count, roles,
   duplicates, decode, equal sample rate, equal channel count (mono or stereo)
@@ -220,7 +221,8 @@ other explicitly.
   quad; Add / Process does not request Demucs when a complete quad already
   exists. When one track has both an imported set and separation output, the
   desk shows the owner-supplied set (deterministic rule) and the separation
-  files remain on disk.
+  files remain on disk. A group is always assembled from **one** set: a newer
+  partial set never contributes lanes alongside an intact older one.
 - **Alignment is the owner's responsibility.** Equal duration is not proof of
   alignment; the dialog says so before the files are chosen. The desk's entry
   nudge moves a whole group and cannot re-align one stem.

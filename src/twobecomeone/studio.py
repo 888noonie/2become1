@@ -2293,17 +2293,33 @@ class StudioService:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'"
-                " ORDER BY created_at DESC",
+                # Owner-supplied sets first, then newest first. The desk shows one
+                # set per lane, and a group must never be assembled from two sets.
+                " ORDER BY CASE method WHEN 'imported' THEN 0 ELSE 1 END, created_at DESC",
                 (track_sha256,),
             ).fetchall()
+
+        lane_order = ("vocals", "drums", "bass", "other")
+        best: tuple[int, sqlite3.Row, dict[str, str]] | None = None
+        best_score = -1
         for row in rows:
             paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
-            for name, rel in paths.items():
-                if self._validated_stem_path(rel, name) is None:
-                    continue
+            valid = {
+                name: rel for name, rel in paths.items()
+                if self._validated_stem_path(rel, name) is not None
+            }
+            if not valid:
+                continue
+            # Prefer a complete four-role set; among those the query order wins.
+            score = sum(1 for name in lane_order if name in valid)
+            if score > best_score:
+                best, best_score = (score, row, valid), score
+            if best_score == len(lane_order):
+                break
+        if best is not None:
+            _, row, valid = best
+            for name in sorted(valid):
                 available[name] = True
-                if name in order:
-                    continue
                 order.append(name)
                 variant = {
                     "name": name,
@@ -2311,9 +2327,7 @@ class StudioService:
                     "method": row["method"],
                     "model_name": row["model_name"],
                     "device": row["device"],
-                    "audio_url": (
-                        f"/api/stems/{row['id']}/audio?name={name}"
-                    ),
+                    "audio_url": f"/api/stems/{row['id']}/audio?name={name}",
                 }
                 if row["method"] == "imported":
                     variant["set_hash"] = str(row["model_name"] or "").replace("sha256:", "")
@@ -2327,6 +2341,7 @@ class StudioService:
                         except json.JSONDecodeError:
                             pass
                 variants.append(variant)
+
         stems = sorted({"full", *available.keys()})
         variants.sort(key=lambda v: stems.index(v["name"]))
         return {"track_id": track_id, "stems": stems, "variants": variants}
@@ -2358,6 +2373,15 @@ class StudioService:
 
     def _probe_stem_audio(self, path: Path) -> dict:
         """Decode-validate and return the format facts an import must agree on."""
+        # A .wav suffix is not proof of a WAV container. The desk serves these
+        # bytes as audio/wav, so check the container itself before accepting it.
+        try:
+            with path.open("rb") as handle:
+                header = handle.read(12)
+        except OSError:
+            raise UserError("a supplied stem could not be read")
+        if len(header) < 12 or header[0:4] != b"RIFF" or header[8:12] != b"WAVE":
+            raise UserError("a supplied stem is not a WAV container")
         if not media.validate_audio_decodes(path):
             raise UserError("a supplied stem does not decode as audio")
         cmd = [
@@ -2379,6 +2403,25 @@ class StudioService:
         except (KeyError, IndexError, ValueError, json.JSONDecodeError):
             raise UserError("a supplied stem has no readable audio stream")
 
+    def discard_staged_stems(self, keys: list[str]) -> int:
+        """Remove staged inputs an abandoned import no longer needs.
+
+        Keys are resolved exactly like an import would resolve them, so a caller
+        can only remove files under the managed ``incoming/`` directory.
+        """
+        removed = 0
+        for key in keys or []:
+            try:
+                path = self._resolve_staging_key(str(key))
+            except Exception:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+                removed += 1
+            except OSError:
+                continue
+        return removed
+
     def import_stem_set(self, track_id: str, entries: list[dict]) -> dict:
         """Attach four owner-supplied, already separated files to a track.
 
@@ -2399,6 +2442,7 @@ class StudioService:
             )
 
         seen: set[str] = set()
+        seen_keys: set[str] = set()
         staged: list[Path] = []
         staged_by_role: dict[str, Path] = {}
         for entry in entries:
@@ -2415,6 +2459,11 @@ class StudioService:
             key = str(entry.get("staging_key") or "").strip()
             if not key:
                 raise UserError(f"stem role '{role}' has no staged file")
+            if key in seen_keys:
+                raise UserError(
+                    f"the same staged file was supplied for more than one role ('{role}')"
+                )
+            seen_keys.add(key)
             path = self._resolve_staging_key(key)
             if path.suffix.lower() not in {".wav"}:
                 raise UserError(
@@ -2558,9 +2607,18 @@ class StudioService:
                 "stem_set_id": winner["id"], "cached": True, "method": "imported",
                 "set_hash": set_hash, "roles": list(STEM_IMPORT_ROLES),
             }
+        except Exception:
+            # Nothing may stay published without a row that lists it.
+            shutil.rmtree(final_dir, ignore_errors=True)
+            raise
 
         for path in staged:
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                # The set is already published and listed; a stuck staging file
+                # is a housekeeping detail, not an import failure.
+                pass
         return {
             "stem_set_id": stem_set_id,
             "cached": False,

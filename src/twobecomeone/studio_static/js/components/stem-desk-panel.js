@@ -11,9 +11,9 @@
 // job. The panel does not write stem files, projects, or renders itself.
 
 import { createElement, replaceChildren } from '../dom.js';
-import { openDialog } from './dialog.js';
 import {
-  importStemSet, listJobs, listStems, listTracks, stageStemFile, submitSeparation, watchJob,
+  discardStagedStems, importStemSet, listJobs, listStems, listTracks,
+  stageStemFile, submitSeparation, watchJob,
 } from '../api.js';
 import { StemDesk, STEM_DESK_LIMITS } from '../runtime/stem-desk.js';
 
@@ -168,6 +168,7 @@ export function mountStemDeskPanel({
   submitSeparationImpl = submitSeparation,
   stageStemFileImpl = stageStemFile,
   importStemSetImpl = importStemSet,
+  discardStagedStemsImpl = discardStagedStems,
   watchJobImpl = watchJob,
   createDesk = (options) => new StemDesk(options),
   audioContextFactory = () => new AudioContext(),
@@ -675,7 +676,7 @@ export function mountStemDeskPanel({
       const nextState = desk.setSolo(view.lane.key, next);
       const stateLane = nextState.lanes.find((entry) => entry.key === view.lane.key);
       const silentNote = next && stateLane?.silent
-        ? ' This stem is effectively silent in this separation.'
+        ? ' This stem is effectively silent in this set.'
         : '';
       say(`${next ? 'Solo' : 'Solo released for'} ${label}.${silentNote}`);
       renderLanes(nextState);
@@ -699,7 +700,7 @@ export function mountStemDeskPanel({
     const label = `${groupLabel(lane.trackId)} · ${stemLabel(lane.name)}`;
     view.nameEl.textContent = stemLabel(lane.name);
     view.metaEl.textContent = provenanceLabel(lane);
-    view.silentEl.textContent = lane.silent ? 'effectively silent in this separation' : '';
+    view.silentEl.textContent = lane.silent ? 'effectively silent in this set' : '';
     view.silentEl.hidden = !lane.silent;
     view.mute.setAttribute('aria-label', `Mute ${label}`);
     view.mute.setAttribute('aria-pressed', lane.muted ? 'true' : 'false');
@@ -1005,11 +1006,13 @@ export function mountStemDeskPanel({
       }
       commit.disabled = true;
       cancel.disabled = true;
+      const stagedKeys = [];
       try {
         const entries = [];
         for (const [role, file] of chosen) {
           status.textContent = `Staging ${stemLabel(role)}…`;
           const staged = await stageStemFileImpl(file);
+          stagedKeys.push(staged.staging_key);
           entries.push({
             role,
             staging_key: staged.staging_key,
@@ -1026,6 +1029,15 @@ export function mountStemDeskPanel({
         await reportReadiness(groupId, trackId);
       } catch (err) {
         status.textContent = `Could not import: ${err?.message || 'request failed'}.`;
+        // A failed commit is cleaned up by the server; a failure while staging
+        // is not, so drop whatever this attempt already staged.
+        if (stagedKeys.length) {
+          try {
+            await discardStagedStemsImpl(stagedKeys);
+          } catch {
+            // Housekeeping only; the error above is what the owner needs.
+          }
+        }
       } finally {
         commit.disabled = undefined;
         cancel.disabled = undefined;
@@ -1123,7 +1135,7 @@ export function mountStemDeskPanel({
           say(
             silent.length
               ? `Loaded ${groupLanes.length} stems into group ${groupId}. ${silent.join(', ')} ` +
-                `${silent.length === 1 ? 'is' : 'are'} effectively silent in this separation.`
+                `${silent.length === 1 ? 'is' : 'are'} effectively silent in this set.`
               : `Loaded ${groupLanes.length} stems into group ${groupId} on one transport.`,
           );
         }

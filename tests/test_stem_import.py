@@ -380,3 +380,146 @@ class TestHttpImport:
             assert [v["name"] for v in listing["variants"]] == ["full"]
             incoming = tmp_path / "data" / "incoming"
             assert not list(incoming.iterdir()) if incoming.exists() else True
+
+class TestHardening:
+    def test_the_same_staged_file_cannot_fill_two_roles(self, tmp_path):
+        from twobecomeone.studio import UserError
+
+        service = _service(tmp_path)
+        try:
+            track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
+            files = make_stems(tmp_path / "stems")
+            entries = _stage_all(service, files)
+            entries[1]["staging_key"] = entries[0]["staging_key"]
+            with pytest.raises(UserError) as excinfo:
+                service.import_stem_set(track["id"], entries)
+            assert "more than one role" in str(excinfo.value)
+            assert not [p for p in service.stem_dir.iterdir() if p.is_dir()]
+        finally:
+            service.close()
+
+    def test_a_non_wav_container_is_refused_even_with_a_wav_name(self, tmp_path):
+        from twobecomeone.studio import UserError
+
+        service = _service(tmp_path)
+        try:
+            track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
+            files = make_stems(tmp_path / "stems")
+            # Real FLAC bytes renamed to .wav: decodable audio, wrong container.
+            import subprocess
+            flac_real = tmp_path / "vocals.flac"
+            subprocess.run([
+                "ffmpeg", "-v", "error", "-y", "-i", str(files["vocals"]),
+                "-c:a", "flac", str(flac_real),
+            ], check=True)
+            flac_named_wav = tmp_path / "vocals-wrong.wav"
+            flac_real.replace(flac_named_wav)
+            with flac_named_wav.open("rb") as handle:
+                key = service.stage_upload(handle, "vocals.wav")
+            entries = _stage_all(service, make_stems(tmp_path / "again"))
+            entries[0] = {"role": "vocals", "staging_key": key, "original_name": "vocals.wav"}
+            with pytest.raises(UserError) as excinfo:
+                service.import_stem_set(track["id"], entries)
+            assert "WAV container" in str(excinfo.value)
+        finally:
+            service.close()
+
+    def test_a_partial_newer_set_never_mixes_with_a_complete_one(self, tmp_path):
+        import json
+        import sqlite3
+        import time
+
+        service = _service(tmp_path)
+        try:
+            track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
+            track_sha = service._track_content_hash(track["id"])
+
+            def publish(set_id, roles, method, created):
+                folder = service.stem_dir / set_id
+                folder.mkdir(parents=True)
+                paths = {}
+                for role in roles:
+                    stem_wav(folder / f"{role}.wav", freq=ROLE_FREQ[role])
+                    paths[role] = f"stems/{set_id}/{role}.wav"
+                with sqlite3.connect(service.data_dir / "studio.sqlite3") as conn:
+                    conn.execute(
+                        "INSERT INTO stem_sets (id, track_id, method, model, device, status,"
+                        " paths_json, track_sha256, model_name, created_at)"
+                        " VALUES (?, ?, ?, 'x', 'cpu', 'complete', ?, ?, ?, ?)",
+                        (set_id, track["id"], method, json.dumps(paths), track_sha, "x", created),
+                    )
+
+            # Older, complete Demucs set.
+            publish("demucs-old", ("vocals", "drums", "bass", "other"), "demucs", time.time() - 100)
+            # Newer imported set missing one file.
+            broken = service.stem_dir / "imported-partial"
+            broken.mkdir()
+            paths = {}
+            for role in ("vocals", "drums", "bass"):
+                stem_wav(broken / f"{role}.wav", freq=ROLE_FREQ[role])
+                paths[role] = f"stems/imported-partial/{role}.wav"
+            with sqlite3.connect(service.data_dir / "studio.sqlite3") as conn:
+                conn.execute(
+                    "INSERT INTO stem_sets (id, track_id, method, model, device, status,"
+                    " paths_json, track_sha256, model_name, created_at)"
+                    " VALUES ('imported-partial', ?, 'imported', 'x', 'user', 'complete', ?, ?, 'sha256:x', ?)",
+                    (track["id"], json.dumps(paths), track_sha, time.time()),
+                )
+
+            listing = service.list_stems(track["id"])
+            lane_sets = {v["stem_set_id"] for v in listing["variants"] if v["name"] != "full"}
+            assert lane_sets == {"demucs-old"}, "a group must come from one set only"
+            assert len([v for v in listing["variants"] if v["name"] != "full"]) == 4
+        finally:
+            service.close()
+
+    def test_a_database_failure_removes_the_published_directory(self, tmp_path, monkeypatch):
+        import sqlite3 as sqlite_module
+        from twobecomeone.studio import UserError
+
+        service = _service(tmp_path)
+        try:
+            track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
+            entries = _stage_all(service, make_stems(tmp_path / "stems"))
+
+            real_connect = service._connect
+
+            class BrokenConn:
+                def __init__(self, conn):
+                    self._conn = conn
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    self._conn.__exit__(*exc)
+
+                def execute(self, *args, **kwargs):
+                    raise sqlite_module.OperationalError("disk I/O error")
+
+            def broken_connect():
+                return BrokenConn(real_connect())
+
+            monkeypatch.setattr(service, "_connect", broken_connect)
+            with pytest.raises(sqlite_module.OperationalError):
+                service.import_stem_set(track["id"], entries)
+            monkeypatch.setattr(service, "_connect", real_connect)
+            assert not [p for p in service.stem_dir.iterdir() if p.is_dir()]
+            assert [v["name"] for v in service.list_stems(track["id"])["variants"]] == ["full"]
+        finally:
+            service.close()
+
+    def test_discard_removes_only_managed_staging_keys(self, tmp_path):
+        service = _service(tmp_path)
+        try:
+            track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
+            files = make_stems(tmp_path / "stems")
+            entries = _stage_all(service, files)
+            keys = [entry["staging_key"] for entry in entries[:2]]
+            assert service.discard_staged_stems(keys) == 2
+            assert service.discard_staged_stems(["../../etc/passwd"]) == 0
+            assert sorted(p.name for p in service.incoming_dir.iterdir()) == sorted(
+                [entries[2]["staging_key"], entries[3]["staging_key"]]
+            )
+        finally:
+            service.close()
