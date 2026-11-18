@@ -171,7 +171,16 @@ export function mountStemDeskPanel({
   discardStagedStemsImpl = discardStagedStems,
   watchJobImpl = watchJob,
   createDesk = (options) => new StemDesk(options),
-  audioContextFactory = () => new AudioContext(),
+  // A fixed context rate makes decoded size predictable, so the import path's
+  // 48 kHz budget matches what the desk actually decodes. Fall back only if the
+  // browser refuses the explicit rate.
+  audioContextFactory = () => {
+    try {
+      return new AudioContext({ sampleRate: 48000 });
+    } catch {
+      return new AudioContext();
+    }
+  },
   onAnnounce = null,
 } = {}) {
   if (!container) throw new Error('mountStemDeskPanel requires a container');

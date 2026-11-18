@@ -636,7 +636,8 @@ class TestSetIntegrity:
             (service.stem_dir / first["stem_set_id"] / "other.wav").unlink()
 
             second = service.import_stem_set(track["id"], _stage_all(service, files))
-            assert second["cached"] is False, "a broken row is repaired, not reused"
+            assert second["cached"] is True and second.get("repaired") is True
+            assert second["stem_set_id"] == first["stem_set_id"], "repair keeps the set id"
             assert (service.stem_dir / second["stem_set_id"] / "other.wav").is_file()
             imported = [
                 v for v in service.list_stems(track["id"])["variants"] if v.get("method") == "imported"

@@ -2499,6 +2499,11 @@ class StudioService:
                 )
             if path.is_symlink() or not path.is_file():
                 raise UserError(f"stem role '{role}' is not a readable staged file")
+            if path.stat().st_size > 40 * 1024 * 1024:
+                raise UserError(
+                    f"stem role '{role}' is {path.stat().st_size} bytes; the desk fetches "
+                    "at most 41943040 per stem"
+                )
             original = media.sanitize_text(str(entry.get("original_name") or role), 200)
             staged.append(path)
             staged_by_role[role] = path
@@ -2585,11 +2590,31 @@ class StudioService:
                 for role in STEM_IMPORT_ROLES
             )
             if not intact:
-                # The row survived but its media did not; this re-import is the
-                # repair path. Drop the unusable row and publish again.
-                with self._connect() as conn:
-                    conn.execute("DELETE FROM stem_sets WHERE id = ?", (cached["id"],))
-                shutil.rmtree(self.stem_dir / cached["id"], ignore_errors=True)
+                # Repair in place: rewrite only the missing lanes into the same
+                # set directory. The set id stays valid for anything that refers
+                # to it (for example saved stem-crate entries).
+                repair_dir = self.stem_dir / cached["id"]
+                repair_dir.mkdir(parents=True, exist_ok=True)
+                for role in STEM_IMPORT_ROLES:
+                    target = repair_dir / f"{role}.wav"
+                    if self._validated_stem_path(
+                        (cached_paths.get(role) or f"stems/{cached['id']}/{role}.wav"), role
+                    ) is None or not target.is_file():
+                        shutil.copyfile(staged_by_role[role], target)
+                if all(
+                    self._validated_stem_path(cached_paths.get(role, ""), role) is not None
+                    for role in STEM_IMPORT_ROLES
+                ):
+                    for path in staged:
+                        try:
+                            path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    return {
+                        "stem_set_id": cached["id"], "cached": True, "repaired": True,
+                        "method": "imported", "set_hash": set_hash,
+                        "roles": list(STEM_IMPORT_ROLES),
+                    }
                 cached = None
         if cached is not None:
             for path in staged:
