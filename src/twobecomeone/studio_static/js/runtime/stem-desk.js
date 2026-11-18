@@ -51,6 +51,8 @@ export const STEM_DESK_LIMITS = Object.freeze({
    * looked like Stop.
    */
   silentRmsDb: -50,
+  /** Below this amplitude the output ceiling is exactly linear. */
+  softClipKnee: 0.8,
 });
 
 /** Peak and RMS of a decoded buffer, used only to describe the lane honestly. */
@@ -81,6 +83,30 @@ export class StemDeskError extends Error {
     this.name = 'StemDeskError';
     this.code = code;
   }
+}
+
+/** Linear below `STEM_DESK_LIMITS.softClipKnee`, saturating at 1.0 above it. */
+export function softClipCurve(samples = 4097) {
+  // A WaveShaperNode maps its input range -1..1 across the *whole* curve, so
+  // the curve itself must be defined over -1..1 or it applies an unwanted
+  // gain. Inputs beyond full scale are clamped to the end points, i.e. 1.0.
+  const curve = new Float32Array(samples);
+  const knee = STEM_DESK_LIMITS.softClipKnee;
+  const span = 1 - knee;
+  for (let i = 0; i < samples; i += 1) {
+    const x = -1 + (2 * i) / (samples - 1);
+    const magnitude = Math.abs(x);
+    if (magnitude <= knee) {
+      curve[i] = x;
+    } else {
+      // Quadratic knee: continuous at the knee with zero slope, always below
+      // the identity line above it (compression, never expansion), and exactly
+      // 1.0 at full scale. Inputs past ±1 clamp to these end points.
+      const over = (magnitude - knee) / span;
+      curve[i] = Math.sign(x) * (knee + span * over * over);
+    }
+  }
+  return curve;
 }
 
 function dbToLinear(db) {
@@ -143,6 +169,7 @@ export class StemDesk {
     this._groups = [];
     this._lanes = [];
     this._master = null;
+    this._ceiling = null;
     this._sources = [];
     this._status = 'idle';
     this._error = null;
@@ -187,7 +214,6 @@ export class StemDesk {
       return spec;
     });
 
-    const wasPlaying = this._status === 'playing';
     const failures = [];
     let changed = false;
 
@@ -198,12 +224,16 @@ export class StemDesk {
     }
 
     if (changed) {
-      if (wasPlaying) this._stopSources();
+      // Re-read the transport here, not at entry: the owner can press Play
+      // while a fetch is still resolving. Old sources must be stopped and the
+      // transport reset, or a disconnected graph keeps a stale clock.
+      const playingNow = this._status === 'playing';
+      this._stopSources();
       this._startedAt = null;
       this._endAt = null;
       this._offset = 0;
       this._rebuildGraph();
-      if (wasPlaying) this._status = 'ready';
+      if (playingNow) this._status = 'ready';
     }
 
     this._decodedBytes = this._groups.reduce(
@@ -374,7 +404,23 @@ export class StemDesk {
     if (!this._lanes.length) return;
     this._master = this._ctx.createGain();
     this._master.gain.value = 1;
-    this._master.connect(this._ctx.destination);
+    // Output protection, not a mastering chain. Eight lanes can be boosted by
+    // +6 dB per lane and +6 dB per track, so a coincident sum can exceed full
+    // scale. A soft-clip curve is used rather than a compressor because the
+    // Web Audio compressor applies automatic makeup gain, which would change
+    // quiet material; this curve is exactly linear below 0.8 and saturates at
+    // 1.0, so a normal mix is untouched and a boosted one cannot hard clip.
+    this._ceiling = typeof this._ctx.createWaveShaper === 'function'
+      ? this._ctx.createWaveShaper()
+      : null;
+    if (this._ceiling) {
+      this._ceiling.curve = softClipCurve();
+      if ('oversample' in this._ceiling) this._ceiling.oversample = 'none';
+      this._master.connect(this._ceiling);
+      this._ceiling.connect(this._ctx.destination);
+    } else {
+      this._master.connect(this._ctx.destination);
+    }
     for (const group of this._groups) {
       const node = this._ctx.createGain();
       node.gain.value = this._groupGainValue(group);
@@ -581,6 +627,14 @@ export class StemDesk {
         // Already disconnected.
       }
       this._master = null;
+    }
+    if (this._ceiling) {
+      try {
+        this._ceiling.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+      this._ceiling = null;
     }
   }
 

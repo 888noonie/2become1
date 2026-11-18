@@ -42,7 +42,7 @@ try {
     };
     const AMP = 0.05;
 
-    function monoWav(freq, seconds, rate) {
+    function monoWav(freq, seconds, rate, amplitude = AMP) {
       const frames = Math.round(seconds * rate);
       const buffer = new ArrayBuffer(44 + frames * 2);
       const view = new DataView(buffer);
@@ -63,7 +63,7 @@ try {
       write(36, 'data');
       view.setUint32(40, frames * 2, true);
       for (let i = 0; i < frames; i += 1) {
-        const sample = Math.sin((2 * Math.PI * freq * i) / rate) * AMP;
+        const sample = Math.sin((2 * Math.PI * freq * i) / rate) * amplitude;
         view.setInt16(44 + i * 2, Math.round(sample * 32767), true);
       }
       return buffer;
@@ -104,18 +104,19 @@ try {
       freq,
     }));
 
-    async function render({ crossfader = 50, stemSeconds = 1, renderSeconds = 1.6, offset = 0, levels = {} } = {}) {
+    async function render({ crossfader = 50, stemSeconds = 1, renderSeconds = 1.6, offset = 0, levels = {}, amplitude = AMP } = {}) {
       const ctx = new OfflineAudioContext(1, Math.round(RATE * renderSeconds), RATE);
       const freqByUrl = new Map();
       for (const groupId of ['A', 'B']) {
         for (const entry of lanesFor(groupId)) freqByUrl.set(entry.lane.audioUrl, entry.freq);
       }
+      const monoFor = (freq) => monoWav(freq, stemSeconds, RATE, amplitude);
       const desk = new StemDesk({
         audioContext: ctx,
         fetchImpl: async (url) => ({
           ok: true,
           status: 200,
-          arrayBuffer: async () => monoWav(freqByUrl.get(url), stemSeconds, RATE),
+          arrayBuffer: async () => monoFor(freqByUrl.get(url)),
         }),
       });
       const loaded = await desk.loadGroups(['A', 'B'].map((groupId) => ({
@@ -165,6 +166,10 @@ try {
       end_of_programme: await render({ crossfader: 50, stemSeconds: 0.6, renderSeconds: 1 }),
       // A track level must move only its own track's PCM.
       level_b_minus_12: await render({ crossfader: 50, levels: { B: -12 } }),
+      // Worst allowed case: loud lanes, both tracks at +6 dB, both groups open.
+      hot_boosted: await render({
+        crossfader: 50, levels: { A: 6, B: 6 }, amplitude: 0.9, stemSeconds: 1.2, renderSeconds: 1.4,
+      }),
     };
     return { rate: RATE, amplitude: AMP, scenarios };
   }, { runtimeSource: source, crossfaderSource });
@@ -210,6 +215,10 @@ try {
   check('a track level attenuates only that track',
     Math.abs(bRatio - 0.2512) < 0.05 && Math.abs(aRatio - 1) < 0.02,
     { bRatio: +bRatio.toFixed(4), aRatio: +aRatio.toFixed(4), expectedBRatio: 0.2512 });
+
+  check('the loudest allowed gain combination is limited below full scale',
+    scenarios.hot_boosted.peak <= 1 && scenarios.hot_boosted.peak > 0.5,
+    { peak: +scenarios.hot_boosted.peak.toFixed(4), levels: '+6 dB lane, +6 dB track, hot source' });
 
   check('eight lanes at the crossfader midpoint do not clip',
     scenarios.crossfade_middle.peak < 1,

@@ -65,6 +65,18 @@ rather than surprising.
 With only one loaded track the crossfader is disabled and that group's gain is
 forced to 1 (times its level), so a single track is never faded to silence.
 
+### Output ceiling
+
+The master feeds one `WaveShaperNode` before the destination. Its curve is
+**exactly linear below 0.8**, then compresses quadratically and reaches full
+scale at 1.0; inputs past full scale clamp to that end point. This is output
+protection, not a mastering chain: a normal mix is bit-identical to the old
+path, while the allowed worst case (+6 dB per lane plus +6 dB per track on
+eight lanes) cannot hard-clip. A compressor was rejected because the Web Audio
+`DynamicsCompressorNode` applies automatic makeup gain, which would change
+quiet material — the first attempt did exactly that (levels rose 1.216×) and
+was removed.
+
 Solo is evaluated **across all eight lanes**, not per group:
 
 ```
@@ -103,6 +115,12 @@ it is refused with `S_DESK_FULL`; already-loaded groups are not unloaded or
 modified. A media failure inside an otherwise valid group is still an honest
 `S_STEM_PARTIAL`, matching the old single-track behavior.
 
+The panel shows the runtime's own reason, not a generic failure: a refusal
+reads e.g. `S_STEM_TOO_LONG — stem vocals decodes to 45312000 bytes; the desk
+holds at most 41943040 per stem`, and a partial load names the first unavailable
+lane with its code. A refused *replacement* of an already-loaded group therefore
+cannot be mistaken for a success.
+
 ## 4. Transport: no wrapping by default
 
 `play({ loop = false, offset = 0 })` defaults to **no loop**. The panel keeps
@@ -122,9 +140,18 @@ not keep reporting a playing transport. This is proven with Chromium's
 `OfflineAudioContext` in `stem_desk_two_track_audio.js` and with real decoded
 stems in `stem_desk_two_track_real.js`.
 
-`unloadGroup(trackId)` removes and disconnects only that group, subtracts only
-its decoded bytes and keeps the other group loaded. `dispose()` still closes
-the AudioContext **only when the desk owns it**.
+Loading a group is **non-destructive to the other group's decoded audio**, but
+it is not silent about the transport: if anything is playing when the load
+commits, the desk stops all sources, rebuilds the graph and returns to `ready`.
+That includes the case where Play was pressed while a fetch was still in
+flight — the transport state is re-read at commit time, not at entry, because a
+load that completed during playback used to leave old sources running behind a
+disconnected graph.
+
+`unloadGroup(trackId)` removes and disconnects only that group and subtracts
+only its decoded bytes; it also stops playback and rebuilds the remaining
+group's graph. `dispose()` still closes the AudioContext **only when the desk
+owns it**.
 
 ## 5. Panel
 
@@ -141,7 +168,11 @@ The panel renders:
   center/side note) and the “effectively silent in this separation” note on each
   affected row; the stem-set id is what distinguishes two tracks that both have
   a “vocals”;
-- group-qualified accessible names such as `Mute A · Vocals`, `Solo B · Drums`.
+- group-qualified accessible names such as `Mute A · Vocals`, `Solo B · Drums`;
+- a standing policy line: solo applies across both tracks, the faders apply on
+  top, and — with two tracks loaded — that they start on one clock at their own
+  tempo and are not beat-matched. The line is visible before Play, not only
+  after it.
 
 Changing a lane gain updates that row's value and dB readout **in place**; the
 row element and focus are not rebuilt during the drag. Mute/solo re-render the
@@ -382,7 +413,7 @@ node tests/browser/run.js --viewport 390x844    # 39 checks, 5 failures
 node tests/browser/stem_desk_ux.js --viewport 1280x800     # pass
 node tests/browser/stem_desk_two_track_ux.js --viewport 1280x800  # 21/21
 node tests/browser/stem_desk_two_track_ux.js --viewport 390x844   # 21/21
-node tests/browser/stem_desk_two_track_audio.js            # 7/7
+node tests/browser/stem_desk_two_track_audio.js            # 8/8
 node tests/browser/stem_desk_two_track_real.js ...         # 8/8
 node tests/browser/stem_desk_audio.js                      # 8/8 (single-desk regression)
 node tests/browser/stem_desk_real_audio.js ...             # 15/15 (single-desk regression)
@@ -391,3 +422,27 @@ node tests/browser/stem_desk_real_audio.js ...             # 15/15 (single-desk 
 The five mobile failures are the same pre-existing moderate accessibility
 findings recorded at the accepted baseline; they are not new and are kept
 separate from this change.
+
+## 15. Defects found by the second challenge and their fixes
+
+The Codex GPT-6.2 Sol challenge ran against HEAD `2a24c20` and returned
+NEEDS CHANGES with two blocking findings. Both were reproduced, then fixed:
+
+| Finding | Reproduction | Fix and proof |
+| --- | --- | --- |
+| Both track levels at +6 dB push the documented demo peak (−3.14 dBFS) past full scale; nothing protects the master | arithmetic on the measured real-stem peak | output soft-clip ceiling (§2); `hot_boosted` PCM case renders loud lanes at +6 dB lane and +6 dB track for both groups and asserts peak ≤ 1.0 and > 0.5 — measured 1.000 with the ceiling, 2.101 without |
+| Play pressed while a group is still loading leaves the old sources running behind a rebuilt graph | in-memory reproduction: old source not stopped, lane disconnected, status still `playing` at 0.0 s after the load | the commit path re-reads the transport and stops sources; unit test “a load that completes during playback stops the old transport” asserts every prior source is stopped and status is `ready` |
+
+Three non-blocking observations were also taken:
+
+- the panel now shows the specific refusal (code and byte counts) instead of
+  “some stems are unavailable”, and a refused replacement cannot read as a
+  success;
+- the solo/tempo policy line is visible before Play and includes the honest
+  two-track tempo statement;
+- the docs now say plainly that a successful load stops playback, instead of
+  implying that a group can be swapped into a running mix.
+
+Accepted as-is, with the limitation recorded: gain writes are direct
+assignments, so a fast drag can produce small zipper artefacts. The demo is a
+static audition, and both PCM gates set controls before rendering.

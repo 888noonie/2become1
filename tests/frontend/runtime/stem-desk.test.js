@@ -60,6 +60,7 @@ class FakeContext {
     this.resumeCalls = 0;
     this.destination = { name: 'destination' };
     this.created = [];
+    this.createdSources = [];
     this.closed = false;
     this.duration = duration;
     this.channels = channels;
@@ -76,7 +77,22 @@ class FakeContext {
   }
 
   createBufferSource() {
-    return new FakeSource();
+    const source = new FakeSource();
+    this.createdSources.push(source);
+    return source;
+  }
+
+  /** Stand-in for the output soft-clip shaper. */
+  createWaveShaper() {
+    const node = {
+      curve: null,
+      oversample: 'none',
+      connected: [],
+      connect(target) { this.connected.push(target); },
+      disconnect() { this.connected = []; },
+    };
+    this.created.push(node);
+    return node;
   }
 
   async decodeAudioData() {
@@ -445,7 +461,10 @@ test('the crossfader writes equal-power group gains into one master graph', asyn
     { trackId: 'A', lanes: [lane('vocals')] },
     { trackId: 'B', lanes: [lane('vocals')] },
   ]);
-  assert.equal(desk._master.connected.includes(desk._ctx.destination), true);
+  assert.equal(desk._master.connected.includes(desk._ceiling), true,
+    'the master now feeds the output ceiling');
+  assert.equal(desk._ceiling.connected.includes(desk._ctx.destination), true,
+    'the ceiling is the last node before the destination');
   const groupA = desk._groups.find((group) => group.trackId === 'A');
   const groupB = desk._groups.find((group) => group.trackId === 'B');
   assert.equal(groupA.node.connected.includes(desk._master), true);
@@ -617,4 +636,50 @@ test('a bare stem name is refused when two tracks both have it', async () => {
   const single = new StemDesk({ audioContext: new FakeContext(), fetchImpl: fakeFetch() });
   await single.load([lane('vocals')]);
   assert.equal(single.setGain('vocals', -3).lanes[0].gainDb, -3);
+});
+
+test('a load that completes during playback stops the old transport', async () => {
+  const ctx = new FakeContext();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const desk = new StemDesk({
+    audioContext: ctx,
+    fetchImpl: async (url) => {
+      if (url.includes('B')) await gate;
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(64).buffer };
+    },
+  });
+  await desk.loadGroups([{ trackId: 'A', lanes: [lane('vocals')] }]);
+  const playing = desk.play({ loop: true });
+  assert.equal(playing.status, 'playing');
+
+  const pending = desk.loadGroups([{ trackId: 'B', lanes: [lane('vocals', { audioUrl: '/api/stems/B' })] }]);
+  release();
+  const loaded = await pending;
+
+  assert.equal(loaded.status, 'ready', 'a completed load returns the desk to ready');
+  assert.equal(desk._sources.length, 0, 'no old source keeps running behind the new graph');
+  for (const source of ctx.createdSources) {
+    assert.equal(source.stopped, true, 'every source from the previous transport was stopped');
+  }
+});
+
+test('the master output is limited so boosted lanes cannot hard clip', async () => {
+  const ctx = new FakeContext();
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  await desk.load([lane('vocals')]);
+  assert.ok(desk._ceiling, 'an output ceiling node sits between master and destination');
+  const curve = desk._ceiling.curve;
+  assert.equal(curve.length, 4097);
+  // Identity below the knee (0.8), saturating at full scale above it.
+  const mid = Math.floor(curve.length / 2);
+  const at = (amplitude) => curve[Math.round(((amplitude + 1) / 2) * (curve.length - 1))];
+  assert.ok(Math.abs(at(0.5) - 0.5) < 1e-3, 'linear below the knee');
+  assert.ok(Math.abs(at(-0.5) + 0.5) < 1e-3, 'linear below the knee, negative side');
+  assert.ok(at(0.8) <= 0.8001, 'still linear at the knee');
+  assert.ok(at(0.95) < 0.95 && at(0.95) > 0.8, 'compressed above the knee');
+  assert.ok(Math.abs(at(1) - 1) < 1e-3, 'reaches full scale at the end point');
+  assert.ok(Math.max(...curve) <= 1.0000001, 'never exceeds full scale');
+  assert.ok(Math.min(...curve) >= -1.0000001, 'never below negative full scale');
+  assert.equal(desk._master.connected.includes(desk._ceiling), true);
 });

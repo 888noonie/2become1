@@ -160,6 +160,8 @@ export function mountStemDeskPanel({
     class: 'stem-desk__meta stem-desk__policy',
     text: 'Solo applies across both tracks. The crossfader and each group level still apply on top, so a soloed lane on a closed track is silent.',
   });
+  const TWO_TRACK_POLICY = ' Two tracks start on one clock at their own tempo; this desk does not beat-match them.';
+  const ONE_TRACK_POLICY = ' One track keeps looping, as the four-stem desk always has.';
 
   container.replaceChildren(root);
   replaceChildren(root, [
@@ -290,6 +292,10 @@ export function mountStemDeskPanel({
     const anyFallback = lanes.some((lane) => lane.name === 'center' || lane.name === 'sides');
     note.hidden = !anyFallback;
     note.textContent = anyFallback ? FALLBACK_NOTE : '';
+
+    policy.textContent = groups.length >= 2
+      ? 'Solo applies across both tracks. The crossfader and each group level still apply on top, so a soloed lane on a closed track is silent.' + TWO_TRACK_POLICY
+      : 'Solo applies across both tracks. The crossfader and each group level still apply on top, so a soloed lane on a closed track is silent.' + ONE_TRACK_POLICY;
 
     const liveGroupIds = new Set(groups.map((group) => group.trackId));
     for (const [groupId, view] of groupViews) {
@@ -512,16 +518,21 @@ export function mountStemDeskPanel({
         renderLanes(state);
         refreshTransport(state);
         const groupLanes = state.lanes.filter((entry) => entry.trackId === groupId);
+        const failures = Array.isArray(state.error?.failures) ? state.error.failures : [];
+        const detail = failures[0] || null;
         if (!groupLanes.length) {
-          say(`Group ${groupId} was refused: ${state.error?.message || 'no playable media'}`);
+          // Show the real reason (byte counts, codes), not just "unavailable".
+          const reason = detail
+            ? `${detail.code || 'unavailable'} — ${detail.message || detail.name}`
+            : (state.error?.message || 'no playable media');
+          say(`Group ${groupId} was refused: ${reason}`);
         } else if (state.error?.code === 'S_DESK_FULL') {
-          say(`Group ${groupId} was refused by the memory budget. The other group is unchanged.`);
-        } else if (state.error?.code === 'S_STEM_PARTIAL') {
-          const missing = (state.error.failures || [])
-            .filter((entry) => entry.name !== groupId)
-            .map((entry) => entry.name)
-            .join(', ');
-          say(`Loaded ${groupLanes.length} stems into group ${groupId}. Unavailable: ${missing || 'some stems'}.`);
+          say(`Group ${groupId} was refused by the memory budget: ${state.error.message || detail?.message || 'over budget'}. The other group is unchanged.`);
+        } else if (detail) {
+          say(
+            `Loaded ${groupLanes.length} stems into group ${groupId}. ` +
+            `${detail.code || 'Unavailable'} — ${detail.message || detail.name}.`,
+          );
         } else {
           const silent = groupLanes
             .filter((entry) => entry.silent)

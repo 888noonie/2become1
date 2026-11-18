@@ -647,3 +647,30 @@ test('two loaded tracks play once and say so, without claiming beat matching', a
   assert.match(status, /not tempo or beat matching/);
   assert.doesNotMatch(status, /beat.?matched/i);
 });
+
+test('a refused replacement shows the runtime reason, not a bare success', async () => {
+  const { container, desk } = mount({
+    variants: [variant('vocals'), variant('drums')],
+  });
+  await flush();
+  await loadGroup(container, 'A');
+
+  // Simulate the desk refusing a replacement because the lanes are too large.
+  desk.loadGroups = async () => {
+    desk.error = {
+      code: 'S_STEM_TOO_LONG',
+      message: 'per-lane budget exceeded',
+      failures: [{
+        name: 'vocals',
+        code: 'S_STEM_TOO_LONG',
+        message: 'stem vocals decodes to 45312000 bytes; the desk holds at most 41943040 per stem',
+      }],
+    };
+    return desk.state();
+  };
+  await loadGroup(container, 'A');
+
+  const status = container.querySelector('.stem-desk__status').textContent;
+  assert.match(status, /S_STEM_TOO_LONG/);
+  assert.match(status, /at most 41943040 per stem/);
+});
