@@ -57,6 +57,13 @@ real view functions with `node --test tests/frontend/*.js`.
   URL is not authorisation: `authorised` must be the caller's own True, or
   the result is `NOT_AUTHORISED`. The handoff names `submit_youtube_import`,
   `submit_upload_import`, or `assign_deck`. It does not start that call.
+- A stem-desk proposal is `stem-desk-proposal/v1`.
+  `suggestStemDeskProposal` only returns data: A keeps drums and bass, B keeps
+  vocals and other, silent lanes stay muted, and both entry offsets stay 0.
+  `approveStemDeskProposal` is the only function that may apply one, and only
+  after it matches the loaded stem-set ids and lane measurements. It does not
+  call `play`. Unknown fields, including playback rate and pitch, reject the
+  whole proposal and leave the mix unchanged.
 - The Studio sidebar queue adds a track that is already in the library. It has
   no YouTube paste box. YouTube import stays in Choose Track. The queue is not
   persisted.
