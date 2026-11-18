@@ -181,8 +181,17 @@ export function mountStemDeskPanel({
   let disposed = false;
   let tracksLoaded = false;
   let tracksPending = null;
+  let loadingCount = 0;
   const rowViews = new Map();
   const groupViews = new Map();
+
+  function syncLoadButtons() {
+    for (const id of GROUP_IDS) {
+      const button = groupButtons[id];
+      if (!button) continue;
+      button.disabled = loadingCount > 0 ? 'true' : undefined;
+    }
+  }
 
   function say(message) {
     status.textContent = message;
@@ -489,7 +498,11 @@ export function mountStemDeskPanel({
       const controller = typeof AbortController === 'function' ? new AbortController() : null;
       if (controller) aborts.set(groupId, controller);
       const button = groupButtons[groupId];
-      button.disabled = 'true';
+      // Two overlapping loads used to race in the runtime; it now recomputes
+      // at commit, and the panel also keeps one load in flight at a time so
+      // the buttons tell the truth while a fetch is pending.
+      loadingCount += 1;
+      syncLoadButtons();
       say(`Loading separated stems for group ${groupId}...`);
       try {
         const stems = await listStemsImpl(trackId, controller?.signal);
@@ -548,7 +561,8 @@ export function mountStemDeskPanel({
         say(`Could not load group ${groupId}: ${err?.message || 'request failed'}`);
       } finally {
         if (!controller || aborts.get(groupId) === controller) aborts.delete(groupId);
-        button.disabled = undefined;
+        loadingCount = Math.max(0, loadingCount - 1);
+        syncLoadButtons();
       }
     });
   }

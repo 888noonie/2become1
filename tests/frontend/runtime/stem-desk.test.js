@@ -697,3 +697,32 @@ test('a stem with more than two channels is refused rather than downmixed', asyn
   assert.equal(state.error.code, 'S_STEM_LAYOUT');
   assert.match(state.error.message, /mono or stereo/);
 });
+
+test('two overlapping loads keep both groups instead of dropping the first', async () => {
+  const ctx = new FakeContext();
+  let releaseA;
+  let releaseB;
+  const gateA = new Promise((resolve) => { releaseA = resolve; });
+  const gateB = new Promise((resolve) => { releaseB = resolve; });
+  const desk = new StemDesk({
+    audioContext: ctx,
+    fetchImpl: async (url) => {
+      if (url.includes('/A')) await gateA;
+      if (url.includes('/B')) await gateB;
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(64).buffer };
+    },
+  });
+
+  // Both loads are in flight before either commits: the stale-snapshot case.
+  const loadA = desk.loadGroups([{ trackId: 'A', lanes: [lane('vocals', { audioUrl: '/A' })] }]);
+  const loadB = desk.loadGroups([{ trackId: 'B', lanes: [lane('vocals', { audioUrl: '/B' })] }]);
+  releaseA();
+  const afterA = await loadA;
+  assert.deepEqual(afterA.groups.map((group) => group.trackId), ['A']);
+  releaseB();
+  const afterB = await loadB;
+
+  assert.deepEqual(afterB.groups.map((group) => group.trackId).sort(), ['A', 'B'],
+    'the group that finished first is not discarded');
+  assert.deepEqual(afterB.lanes.map((entry) => entry.key).sort(), ['A:vocals', 'B:vocals']);
+});

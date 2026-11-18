@@ -322,6 +322,31 @@ export class StemDesk {
       return { committed: false, failures };
     }
 
+    // Recompute against the desk as it is NOW, not as it was when this load
+    // started. Two loads can overlap (the owner presses Load A and Load B in
+    // quick succession), and committing from the entry snapshot would drop
+    // whichever group finished first.
+    const currentOthers = this._groups.filter((entry) => entry.trackId !== spec.trackId);
+    const currentOtherBytes = currentOthers.reduce(
+      (total, entry) => total + entry.lanes.reduce((sum, lane) => sum + lane.decodedBytes, 0),
+      0,
+    );
+    const currentOtherLanes = currentOthers.reduce((total, entry) => total + entry.lanes.length, 0);
+    if (currentOtherLanes + loaded.length > STEM_DESK_LIMITS.maxLanes) {
+      return {
+        committed: false,
+        failures: [budgetFailure(spec, `the desk holds at most ${STEM_DESK_LIMITS.maxLanes} lanes`)],
+      };
+    }
+    if (currentOtherBytes + groupBytes > STEM_DESK_LIMITS.maxDecodedBytes) {
+      return {
+        committed: false,
+        failures: [
+          budgetFailure(spec, `at most ${STEM_DESK_LIMITS.maxDecodedBytes} decoded bytes for the desk`),
+        ],
+      };
+    }
+
     const group = {
       trackId: spec.trackId,
       title: spec.title,
@@ -329,9 +354,9 @@ export class StemDesk {
       levelDb: existing?.levelDb ?? 0,
       node: null,
     };
-    this._groups = [...otherGroups, group];
+    this._groups = [...currentOthers, group];
     this._lanes = this._groups.flatMap((entry) => entry.lanes);
-    this._decodedBytes = candidateBytes + groupBytes;
+    this._decodedBytes = currentOtherBytes + groupBytes;
     return { committed: true, failures };
   }
 

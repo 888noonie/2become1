@@ -406,7 +406,7 @@ track.
 ## 14. Full verification run (final HEAD)
 
 ```bash
-npm test                     # 513 tests, 513 pass, 0 fail
+npm test                     # 514 tests, 514 pass, 0 fail
 .venv/bin/pytest -q          # 580 passed, 1 skipped
 node tests/browser/run.js --viewport 1280x800   # 39 checks, 0 failures
 node tests/browser/run.js --viewport 390x844    # 39 checks, 5 failures
@@ -458,3 +458,21 @@ Three non-blocking observations were also taken:
 Accepted as-is, with the limitation recorded: gain writes are direct
 assignments, so a fast drag can produce small zipper artefacts. The demo is a
 static audition, and both PCM gates set controls before rendering.
+
+## 16. Third challenge: concurrent loads
+
+Codex reproduced one further defect on `74d3c42`: the panel allowed both Load
+buttons to run at once, and each load committed from the group set it captured
+before decoding. Whichever finished last replaced the other, so loading A and B
+quickly could silently keep only one track.
+
+Fixed at the commit point rather than only in the UI: a group is merged into
+the desk as it exists when its decode finishes, and the lane and byte budgets
+are re-checked against that current state. The panel also keeps one load in
+flight at a time so the buttons do not invite the race. A unit test starts both
+loads before either can commit and asserts that both groups survive.
+
+The broader frontend suite (`npm test`) is 514/514 on this HEAD. The reviewer
+saw `mashup-session.test.js` and `url-queue-panel.test.js` fail in its own run;
+both pass in isolation and in the full suite here, and neither touches the Stem
+Desk.
