@@ -127,8 +127,9 @@ cannot be mistaken for a success.
 the accepted four-stem experience by asking for `loop: true` when exactly one
 track is loaded, and asks for `loop: false` for a two-track programme. Looping
 two tracks of different lengths would wrap them against each other, so that is
-deliberately not offered. Every scheduled lane receives the same `when` (one
-context clock plus the 0.05 s lead), so start alignment is tested as a schedule
+deliberately not offered. Within a group every scheduled lane receives the
+same `when` (one context clock plus the 0.05 s lead), and a stored group entry
+offset may move that group's onset, so start alignment is tested as a schedule
 property. There is
 deliberately **no per-lane `loopEnd`**: a loop, when explicitly requested,
 loops the whole buffer rather than letting each lane define its own end point.

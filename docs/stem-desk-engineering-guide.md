@@ -19,8 +19,10 @@ lane GainNode (mute / solo / lane gain)
 - **One `AudioContext` per mounted panel**, owned by the panel
   (`ownsContext: true`) and closed on dispose. Never reuse or close LiveMixer's
   context, and never open a second context to add a track.
-- **One `when`** for every lane in a `play()`. Position comes from the context
-  clock, not a media element.
+- **One `when` per group** in a `play()`. Every stem inside a group shares that
+  onset; a stored per-group entry nudge may move the group's onset, which is
+  still one clock and one transport. Position comes from the context clock, not
+  a media element.
 - **One master, one ceiling.** No per-track analyser, no limiter that applies
   automatic makeup gain: the Web Audio `DynamicsCompressorNode` does, and it
   raised quiet material by 1.216× when tried here.
@@ -45,8 +47,9 @@ effectiveGain = audible ? laneGain * groupGain : 0
 
 ### Transport
 
-- `play({ loop })` takes one `when`, schedules no per-lane `loopEnd`, skips a
-  lane whose `offset` is past its end, and records `endAt` for the longest lane.
+- `play({ loop })` takes one base `when`, applies each group's stored entry
+  offset, schedules no per-lane `loopEnd`, skips a lane whose `offset` is past
+  its end, and records `endAt` for the latest lane end.
 - The desk returns to `ready` at `endAt`; never leave `playing` after the
   programme ends.
 - One loaded track keeps `loop: true` (accepted four-stem behaviour). Two tracks

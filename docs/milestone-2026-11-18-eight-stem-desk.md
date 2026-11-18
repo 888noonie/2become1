@@ -9,8 +9,10 @@ below exists to make it reproducible, not to replace it.
 
 - **Two tracks × four stems** (vocals, drums, bass, other), eight lanes, one
   Stem Performance Desk panel.
-- **One shared `AudioContext` clock.** Every lane is scheduled with the same
-  `when` (context time + 0.05 s lead). One Play/Stop, one position readout.
+- **One shared `AudioContext` clock.** At acceptance every lane was scheduled
+  with the same `when` (context time + 0.05 s lead); a later entry-nudge slice
+  keeps one clock and one Play but may move one group's onset by a stored
+  millisecond offset. One Play/Stop, one position readout.
 - **Independent lane Mute, Solo and Gain.** Mute/solo/gain are applied on each
   lane's own `GainNode`; the law is unchanged from the accepted four-stem desk:
   `anySolo ? lane.solo : !lane.muted`, multiplied by the clamped lane gain.
