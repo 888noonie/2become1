@@ -284,6 +284,12 @@ function addButton(container, groupId) {
 }
 
 const DEMUCS_QUAD = ['vocals', 'drums', 'bass', 'other'].map((name) => variant(name));
+const IMPORTED_HASH = 'a1b2c3d4e5f60718';
+const IMPORTED_QUAD = ['vocals', 'drums', 'bass', 'other'].map((name) => variant(name, {
+  method: 'imported',
+  model_name: IMPORTED_HASH,
+  device: null,
+}));
 
 test('the desk lists tracks, loads four stems into group A and labels their provenance', async () => {
   const { container, desk, calls } = mount({
@@ -1250,4 +1256,69 @@ test('earlier, later and reset show a signed group offset and do not start playb
   reset.click();
   assert.equal(container.querySelector('.stem-desk__offset').textContent, '0 ms');
   assert.equal(desk.calls.filter(([name]) => name === 'setGroupEntryOffset').length, 4);
+});
+
+test('a complete imported quad is ready and never requests a separation', async () => {
+  const submitted = [];
+  const { container, desk } = mount({
+    variantsByTrack: { 'track-1': IMPORTED_QUAD },
+    listJobsImpl: async () => ({ items: [] }),
+    submitSeparationImpl: async (trackId, method) => {
+      submitted.push([trackId, method]);
+      return {
+        id: 'job-imported', status: 'queued', message: 'Queued',
+        request: { track_id: trackId, method },
+      };
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+
+  const select = selectFor(container, 'A');
+  select.dispatchEvent(new window.Event('change'));
+  await flush();
+  const ready = container.querySelector('.stem-desk__status').textContent;
+  assert.match(ready, /Four imported stems are ready/);
+  assert.doesNotMatch(ready, /demucs/i);
+
+  addButton(container, 'A').click();
+  await flush();
+  assert.deepEqual(submitted, [], 'a complete imported quad must not request Demucs');
+  assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
+});
+
+test('imported provenance names the set hash and never claims Demucs', async () => {
+  const { container } = mount({ variants: IMPORTED_QUAD });
+  await flush();
+  await loadGroup(container, 'A');
+
+  const rows = [...container.querySelectorAll('.stem-desk__row')];
+  assert.equal(rows.length, 4);
+  for (const row of rows) {
+    const meta = row.querySelector('.stem-desk__meta').textContent;
+    assert.equal(meta, 'imported · set a1b2c3d4', 'provenance is imported plus the truncated set hash');
+    assert.doesNotMatch(meta, /demucs/i);
+    assert.doesNotMatch(meta, new RegExp(IMPORTED_HASH), 'the full hash is not shown');
+  }
+  assert.doesNotMatch(container.querySelector('.stem-desk__lanes').textContent, /demucs/i);
+});
+
+test('three imported lanes without the fourth are not ready and say the set is incomplete', async () => {
+  const { container, desk } = mount({
+    variantsByTrack: { 'track-1': IMPORTED_QUAD.slice(0, 3) },
+    listJobsImpl: async () => ({ items: [] }),
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+
+  selectFor(container, 'A').dispatchEvent(new window.Event('change'));
+  await flush();
+  const status = container.querySelector('.stem-desk__status').textContent;
+  assert.match(status, /3 of 4 imported stems/);
+  assert.match(status, /incomplete/i);
+  assert.doesNotMatch(status, /are ready/i);
+  assert.doesNotMatch(status, /demucs/i);
+  assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
 });

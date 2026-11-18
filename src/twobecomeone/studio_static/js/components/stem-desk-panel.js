@@ -15,6 +15,7 @@ import { listJobs, listStems, listTracks, submitSeparation, watchJob } from '../
 import { StemDesk, STEM_DESK_LIMITS } from '../runtime/stem-desk.js';
 
 const STEM_ORDER = ['vocals', 'drums', 'bass', 'other', 'center', 'sides'];
+const QUAD_NAMES = ['vocals', 'drums', 'bass', 'other'];
 const GROUP_IDS = ['A', 'B'];
 const FALLBACK_NOTE = 'Fallback split: center and sides are channel separations, not isolated vocals or instruments.';
 
@@ -54,6 +55,12 @@ function stemLabel(name) {
 }
 
 function provenanceLabel(variant) {
+  // An imported set is the user's own separated stems, identified by its set
+  // hash; there is no separation model to name and no device that ran one.
+  if (variant.method === 'imported') {
+    const setHash = variant.modelName ? String(variant.modelName).slice(0, 8) : '';
+    return setHash ? `imported · set ${setHash}` : 'imported';
+  }
   const method = variant.method === 'demucs'
     ? `demucs${variant.modelName ? ` · ${variant.modelName}` : ''}`
     : variant.method === 'ffmpeg'
@@ -313,8 +320,39 @@ export function mountStemDeskPanel({
       if (!variant || variant.method !== 'demucs' || !variant.name || variant.name === 'full') continue;
       byName.set(variant.name, variant);
     }
-    const lanes = ['vocals', 'drums', 'bass', 'other'].map((name) => byName.get(name));
+    const lanes = QUAD_NAMES.map((name) => byName.get(name));
     return lanes.every(Boolean) ? lanes : null;
+  }
+
+  /**
+   * Readiness is having the four isolated lanes, whether a Demucs run or the
+   * user's own imported set produced them. Keep this separate from demucsQuad:
+   * only wording and provenance that genuinely mean Demucs may use that one.
+   */
+  function completeQuad(variants) {
+    const byName = new Map();
+    for (const variant of variants) {
+      if (!variant || !variant.name || variant.name === 'full') continue;
+      if (variant.method !== 'demucs' && variant.method !== 'imported') continue;
+      if (!QUAD_NAMES.includes(variant.name)) continue;
+      byName.set(variant.name, variant);
+    }
+    const lanes = QUAD_NAMES.map((name) => byName.get(name));
+    return lanes.every(Boolean) ? lanes : null;
+  }
+
+  function importedQuad(quad) {
+    return Boolean(quad) && quad.every((variant) => variant.method === 'imported');
+  }
+
+  function quadReadyMessage(quad, name, groupId) {
+    if (demucsQuad(quad)) {
+      return `Four Demucs stems are ready for ${name}. Load ${groupId} to play them.`;
+    }
+    if (importedQuad(quad)) {
+      return `Four imported stems are ready for ${name}. Load ${groupId} to play them.`;
+    }
+    return `Four isolated stems are ready for ${name}. Load ${groupId} to play them.`;
   }
 
   async function readVariants(trackId) {
@@ -338,15 +376,22 @@ export function mountStemDeskPanel({
     }
     if (disposed || readinessTokens[groupId] !== token || groupSelects[groupId].value !== trackId) return;
     const name = trackTitle(trackId);
-    const demucsNames = ['vocals', 'drums', 'bass', 'other'].filter((stemName) => (
-      variants.some((variant) => variant && variant.name === stemName && variant.method === 'demucs')
-    ));
-    if (demucsNames.length === 4) {
-      say(`Four Demucs stems are ready for ${name}. Load ${groupId} to play them.`);
+    const quad = completeQuad(variants);
+    if (quad) {
+      say(quadReadyMessage(quad, name, groupId));
       return;
     }
-    if (demucsNames.length > 0) {
-      say(`${name} has ${demucsNames.length} of 4 Demucs stems. The set is not ready. Load ${groupId} plays only the lanes that exist.`);
+    const countFor = (method) => QUAD_NAMES.filter((stemName) => (
+      variants.some((variant) => variant && variant.name === stemName && variant.method === method)
+    )).length;
+    const importedCount = countFor('imported');
+    const demucsCount = countFor('demucs');
+    if (importedCount > 0 && importedCount >= demucsCount) {
+      say(`${name} has ${importedCount} of 4 imported stems. The imported set is incomplete; Load ${groupId} plays only the lanes that exist.`);
+      return;
+    }
+    if (demucsCount > 0) {
+      say(`${name} has ${demucsCount} of 4 Demucs stems. The set is not ready. Load ${groupId} plays only the lanes that exist.`);
       return;
     }
     const channelSplit = variants.some((variant) => variant && (variant.name === 'center' || variant.name === 'sides'));
@@ -402,8 +447,14 @@ export function mountStemDeskPanel({
       if (disposed || groupSelects[groupId].value !== trackId) return;
       const still = separationWatches.get(groupId);
       if (!still || still.jobId !== job.id) return;
-      if (demucsQuad(variants)) {
-        say(`Separation complete for ${name}. Four Demucs stems are ready. Load ${groupId} to play them.`);
+      const quad = completeQuad(variants);
+      if (quad) {
+        const ready = demucsQuad(quad)
+          ? 'Four Demucs stems are ready.'
+          : importedQuad(quad)
+            ? 'Four imported stems are ready.'
+            : 'Four isolated stems are ready.';
+        say(`Separation complete for ${name}. ${ready} Load ${groupId} to play them.`);
       } else if (variants.some((variant) => variant && (variant.name === 'center' || variant.name === 'sides'))) {
         say(`Separation finished for ${name}, but the result is a center/sides split, not four Demucs stems.`);
       } else {
@@ -492,7 +543,7 @@ export function mountStemDeskPanel({
         return;
       }
       if (disposed || groupSelects[groupId].value !== track.id) return;
-      if (!demucsQuad(variants)) {
+      if (!completeQuad(variants)) {
         await startSeparation(groupId, track.id);
         return;
       }
@@ -526,8 +577,14 @@ export function mountStemDeskPanel({
       variants = [];
     }
     if (disposed || groupSelects[groupId].value !== track.id) return;
-    if (demucsQuad(variants)) {
-      say(`${imported} Separation has since finished: Four Demucs stems are ready. Load ${groupId} to play them.`);
+    const quad = completeQuad(variants);
+    if (quad) {
+      const ready = demucsQuad(quad)
+        ? 'Separation has since finished: Four Demucs stems are ready.'
+        : importedQuad(quad)
+          ? 'Four imported stems are ready.'
+          : 'Four isolated stems are ready.';
+      say(`${imported} ${ready} Load ${groupId} to play them.`);
       return;
     }
     const terminal = jobs.find((job) => (
@@ -864,7 +921,7 @@ export function mountStemDeskPanel({
       return;
     }
     if (disposed || groupSelects[groupId].value !== trackId) return;
-    if (demucsQuad(variants)) {
+    if (completeQuad(variants)) {
       await openChooseTrack(groupId, 'add');
       return;
     }
