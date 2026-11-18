@@ -12,6 +12,7 @@ the render orchestration, delegating job state transitions to the engine.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
@@ -22,6 +23,7 @@ import subprocess
 import time
 import unicodedata
 import uuid
+import wave
 from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -55,6 +57,40 @@ _DEFAULT_STEM_DECODED_BYTES = 40 * 1024 * 1024
 _STORED_STEM_BYTES = 128 * 1024 * 1024
 _STORED_STEM_DECODED_BYTES = 128 * 1024 * 1024
 _STORED_TRACK_DECODED_BYTES = 512 * 1024 * 1024
+
+
+def _audio_sample_count(stream: dict, rate: int, duration: float) -> int:
+    """Return the number of samples, preferring the stream timestamp.
+
+    A formatted duration is rounded. For a one-sample file that rounding
+    lands past the true end, so the sample count has to come from the
+    timestamp or the frame count.
+    """
+    time_base = str(stream.get("time_base") or "")
+    raw_ts = stream.get("duration_ts")
+    if raw_ts not in (None, "", "N/A") and time_base == f"1/{rate}":
+        count = int(raw_ts)
+        if count > 0:
+            return count
+    raw_count = stream.get("nb_samples")
+    if raw_count not in (None, "", "N/A"):
+        count = int(raw_count)
+        if count > 0:
+            return count
+    if duration > 0:
+        count = int(round(duration * rate))
+        if count > 0:
+            return count
+    raise ValueError("no sample count")
+
+
+def _wav_has_pcm(raw: bytes) -> bool:
+    """True when the WAV contains at least one PCM frame."""
+    try:
+        with wave.open(io.BytesIO(raw), "rb") as handle:
+            return handle.readframes(1) != b""
+    except wave.Error:
+        return False
 
 
 def _window_pcm_codec(sample_fmt: str, bits: int | None) -> str:
@@ -2519,7 +2555,13 @@ class StudioService:
 
         source = self.stem_audio_path(stem_set_id, name)
         layout = self._probe_audio_layout(source)
-        if start_seconds >= layout["duration"]:
+        rate = layout["sample_rate"]
+        start_sample = int(round(start_seconds * rate))
+        if start_sample < 0:
+            start_sample = 0
+        # The container duration is rounded. A start can sit past the last
+        # sample and still look earlier than that rounded duration.
+        if start_seconds >= layout["duration"] or start_sample >= layout["sample_count"]:
             raise UserError("the section starts past the end of the recording")
         playback_rate = max(layout["sample_rate"], _DESK_PLAYBACK_RATE)
         decoded = int(duration * playback_rate * layout["channels"] * 4)
@@ -2530,10 +2572,6 @@ class StudioService:
                 f"{_DEFAULT_STEM_DECODED_BYTES} per stem"
             )
 
-        rate = layout["sample_rate"]
-        start_sample = int(round(start_seconds * rate))
-        if start_sample < 0:
-            start_sample = 0
         end_sample = start_sample + duration * rate
         command = [
             "ffmpeg", "-hide_banner", "-nostdin",
@@ -2557,6 +2595,8 @@ class StudioService:
             raise UserError("the section could not be prepared") from exc
         if proc.returncode != 0 or not proc.stdout or len(proc.stdout) < 44:
             raise UserError("the section could not be prepared")
+        if not _wav_has_pcm(proc.stdout):
+            raise UserError("the section starts past the end of the recording")
         if len(proc.stdout) > _DEFAULT_STEM_DECODED_BYTES:
             raise UserError("the section is larger than the desk can fetch")
         return proc.stdout
@@ -2569,7 +2609,8 @@ class StudioService:
                     "ffprobe", "-v", "error",
                     "-select_streams", "a:0",
                     "-show_entries",
-                    "stream=sample_rate,channels,sample_fmt,bits_per_raw_sample:format=duration",
+                    "stream=sample_rate,channels,sample_fmt,bits_per_raw_sample,"
+                    "duration_ts,time_base,nb_samples:format=duration",
                     "-of", "json",
                     str(path),
                 ],
@@ -2591,6 +2632,7 @@ class StudioService:
             sample_fmt = str(stream.get("sample_fmt") or "")
             raw_bits = stream.get("bits_per_raw_sample")
             bits = int(raw_bits) if raw_bits not in (None, "", "N/A") else None
+            sample_count = _audio_sample_count(stream, rate, duration)
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise UserError("the recording's sample rate could not be read") from exc
         if rate <= 0 or channels < 1 or not math.isfinite(duration) or duration < 0:
@@ -2603,6 +2645,7 @@ class StudioService:
             "sample_rate": rate,
             "channels": channels,
             "duration": duration,
+            "sample_count": sample_count,
             "sample_fmt": sample_fmt,
             "bits_per_sample": bits,
         }

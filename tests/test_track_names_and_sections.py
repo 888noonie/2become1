@@ -377,6 +377,20 @@ class TestStemSections:
         with pytest.raises(UserError, match="past the end"):
             service.stem_audio_window("set", "vocals", start=0.001, duration=30)
 
+        one = tmp_path / "one.wav"
+        with wave.open(str(one), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(48000)
+            handle.writeframes(struct.pack("<h", 1))
+        service.stem_audio_path = lambda *_args, **_kwargs: one
+        kept_one = service.stem_audio_window("set", "vocals", start=0, duration=30)
+        with wave.open(io.BytesIO(kept_one), "rb") as handle:
+            assert handle.readframes(1) == struct.pack("<h", 1)
+        with pytest.raises(UserError, match="past the end") as caught:
+            service.stem_audio_window("set", "vocals", start=0.0000209, duration=30)
+        assert str(tmp_path) not in str(caught.value)
+
         wide = tmp_path / "wide24.wav"
         with wave.open(str(wide), "wb") as handle:
             handle.setnchannels(1)
