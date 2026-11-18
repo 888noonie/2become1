@@ -245,13 +245,13 @@ try {
       document.documentElement.scrollWidth - document.documentElement.clientWidth);
     record(`no horizontal overflow at ${viewportArg}`, overflow <= 1, `${overflow}px`);
 
+    record('no uncaught page errors', pageErrors.length === 0, pageErrors.join('; '));
+
     await desk.scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(outDir, `stem-desk-two-track-${viewportArg}.png`) });
     writeFileSync(join(outDir, `stem-desk-two-track-${viewportArg}.json`), JSON.stringify({
       viewport: viewportArg, results,
     }, null, 2));
-
-    record('no uncaught page errors', pageErrors.length === 0, pageErrors.join('; '));
   } finally {
     await browser.close();
   }

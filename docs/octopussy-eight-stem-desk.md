@@ -220,7 +220,7 @@ node --test tests/frontend/*.test.js tests/frontend/**/*.test.js
 # node_modules/.venv links because this worktree starts without them)
 
 node --test tests/browser/stem_desk_two_track_audio.js
-# 6/6 two-track signal-level checks passed
+# 8/8 two-track signal-level checks passed
 
 node --test tests/browser/stem_desk_audio.js
 # 8/8 signal-level checks passed (single-group regression)
@@ -284,7 +284,7 @@ That crosses the byte trigger, so the investigation is recorded here per
 - `js/runtime/stem-desk.js` 23,247 → **31,989 bytes** (+8,742): two group
   gains, the second gain layer, the output ceiling, the layout guard and the
   commit-time merge.
-- `js/components/stem-desk-panel.js` 12,905 → **~20,900 bytes**: two track
+- `js/components/stem-desk-panel.js` 12,905 → **24,337 bytes**: two track
   pickers, per-group level, crossfader, policy line, in-place row updates.
 - `js/runtime/crossfader.js` and the rest are unchanged (only imported).
 - The growth is behaviour the owner asked for, not padding; the journeys at
@@ -449,7 +449,7 @@ NEEDS CHANGES with two blocking findings. Both were reproduced, then fixed:
 
 | Finding | Reproduction | Fix and proof |
 | --- | --- | --- |
-| Both track levels at +6 dB push the documented demo peak (−3.14 dBFS) past full scale; nothing protects the master | arithmetic on the measured real-stem peak | output soft-clip ceiling (§2); `hot_boosted` renders loud lanes with **+6 dB on every lane and +6 dB on both track levels** and asserts peak ≤ 1.0 and > 0.5 — measured **1.000** with the ceiling (2.101 without) |
+| Both track levels at +6 dB push the documented demo peak (−3.14 dBFS) past full scale; nothing protects the master | arithmetic on the measured real-stem peak | output soft-clip ceiling (§2); `hot_boosted` renders loud lanes with **+6 dB on every lane and +6 dB on both track levels** and asserts peak ≤ 1.0 and > 0.5 — measured **1.000** with the ceiling, **16.795** without it in the same coherent worst-case render |
 | Play pressed while a group is still loading leaves the old sources running behind a rebuilt graph | in-memory reproduction: old source not stopped, lane disconnected, status still `playing` at 0.0 s after the load | the commit path re-reads the transport and stops sources; the unit test uses the failing order (load B pending → Play → B completes) and asserts every prior source is stopped and status is `ready` |
 
 The second fix has its own negative control against the pre-fix runtime
@@ -532,6 +532,10 @@ A control against the previous runtime records the defect directly:
 | this HEAD | yes | 0 |
 
 The control is in `/tmp/opencode/octopussy-evidence/play-control/`.
+
+The ceiling's own control is in `/tmp/opencode/octopussy-evidence/ceiling-control/`:
+the same hot render (eight 0.9-amplitude lanes, +6 dB lane, +6 dB track, both
+groups open) peaks at **16.795 before the ceiling** and **1.000 after it**.
 
 ## 19. Sixth pass: disposal, announcements and the asset trigger
 
