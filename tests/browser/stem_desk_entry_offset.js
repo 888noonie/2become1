@@ -74,9 +74,11 @@ try {
       return -1;
     }
 
-    function peakOf(channel) {
+    function peakOf(channel, start = 0, end = channel.length) {
       let peak = 0;
-      for (let i = 0; i < channel.length; i += 1) {
+      const from = Math.max(0, start);
+      const to = Math.min(channel.length, end);
+      for (let i = from; i < to; i += 1) {
         const absolute = Math.abs(channel[i]);
         if (absolute > peak) peak = absolute;
       }
@@ -169,6 +171,11 @@ try {
       return {
         onset: onsetOf(channel),
         peak: peakOf(channel),
+        // The delayed click sits near 0.25 s. These windows are outside the
+        // other group's click, so a crossfade leak cannot hide behind the
+        // first onset.
+        earlyPeak: peakOf(channel, 0, Math.round(RATE * 0.18)),
+        latePeak: peakOf(channel, Math.round(RATE * 0.18), channel.length),
         rates,
         status: loaded.status,
         error: loaded.error?.code || null,
@@ -288,10 +295,17 @@ try {
     Object.fromEntries(Object.entries(result.scenarios).map(([name, entry]) => [name, entry.peak])));
   check('crossfade toward A hides the delayed group B click',
     near(result.scenarios.crossfade_a_while_offset.onset, aOnset, 2)
-      && result.scenarios.crossfade_b_while_offset.onset > aOnset + result.click - 2,
+      && result.scenarios.crossfade_a_while_offset.latePeak < 0.01,
     {
-      a: result.scenarios.crossfade_a_while_offset.onset,
-      b: result.scenarios.crossfade_b_while_offset.onset,
+      onset: result.scenarios.crossfade_a_while_offset.onset,
+      latePeak: result.scenarios.crossfade_a_while_offset.latePeak,
+    });
+  check('crossfade toward B hides group A and keeps the delayed click',
+    result.scenarios.crossfade_b_while_offset.earlyPeak < 0.01
+      && near(result.scenarios.crossfade_b_while_offset.onset, aOnset + result.click, 2),
+    {
+      onset: result.scenarios.crossfade_b_while_offset.onset,
+      earlyPeak: result.scenarios.crossfade_b_while_offset.earlyPeak,
     });
   check('muting the clicking stem leaves silence',
     result.scenarios.muted_click.onset === -1 && result.scenarios.muted_click.peak < 0.01,
