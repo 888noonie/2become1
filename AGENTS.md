@@ -69,6 +69,36 @@ real view functions with `node --test tests/frontend/*.js`.
 - Unknown mix phrases with no model return `PR_PROVIDER_UNAVAILABLE` and apply
   nothing.
 
+## Stem Performance Desk (two tracks, eight lanes)
+
+Accepted 2026-11-18 at `4265ac1`; the owner confirmed it by ear. Milestone and
+full evidence: `docs/milestone-2026-11-18-eight-stem-desk.md`. Procedures,
+commands and the failure-mode table: `docs/stem-desk-engineering-guide.md`.
+Earlier audio history: `docs/stem-desk-audio-diagnosis.md`.
+
+- One `AudioContext` per mounted panel, owned by the panel; one `when` for every
+  lane in a play. Never add a second context, transport or master to add a track.
+- Per-lane gain feeds a per-group gain; group gain is the equal-power crossfade
+  **times** the track level, so a crossfade move cannot overwrite a level. The
+  master feeds a soft-clip ceiling that is linear below 0.8.
+- The mute/solo/gain law is unchanged (`anySolo ? solo : !muted`). Solo is global
+  across all eight lanes; `effectiveGain` must include the group gain. Refuse an
+  ambiguous bare lane name when two tracks share it.
+- One loaded track keeps looping. Two tracks play once and end with the longer
+  lane; a short stem must never wrap under a longer one.
+- A successful load stops playback and returns to `ready`. Re-read the transport
+  at commit time, merge overlapping loads against the current group set, and
+  re-check track/lane/byte budgets there.
+- Lane labels carry method, model, device and stem-set id. Never label
+  center/sides or user material as vocals or Demucs.
+- Never claim beat matching. A shared start on one clock is not tempo or phrase
+  alignment; the UI must say so before playback.
+- Keep the decoded-PCM limits (40 MiB/stem, 160 MiB/track, 320 MiB/desk, mono or
+  stereo only). Decoded size follows the context sample rate, not the file.
+- Prove audio with real separated stems and a negative control that fails on the
+  previous code, not with tone probes alone. Headless PCM never replaces the
+  PM's listening acceptance.
+
 ## Static assets
 
 - There is no byte ceiling. Record the total uncompressed bytes under
