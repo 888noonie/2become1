@@ -45,6 +45,14 @@ ALLOWED_AUDIO_SUFFIXES = {
     ".aac", ".aiff", ".alac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav",
 }
 MAX_UPLOAD_BYTES = MAX_MEDIA_BYTES
+
+# Owner-supplied, already separated stems. The four roles are explicit: a role
+# is never inferred from a filename.
+STEM_IMPORT_ROLES = ("vocals", "drums", "bass", "other")
+# Two exports from the same timeline can differ by a few samples; 10 ms is the
+# measured ceiling this importer accepts. It is a sanity bound, not proof that
+# the PM supplied musically aligned files.
+STEM_IMPORT_DURATION_TOLERANCE_SECONDS = 0.010
 MAX_RENDER_DISPLAY_NAME_LEN = 200
 
 # Valid tonic names (matches analyzer._NOTE_NAMES).
@@ -1993,7 +2001,14 @@ class StudioService:
 
     @staticmethod
     def _stem_set_dict(row: sqlite3.Row) -> dict:
+        provenance = None
+        if "provenance_json" in row.keys() and row["provenance_json"]:
+            try:
+                provenance = json.loads(row["provenance_json"])
+            except json.JSONDecodeError:
+                provenance = None
         return {
+            "provenance": provenance,
             "id": row["id"],
             "track_id": row["track_id"],
             "method": row["method"],
@@ -2232,7 +2247,10 @@ class StudioService:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'"
-                " ORDER BY created_at DESC",
+                # An owner-supplied set is shown ahead of separation output for
+                # the same lane. Both stay on disk; the desk shows one set per
+                # lane, and this deterministic rule honours the owner's files.
+                " ORDER BY CASE method WHEN 'imported' THEN 0 ELSE 1 END, created_at DESC",
                 (track_sha256,),
             ).fetchall()
         for row in rows:
@@ -2275,30 +2293,83 @@ class StudioService:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM stem_sets WHERE track_sha256 = ? AND status = 'complete'"
-                " ORDER BY created_at DESC",
+                # Owner-supplied sets first, then newest first. The desk shows one
+                # set per lane, and a group must never be assembled from two sets.
+                " ORDER BY CASE method WHEN 'imported' THEN 0 ELSE 1 END, created_at DESC",
                 (track_sha256,),
             ).fetchall()
+
+        lane_order = ("vocals", "drums", "bass", "other")
+        best: tuple[int, sqlite3.Row, dict[str, str]] | None = None
+        best_score = -1
         for row in rows:
             paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
-            for name, rel in paths.items():
-                if self._validated_stem_path(rel, name) is None:
-                    continue
+            valid = {
+                name: rel for name, rel in paths.items()
+                if self._validated_stem_path(rel, name) is not None
+            }
+            if not valid:
+                continue
+            # Prefer a complete four-role set; among those the query order wins.
+            score = sum(1 for name in lane_order if name in valid)
+            if score > best_score:
+                best, best_score = (score, row, valid), score
+            if best_score == len(lane_order):
+                break
+        if best is not None:
+            _, row, valid = best
+            # Quad lanes come from the chosen set only. Non-quad variants
+            # (center/sides) may live in a different set and are still offered:
+            # the desk ignores them when a quad exists, and the existing Stem
+            # dialog needs them visible.
+            extra: dict[str, sqlite3.Row] = {}
+            for other in rows:
+                other_paths = json.loads(other["paths_json"]) if other["paths_json"] else {}
+                for name, rel in other_paths.items():
+                    if name in valid or name in extra:
+                        continue
+                    # Quad lanes must all come from the chosen set; only other
+                    # variant kinds (center/sides) may come from another row.
+                    if name in lane_order:
+                        continue
+                    if self._validated_stem_path(rel, name) is not None:
+                        extra[name] = other
+            for name in sorted(valid):
                 available[name] = True
-                if name in order:
-                    continue
                 order.append(name)
-                variants.append(
-                    {
-                        "name": name,
-                        "stem_set_id": row["id"],
-                        "method": row["method"],
-                        "model_name": row["model_name"],
-                        "device": row["device"],
-                        "audio_url": (
-                            f"/api/stems/{row['id']}/audio?name={name}"
-                        ),
-                    }
-                )
+                variant = {
+                    "name": name,
+                    "stem_set_id": row["id"],
+                    "method": row["method"],
+                    "model_name": row["model_name"],
+                    "device": row["device"],
+                    "audio_url": f"/api/stems/{row['id']}/audio?name={name}",
+                }
+                if row["method"] == "imported":
+                    variant["set_hash"] = str(row["model_name"] or "").replace("sha256:", "")
+                    if "provenance_json" in row.keys() and row["provenance_json"]:
+                        try:
+                            provenance = json.loads(row["provenance_json"])
+                            variant["provenance"] = provenance
+                            lane_source = provenance.get(name) or {}
+                            variant["original_name"] = lane_source.get("original_name")
+                            variant["source_sha256"] = lane_source.get("sha256")
+                        except json.JSONDecodeError:
+                            pass
+                variants.append(variant)
+            for name in sorted(extra):
+                other = extra[name]
+                available[name] = True
+                order.append(name)
+                variants.append({
+                    "name": name,
+                    "stem_set_id": other["id"],
+                    "method": other["method"],
+                    "model_name": other["model_name"],
+                    "device": other["device"],
+                    "audio_url": f"/api/stems/{other['id']}/audio?name={name}",
+                })
+
         stems = sorted({"full", *available.keys()})
         variants.sort(key=lambda v: stems.index(v["name"]))
         return {"track_id": track_id, "stems": stems, "variants": variants}
@@ -2323,6 +2394,334 @@ class StudioService:
         if resolved is None:
             raise UserError(f"stem media is unavailable or corrupt: {name}")
         return resolved
+
+    # ------------------------------------------------------------------
+    # Owner-supplied (already separated) stems
+    # ------------------------------------------------------------------
+
+    def _stem_file_looks_valid(self, path: Path) -> bool:
+        """Cheap integrity check used before trusting a cached set."""
+        try:
+            with path.open("rb") as handle:
+                header = handle.read(12)
+            return (
+                len(header) == 12
+                and header[0:4] == b"RIFF"
+                and header[8:12] == b"WAVE"
+                and path.stat().st_size > 44
+            )
+        except OSError:
+            return False
+
+    def _probe_stem_audio(self, path: Path) -> dict:
+        """Decode-validate and return the format facts an import must agree on."""
+        # A .wav suffix is not proof of a WAV container. The desk serves these
+        # bytes as audio/wav, so check the container itself before accepting it.
+        try:
+            with path.open("rb") as handle:
+                header = handle.read(12)
+        except OSError:
+            raise UserError("a supplied stem could not be read")
+        if len(header) < 12 or header[0:4] != b"RIFF" or header[8:12] != b"WAVE":
+            raise UserError("a supplied stem is not a WAV container")
+        if not media.validate_audio_decodes(path):
+            raise UserError("a supplied stem does not decode as audio")
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "stream=sample_rate,channels:format=duration",
+            "-of", "json", str(path),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise UserError("a supplied stem could not be probed")
+        try:
+            data = json.loads(proc.stdout)
+            stream = data["streams"][0]
+            return {
+                "sample_rate": int(stream["sample_rate"]),
+                "channels": int(stream["channels"]),
+                "duration": float(data["format"]["duration"]),
+            }
+        except (KeyError, IndexError, ValueError, json.JSONDecodeError):
+            raise UserError("a supplied stem has no readable audio stream")
+
+    def discard_staged_stems(self, keys: list[str]) -> int:
+        """Remove staged inputs an abandoned import no longer needs.
+
+        Keys are resolved exactly like an import would resolve them, so a caller
+        can only remove files under the managed ``incoming/`` directory.
+        """
+        removed = 0
+        for key in keys or []:
+            try:
+                path = self._resolve_staging_key(str(key))
+            except Exception:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+                removed += 1
+            except OSError:
+                continue
+        return removed
+
+    def import_stem_set(self, track_id: str, entries: list[dict]) -> dict:
+        """Attach four owner-supplied, already separated files to a track.
+
+        The owner names each role explicitly; a filename never decides a role.
+        The files are treated as already aligned with each other: this method
+        checks that they *can* belong to one timeline (decodable, equal sample
+        rate, equal channel count, durations within tolerance) and refuses
+        otherwise. It never resamples, time-stretches, auto-aligns, separates
+        or calls a model.
+        """
+        if self._closed:
+            raise UserError("studio service is closed")
+        self.get_track(track_id)
+        if not isinstance(entries, list) or len(entries) != len(STEM_IMPORT_ROLES):
+            raise UserError(
+                f"supply exactly {len(STEM_IMPORT_ROLES)} stems: "
+                + ", ".join(STEM_IMPORT_ROLES)
+            )
+
+        seen: set[str] = set()
+        seen_keys: set[str] = set()
+        staged: list[Path] = []
+        staged_by_role: dict[str, Path] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise UserError("each stem entry must name a role and a staged file")
+            role = str(entry.get("role") or "").strip()
+            if role not in STEM_IMPORT_ROLES:
+                raise UserError(
+                    f"unknown stem role '{role}'; choose " + ", ".join(STEM_IMPORT_ROLES)
+                )
+            if role in seen:
+                raise UserError(f"stem role '{role}' was supplied more than once")
+            seen.add(role)
+            key = str(entry.get("staging_key") or "").strip()
+            if not key:
+                raise UserError(f"stem role '{role}' has no staged file")
+            if key in seen_keys:
+                raise UserError(
+                    f"the same staged file was supplied for more than one role ('{role}')"
+                )
+            seen_keys.add(key)
+            path = self._resolve_staging_key(key)
+            if path.suffix.lower() not in {".wav"}:
+                raise UserError(
+                    f"stem role '{role}' must be a WAV file; export the four stems as WAV"
+                )
+            if path.is_symlink() or not path.is_file():
+                raise UserError(f"stem role '{role}' is not a readable staged file")
+            if path.stat().st_size > 40 * 1024 * 1024:
+                raise UserError(
+                    f"stem role '{role}' is {path.stat().st_size} bytes; the desk fetches "
+                    "at most 41943040 per stem"
+                )
+            original = media.sanitize_text(str(entry.get("original_name") or role), 200)
+            staged.append(path)
+            staged_by_role[role] = path
+            entry["_path"] = path
+            entry["_original"] = original or role
+
+        missing = [role for role in STEM_IMPORT_ROLES if role not in seen]
+        if missing:
+            raise UserError("missing stem role(s): " + ", ".join(missing))
+
+        facts: dict[str, dict] = {}
+        for entry in entries:
+            role = entry["role"]
+            try:
+                probed = self._probe_stem_audio(entry["_path"])
+            except UserError as exc:
+                raise UserError(f"stem role '{role}': {exc}")
+            # The browser decodes at its context rate (48 kHz here), not the
+            # file's. Check the stricter case so an imported set can never be
+            # published ready and then refused by the desk.
+            playback_rate = max(48000, probed["sample_rate"])
+            decoded_bytes = int(round(
+                probed["duration"] * playback_rate * probed["channels"] * 4
+            ))
+            if decoded_bytes > 40 * 1024 * 1024:
+                raise UserError(
+                    f"stem role '{role}' decodes to {decoded_bytes} bytes; the desk plays "
+                    "at most 41943040 per stem"
+                )
+            facts[role] = {
+                **probed,
+                "sha256": media.sha256_file(entry["_path"]),
+                "original_name": entry["_original"],
+                "decoded_bytes": decoded_bytes,
+            }
+
+        sample_rates = {f["sample_rate"] for f in facts.values()}
+        if len(sample_rates) != 1:
+            raise UserError(
+                "the four stems have different sample rates ("
+                + ", ".join(f"{r}:{f['sample_rate']}" for r, f in sorted(facts.items()))
+                + "); export them at one rate. The importer does not resample."
+            )
+        channel_counts = {f["channels"] for f in facts.values()}
+        if len(channel_counts) != 1:
+            raise UserError(
+                "the four stems have different channel counts ("
+                + ", ".join(f"{r}:{f['channels']}" for r, f in sorted(facts.items()))
+                + "); the desk accepts mono or stereo, but all four must match."
+            )
+        channels = next(iter(channel_counts))
+        if channels not in (1, 2):
+            raise UserError(f"stems have {channels} channels; the desk accepts mono or stereo")
+
+        durations = {role: f["duration"] for role, f in facts.items()}
+        spread = max(durations.values()) - min(durations.values())
+        if spread > STEM_IMPORT_DURATION_TOLERANCE_SECONDS:
+            raise UserError(
+                "the four stems do not share one timeline: durations differ by "
+                f"{spread:.3f}s (limit {STEM_IMPORT_DURATION_TOLERANCE_SECONDS:.3f}s) — "
+                + ", ".join(f"{role}:{value:.3f}s" for role, value in sorted(durations.items()))
+            )
+
+        total_decoded = sum(f["decoded_bytes"] for f in facts.values())
+        if total_decoded > 160 * 1024 * 1024:
+            raise UserError(
+                f"the imported set decodes to {total_decoded} bytes; the desk holds "
+                "at most 167772160 per track"
+            )
+
+        set_hash = hashlib.sha256(
+            "\n".join(f"{role}={facts[role]['sha256']}" for role in STEM_IMPORT_ROLES).encode()
+        ).hexdigest()
+        # The schema needs a model identity for its cache key. Nothing produced
+        # these files, so the honest value is the set hash, not a model name.
+        model_name = f"sha256:{set_hash}"
+        track_sha256 = self._track_content_hash(track_id)
+
+        cached = self._find_cached_stem_set(track_sha256, "imported", model_name)
+        if cached is not None:
+            cached_paths = cached.get("stems") or {}
+            def _lane_intact(role: str) -> bool:
+                resolved = self._validated_stem_path(cached_paths.get(role, ""), role)
+                return resolved is not None and self._stem_file_looks_valid(resolved)
+            intact = all(_lane_intact(role) for role in STEM_IMPORT_ROLES)
+            if not intact:
+                # Repair in place: rewrite only the missing lanes into the same
+                # set directory. The set id stays valid for anything that refers
+                # to it (for example saved stem-crate entries).
+                repair_dir = self.stem_dir / cached["id"]
+                repair_dir.mkdir(parents=True, exist_ok=True)
+                for role in STEM_IMPORT_ROLES:
+                    target = repair_dir / f"{role}.wav"
+                    if not _lane_intact(role):
+                        staging = repair_dir / f".{role}.wav.repair"
+                        try:
+                            shutil.copyfile(staged_by_role[role], staging)
+                            os.replace(staging, target)
+                        except Exception:
+                            staging.unlink(missing_ok=True)
+                            raise
+                if all(
+                    self._validated_stem_path(cached_paths.get(role, ""), role) is not None
+                    for role in STEM_IMPORT_ROLES
+                ):
+                    for path in staged:
+                        try:
+                            path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    return {
+                        "stem_set_id": cached["id"], "cached": True, "repaired": True,
+                        "method": "imported", "set_hash": set_hash,
+                        "roles": list(STEM_IMPORT_ROLES),
+                    }
+                cached = None
+        if cached is not None:
+            for path in staged:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return {
+                "stem_set_id": cached["id"],
+                "cached": True,
+                "method": "imported",
+                "set_hash": set_hash,
+                "roles": list(STEM_IMPORT_ROLES),
+            }
+
+        stem_set_id = uuid.uuid4().hex
+        staging_dir = self.stem_dir / f".tmp_{stem_set_id}"
+        final_dir = self.stem_dir / stem_set_id
+        relative_paths: dict[str, str] = {}
+        try:
+            staging_dir.mkdir(parents=True, exist_ok=False)
+            for role in STEM_IMPORT_ROLES:
+                target = staging_dir / f"{role}.wav"
+                # Copy the supplied bytes unchanged: no resample, no re-encode.
+                shutil.copyfile(staged_by_role[role], target)
+                relative_paths[role] = f"stems/{stem_set_id}/{role}.wav"
+            os.replace(staging_dir, final_dir)
+        except Exception:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            shutil.rmtree(final_dir, ignore_errors=True)
+            raise
+
+        provenance = {
+            role: {
+                "original_name": facts[role]["original_name"],
+                "sha256": facts[role]["sha256"],
+                "sample_rate": facts[role]["sample_rate"],
+                "channels": facts[role]["channels"],
+                "duration": facts[role]["duration"],
+            }
+            for role in STEM_IMPORT_ROLES
+        }
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """INSERT INTO stem_sets
+                       (id, track_id, method, model, device, status, paths_json,
+                        track_sha256, model_name, provenance_json, created_at)
+                       VALUES (?, ?, 'imported', ?, 'user', 'complete', ?, ?, ?, ?, ?)""",
+                    (
+                        stem_set_id, track_id, "owner-supplied", json.dumps(relative_paths),
+                        track_sha256, model_name, json.dumps(provenance), time.time(),
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            shutil.rmtree(final_dir, ignore_errors=True)
+            winner = self._find_cached_stem_set(track_sha256, "imported", model_name)
+            if winner is None:
+                raise UserError("a concurrent import won but no cache row exists")
+            for path in staged:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return {
+                "stem_set_id": winner["id"], "cached": True, "method": "imported",
+                "set_hash": set_hash, "roles": list(STEM_IMPORT_ROLES),
+            }
+        except Exception:
+            # Nothing may stay published without a row that lists it.
+            shutil.rmtree(final_dir, ignore_errors=True)
+            raise
+
+        for path in staged:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                # The set is already published and listed; a stuck staging file
+                # is a housekeeping detail, not an import failure.
+                pass
+        return {
+            "stem_set_id": stem_set_id,
+            "cached": False,
+            "method": "imported",
+            "set_hash": set_hash,
+            "roles": list(STEM_IMPORT_ROLES),
+            "device": "user",
+            "stems": list(relative_paths.keys()),
+        }
 
     # ------------------------------------------------------------------
     # Stem crate (Phase 14B.1)

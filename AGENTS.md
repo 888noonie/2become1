@@ -48,6 +48,12 @@ real view functions with `node --test tests/frontend/*.js`.
   `submit_separation(method="demucs")` when the selected track has no complete
   Demucs vocals/drums/bass/other set. It watches the existing job. A finished
   import is not a finished separation, and center/sides stay a channel split.
+- `Import My Stems` attaches four owner-supplied WAVs to a library track. Roles
+  are explicit (never inferred), the set is `method="imported"` with
+  `model_name` = `sha256:<set hash>`, and no separation job or model call runs.
+  Equal durations are not treated as alignment; the UI says the owner is
+  responsible for providing aligned files. A complete imported quad is ready in
+  the desk, and Add / Process must not request Demucs while one exists.
 - A Stem Desk entry nudge is a per-group millisecond offset applied on the
   next Play. Negative is earlier, positive is later, and Reset is zero. It
   moves the whole group together and does not change playback rate, pitch,

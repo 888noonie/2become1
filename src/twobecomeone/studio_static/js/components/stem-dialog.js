@@ -90,10 +90,10 @@ export async function openStemDialog({ track, role, store = globalStore, project
       let displayName = v.name;
       if (v.name === 'center') displayName = 'Center (Mid channel DSP)';
       else if (v.name === 'side' || v.name === 'sides') displayName = 'Sides (Side channel DSP)';
-      else if (v.name === 'vocals') displayName = 'Vocals (Demucs)';
-      else if (v.name === 'drums') displayName = 'Drums (Demucs)';
-      else if (v.name === 'bass') displayName = 'Bass (Demucs)';
-      else if (v.name === 'other') displayName = 'Other / Instruments (Demucs)';
+      else if (v.name === 'vocals') displayName = 'Vocals';
+      else if (v.name === 'drums') displayName = 'Drums';
+      else if (v.name === 'bass') displayName = 'Bass';
+      else if (v.name === 'other') displayName = 'Other / Instruments';
       else if (isFull) displayName = 'Full Original Mix';
 
       const metaDetails = [];

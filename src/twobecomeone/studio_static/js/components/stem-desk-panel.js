@@ -11,7 +11,10 @@
 // job. The panel does not write stem files, projects, or renders itself.
 
 import { createElement, replaceChildren } from '../dom.js';
-import { listJobs, listStems, listTracks, submitSeparation, watchJob } from '../api.js';
+import {
+  discardStagedStems, importStemSet, listJobs, listStems, listTracks,
+  stageStemFile, submitSeparation, watchJob,
+} from '../api.js';
 import { StemDesk, STEM_DESK_LIMITS } from '../runtime/stem-desk.js';
 import {
   approveStemDeskProposal,
@@ -20,6 +23,7 @@ import {
 } from '../runtime/stem-desk-proposal.js';
 
 const STEM_ORDER = ['vocals', 'drums', 'bass', 'other', 'center', 'sides'];
+const QUAD_NAMES = ['vocals', 'drums', 'bass', 'other'];
 const GROUP_IDS = ['A', 'B'];
 const FALLBACK_NOTE = 'Fallback split: center and sides are channel separations, not isolated vocals or instruments.';
 
@@ -59,6 +63,15 @@ function stemLabel(name) {
 }
 
 function provenanceLabel(variant) {
+  // An imported set is the user's own separated stems, identified by its set
+  // hash; there is no separation model to name and no device that ran one.
+  if (variant.method === 'imported') {
+    // The schema's model identity is `sha256:<set hash>`; show the hash only.
+    const setHash = variant.modelName
+      ? String(variant.modelName).replace(/^sha256:/, '').slice(0, 8)
+      : '';
+    return setHash ? `imported · set ${setHash}` : 'imported';
+  }
   const method = variant.method === 'demucs'
     ? `demucs${variant.modelName ? ` · ${variant.modelName}` : ''}`
     : variant.method === 'ffmpeg'
@@ -158,9 +171,16 @@ export function mountStemDeskPanel({
   listStemsImpl = listStems,
   listJobsImpl = listJobs,
   submitSeparationImpl = submitSeparation,
+  stageStemFileImpl = stageStemFile,
+  importStemSetImpl = importStemSet,
+  discardStagedStemsImpl = discardStagedStems,
   watchJobImpl = watchJob,
   createDesk = (options) => new StemDesk(options),
-  audioContextFactory = () => new AudioContext(),
+  // A fixed context rate makes decoded size predictable, so the import path's
+  // 48 kHz budget matches what the desk actually decodes. There is deliberately
+  // no silent fallback: an unpredictable rate could refuse a set the importer
+  // accepted, so the panel reports that audio is unavailable instead.
+  audioContextFactory = () => new AudioContext({ sampleRate: 48000 }),
   onAnnounce = null,
 } = {}) {
   if (!container) throw new Error('mountStemDeskPanel requires a container');
@@ -175,6 +195,7 @@ export function mountStemDeskPanel({
   const groupSelects = {};
   const groupButtons = {};
   const groupChoose = {};
+  const groupImport = {};
   const groupProcess = {};
   for (const groupId of GROUP_IDS) {
     const select = createElement('select', {
@@ -200,17 +221,25 @@ export function mountStemDeskPanel({
       'aria-label': `Load stems ${groupId}`,
       dataset: { group: groupId },
     });
+    const importStemsButton = createElement('button', {
+      class: 'button button--sm',
+      type: 'button',
+      text: 'Import My Stems',
+      'aria-label': `Import My Stems for group ${groupId}`,
+    });
     const row = createElement('div', { class: 'stem-desk__group-controls', dataset: { group: groupId } }, [
       createElement('span', { class: 'stem-desk__group-label', text: `Group ${groupId}` }),
       select,
       chooseLibrary,
       addOrProcess,
+      importStemsButton,
       loadButton,
     ]);
     groupSelects[groupId] = select;
     groupButtons[groupId] = loadButton;
     groupChoose[groupId] = chooseLibrary;
     groupProcess[groupId] = addOrProcess;
+    groupImport[groupId] = importStemsButton;
     groupControls.appendChild(row);
   }
   const playButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Play', disabled: 'true' });
@@ -367,8 +396,39 @@ export function mountStemDeskPanel({
       if (!variant || variant.method !== 'demucs' || !variant.name || variant.name === 'full') continue;
       byName.set(variant.name, variant);
     }
-    const lanes = ['vocals', 'drums', 'bass', 'other'].map((name) => byName.get(name));
+    const lanes = QUAD_NAMES.map((name) => byName.get(name));
     return lanes.every(Boolean) ? lanes : null;
+  }
+
+  /**
+   * Readiness is having the four isolated lanes, whether a Demucs run or the
+   * user's own imported set produced them. Keep this separate from demucsQuad:
+   * only wording and provenance that genuinely mean Demucs may use that one.
+   */
+  function completeQuad(variants) {
+    const byName = new Map();
+    for (const variant of variants) {
+      if (!variant || !variant.name || variant.name === 'full') continue;
+      if (variant.method !== 'demucs' && variant.method !== 'imported') continue;
+      if (!QUAD_NAMES.includes(variant.name)) continue;
+      byName.set(variant.name, variant);
+    }
+    const lanes = QUAD_NAMES.map((name) => byName.get(name));
+    return lanes.every(Boolean) ? lanes : null;
+  }
+
+  function importedQuad(quad) {
+    return Boolean(quad) && quad.every((variant) => variant.method === 'imported');
+  }
+
+  function quadReadyMessage(quad, name, groupId) {
+    if (demucsQuad(quad)) {
+      return `Four Demucs stems are ready for ${name}. Load ${groupId} to play them.`;
+    }
+    if (importedQuad(quad)) {
+      return `Four imported stems are ready for ${name}. Load ${groupId} to play them.`;
+    }
+    return `Four isolated stems are ready for ${name}. Load ${groupId} to play them.`;
   }
 
   async function readVariants(trackId) {
@@ -392,15 +452,22 @@ export function mountStemDeskPanel({
     }
     if (disposed || readinessTokens[groupId] !== token || groupSelects[groupId].value !== trackId) return;
     const name = trackTitle(trackId);
-    const demucsNames = ['vocals', 'drums', 'bass', 'other'].filter((stemName) => (
-      variants.some((variant) => variant && variant.name === stemName && variant.method === 'demucs')
-    ));
-    if (demucsNames.length === 4) {
-      say(`Four Demucs stems are ready for ${name}. Load ${groupId} to play them.`);
+    const quad = completeQuad(variants);
+    if (quad) {
+      say(quadReadyMessage(quad, name, groupId));
       return;
     }
-    if (demucsNames.length > 0) {
-      say(`${name} has ${demucsNames.length} of 4 Demucs stems. The set is not ready. Load ${groupId} plays only the lanes that exist.`);
+    const countFor = (method) => QUAD_NAMES.filter((stemName) => (
+      variants.some((variant) => variant && variant.name === stemName && variant.method === method)
+    )).length;
+    const importedCount = countFor('imported');
+    const demucsCount = countFor('demucs');
+    if (importedCount > 0 && importedCount >= demucsCount) {
+      say(`${name} has ${importedCount} of 4 imported stems. The imported set is incomplete; Load ${groupId} plays only the lanes that exist.`);
+      return;
+    }
+    if (demucsCount > 0) {
+      say(`${name} has ${demucsCount} of 4 Demucs stems. The set is not ready. Load ${groupId} plays only the lanes that exist.`);
       return;
     }
     const channelSplit = variants.some((variant) => variant && (variant.name === 'center' || variant.name === 'sides'));
@@ -456,8 +523,14 @@ export function mountStemDeskPanel({
       if (disposed || groupSelects[groupId].value !== trackId) return;
       const still = separationWatches.get(groupId);
       if (!still || still.jobId !== job.id) return;
-      if (demucsQuad(variants)) {
-        say(`Separation complete for ${name}. Four Demucs stems are ready. Load ${groupId} to play them.`);
+      const quad = completeQuad(variants);
+      if (quad) {
+        const ready = demucsQuad(quad)
+          ? 'Four Demucs stems are ready.'
+          : importedQuad(quad)
+            ? 'Four imported stems are ready.'
+            : 'Four isolated stems are ready.';
+        say(`Separation complete for ${name}. ${ready} Load ${groupId} to play them.`);
       } else if (variants.some((variant) => variant && (variant.name === 'center' || variant.name === 'sides'))) {
         say(`Separation finished for ${name}, but the result is a center/sides split, not four Demucs stems.`);
       } else {
@@ -546,7 +619,7 @@ export function mountStemDeskPanel({
         return;
       }
       if (disposed || groupSelects[groupId].value !== track.id) return;
-      if (!demucsQuad(variants)) {
+      if (!completeQuad(variants)) {
         await startSeparation(groupId, track.id);
         return;
       }
@@ -580,8 +653,14 @@ export function mountStemDeskPanel({
       variants = [];
     }
     if (disposed || groupSelects[groupId].value !== track.id) return;
-    if (demucsQuad(variants)) {
-      say(`${imported} Separation has since finished: Four Demucs stems are ready. Load ${groupId} to play them.`);
+    const quad = completeQuad(variants);
+    if (quad) {
+      const ready = demucsQuad(quad)
+        ? 'Separation has since finished: Four Demucs stems are ready.'
+        : importedQuad(quad)
+          ? 'Four imported stems are ready.'
+          : 'Four isolated stems are ready.';
+      say(`${imported} ${ready} Load ${groupId} to play them.`);
       return;
     }
     const terminal = jobs.find((job) => (
@@ -657,7 +736,7 @@ export function mountStemDeskPanel({
       const nextState = desk.setSolo(view.lane.key, next);
       const stateLane = nextState.lanes.find((entry) => entry.key === view.lane.key);
       const silentNote = next && stateLane?.silent
-        ? ' This stem is effectively silent in this separation.'
+        ? ' This stem is effectively silent in this set.'
         : '';
       say(`${next ? 'Solo' : 'Solo released for'} ${label}.${silentNote}`);
       renderLanes(nextState);
@@ -682,7 +761,7 @@ export function mountStemDeskPanel({
     const label = `${groupLabel(lane.trackId)} · ${stemLabel(lane.name)}`;
     view.nameEl.textContent = stemLabel(lane.name);
     view.metaEl.textContent = provenanceLabel(lane);
-    view.silentEl.textContent = lane.silent ? 'effectively silent in this separation' : '';
+    view.silentEl.textContent = lane.silent ? 'effectively silent in this set' : '';
     view.silentEl.hidden = !lane.silent;
     view.mute.setAttribute('aria-label', `Mute ${label}`);
     view.mute.setAttribute('aria-pressed', lane.muted ? 'true' : 'false');
@@ -980,11 +1059,116 @@ export function mountStemDeskPanel({
       return;
     }
     if (disposed || groupSelects[groupId].value !== trackId) return;
-    if (demucsQuad(variants)) {
+    if (completeQuad(variants)) {
       await openChooseTrack(groupId, 'add');
       return;
     }
     await startSeparation(groupId, trackId);
+  }
+
+  /**
+   * Import four already-separated files into the group's selected track.
+   * The owner names each role; a filename never decides one. The dialog stays
+   * open on failure so the same files can be retried.
+   */
+  function openImportDialog(groupId) {
+    const trackId = groupSelects[groupId].value;
+    if (!trackId) {
+      say(`Choose the target track for group ${groupId} first.`);
+      return;
+    }
+    const layer = document.getElementById('dialog-layer');
+    if (!layer) {
+      say('The import dialog is unavailable in this page.');
+      return;
+    }
+    const title = trackTitle(trackId);
+    const dialog = createElement('dialog', { class: 'dialog' });
+    const inputs = {};
+    const status = createElement('p', { class: 'stem-desk__meta', role: 'status', text: '' });
+
+    const body = createElement('div', { class: 'dialog__body' }, [
+      createElement('h2', { class: 'dialog__title', text: `Import my stems · ${title}` }),
+      createElement('p', {
+        class: 'dialog__description',
+        text:
+          'Choose the four files you separated yourself and name each role. They must come '
+          + 'from one timeline: the same start point, sample rate and length. Equal length is '
+          + 'not proof of alignment — you are responsible for supplying aligned stems. Nothing '
+          + 'is resampled, time-stretched or separated.',
+      }),
+      ...QUAD_NAMES.map((role) => {
+        const input = createElement('input', {
+          type: 'file',
+          accept: '.wav,audio/wav,audio/x-wav',
+          'aria-label': `${stemLabel(role)} file`,
+        });
+        inputs[role] = input;
+        return createElement('div', { class: 'stem-desk__import-row' }, [
+          createElement('span', { class: 'stem-desk__group-label', text: stemLabel(role) }),
+          input,
+        ]);
+      }),
+      status,
+    ]);
+
+    const cancel = createElement('button', { type: 'button', class: 'button', text: 'Cancel' });
+    const commit = createElement('button', {
+      type: 'button', class: 'button button--primary', text: 'Import four stems',
+    });
+    cancel.addEventListener('click', () => dialog.close());
+    commit.addEventListener('click', async () => {
+      const chosen = QUAD_NAMES.map((role) => [role, inputs[role].files?.[0] || null]);
+      const missing = chosen.filter(([, file]) => !file).map(([role]) => stemLabel(role));
+      if (missing.length) {
+        status.textContent = `Choose a file for: ${missing.join(', ')}.`;
+        return;
+      }
+      commit.disabled = true;
+      cancel.disabled = true;
+      const stagedKeys = [];
+      try {
+        const entries = [];
+        for (const [role, file] of chosen) {
+          status.textContent = `Staging ${stemLabel(role)}…`;
+          const staged = await stageStemFileImpl(file);
+          stagedKeys.push(staged.staging_key);
+          entries.push({
+            role,
+            staging_key: staged.staging_key,
+            original_name: staged.original_name || file.name,
+          });
+        }
+        status.textContent = 'Validating and publishing the four stems…';
+        const result = await importStemSetImpl(trackId, entries);
+        dialog.close();
+        say(
+          `Imported four ${result?.method === 'imported' ? 'owner-supplied' : ''} stems into `
+          + `${title}. Load ${groupId} to play them.`,
+        );
+        await reportReadiness(groupId, trackId);
+      } catch (err) {
+        status.textContent = `Could not import: ${err?.message || 'request failed'}.`;
+        // A failed commit is cleaned up by the server; a failure while staging
+        // is not, so drop whatever this attempt already staged.
+        if (stagedKeys.length) {
+          try {
+            await discardStagedStemsImpl(stagedKeys);
+          } catch {
+            // Housekeeping only; the error above is what the owner needs.
+          }
+        }
+      } finally {
+        commit.disabled = undefined;
+        cancel.disabled = undefined;
+      }
+    });
+
+    body.appendChild(createElement('div', { class: 'dialog__actions' }, [cancel, commit]));
+    dialog.appendChild(body);
+    layer.appendChild(dialog);
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
   }
 
   for (const groupId of GROUP_IDS) {
@@ -997,6 +1181,7 @@ export function mountStemDeskPanel({
       void reportReadiness(groupId);
     });
     groupChoose[groupId].addEventListener('click', () => { void onChoose(groupId); });
+    groupImport[groupId].addEventListener('click', () => { openImportDialog(groupId); });
     groupProcess[groupId].addEventListener('click', () => { void onAdd(groupId); });
 
     groupButtons[groupId].addEventListener('click', async () => {
@@ -1072,7 +1257,7 @@ export function mountStemDeskPanel({
           say(
             silent.length
               ? `Loaded ${groupLanes.length} stems into group ${groupId}. ${silent.join(', ')} ` +
-                `${silent.length === 1 ? 'is' : 'are'} effectively silent in this separation.`
+                `${silent.length === 1 ? 'is' : 'are'} effectively silent in this set.`
               : `Loaded ${groupLanes.length} stems into group ${groupId} on one transport.`,
           );
         }

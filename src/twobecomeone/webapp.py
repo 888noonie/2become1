@@ -149,6 +149,20 @@ class ProjectPatchBody(BaseModel):
     settings: dict[str, Any] | None = None
 
 
+class StemImportEntry(BaseModel):
+    role: str
+    staging_key: str
+    original_name: str | None = None
+
+
+class StemImportBody(BaseModel):
+    files: list[StemImportEntry]
+
+
+class StagedDiscardBody(BaseModel):
+    staging_keys: list[str]
+
+
 class SeparationBody(BaseModel):
     method: Literal["auto", "demucs", "ffmpeg"] = "auto"
 
@@ -400,6 +414,47 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
     @app.get("/api/tracks/{track_id}/stems")
     def list_stems(track_id: str):
         return service.list_stems(track_id)
+
+    @app.post("/api/stems/stage", status_code=201)
+    def stage_stem_file(file: UploadFile = File(...)):
+        """Stage one supplied stem file and return an opaque key.
+
+        The owner then commits four role-tagged keys. Staging uses the existing
+        managed ``incoming/`` directory and its 750 MB / suffix rules.
+        """
+        if not file.filename:
+            raise UserError("file name is required")
+        if str(Path(file.filename).suffix).lower() != ".wav":
+            raise UserError("stem files must be WAV; export the four stems as WAV")
+        try:
+            staging_key = service.stage_upload(file.file, file.filename)
+        finally:
+            file.file.close()
+        return {"staging_key": staging_key, "original_name": file.filename}
+
+    @app.post("/api/stems/stage/discard")
+    def discard_staged_stems(body: StagedDiscardBody):
+        """Remove staged stem inputs an abandoned import no longer needs."""
+        return {"removed": service.discard_staged_stems(body.staging_keys)}
+
+    @app.post("/api/tracks/{track_id}/stem-import", status_code=201)
+    def import_stems(track_id: str, body: StemImportBody):
+        """Attach four owner-supplied, already separated stems to a track.
+
+        Roles are explicit; nothing is inferred from a filename, no separation
+        job or model call is started, and a failed commit removes its staged
+        inputs instead of leaving orphans.
+        """
+        entries = [entry.model_dump() for entry in body.files]
+        try:
+            return service.import_stem_set(track_id, entries)
+        except Exception:
+            for entry in entries:
+                try:
+                    service._resolve_staging_key(entry["staging_key"]).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            raise
 
     @app.get("/api/stems/{stem_set_id}/audio")
     def stem_audio(stem_set_id: str, name: str = Query(...), download: bool = Query(default=False)):

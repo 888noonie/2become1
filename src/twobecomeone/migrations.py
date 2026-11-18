@@ -291,6 +291,15 @@ MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
             " ON stem_stack_assets(project_id, proposal_id)",
         ],
     ),
+    (
+        13,
+        "stem_sets import provenance",
+        [
+            # Per-role original filename and content hash for a set the owner
+            # supplied already separated. NULL for separation-produced sets.
+            "ALTER TABLE stem_sets ADD COLUMN provenance_json TEXT",
+        ],
+    ),
 ]
 
 

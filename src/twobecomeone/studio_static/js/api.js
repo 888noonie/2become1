@@ -296,6 +296,21 @@ export function retryJob(jobId) {
   return post(`/api/jobs/${jobId}/retry`, {});
 }
 
+/** Stage one owner-supplied stem file; returns an opaque staging key. */
+export function stageStemFile(file, onProgress = () => {}, signal) {
+  return upload('/api/stems/stage', file, onProgress, signal);
+}
+
+/** Drop staged stem inputs an abandoned import no longer needs. */
+export function discardStagedStems(stagingKeys) {
+  return post('/api/stems/stage/discard', { staging_keys: stagingKeys });
+}
+
+/** Attach four staged, role-tagged stems to an existing library track. */
+export function importStemSet(trackId, files) {
+  return post(`/api/tracks/${trackId}/stem-import`, { files });
+}
+
 export function listTracks(params, signal) {
   const qs = new URLSearchParams();
   if (params.limit) qs.set('limit', params.limit);

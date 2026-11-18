@@ -194,38 +194,42 @@ The headless PCM/browser gates prove graph values and captured samples. They do
 not prove that sound reached a speaker. **Audible acceptance remains the PM's
 (or owner's) listening judgement.**
 
-## 7. User-stem contract — documented, not implemented
+## 7. User-supplied stems — implemented (Stem Passport)
 
-This slice accepts only stems already separated in the library and served by the
-existing read-only stem endpoints. A user-supplied stem contract would need:
+An owner can attach four already-separated files to an existing library track.
+Nothing is inferred from a filename: the owner names vocals, drums, bass and
+other explicitly.
 
-- two groups of up to four named lanes, each with an audio URL and provenance;
-- the same 40 MiB/160 MiB/320 MiB decode budget and bounded fetch behavior;
-- explicit ownership and persistence for user media;
-- honest labels for unknown or silent lanes.
+- **Staging.** `POST /api/stems/stage` takes one WAV and returns an opaque
+  staging key, using the existing `incoming/` staging and 750 MB rule. The
+  suffix and the RIFF/WAVE container are both checked: a `.mp3` or FLAC renamed
+  to `.wav` would be a lie about the bytes the desk plays, and the importer does
+  not transcode. `POST /api/stems/stage/discard` removes abandoned keys.
+- **Commit.** `POST /api/tracks/{id}/stem-import` takes the four
+  `{role, staging_key, original_name}` entries. It validates count, roles,
+  duplicates, decode, equal sample rate, equal channel count (mono or stereo)
+  and durations within **10 ms**, then publishes the four files atomically under
+  `stems/<set>/<role>.wav`. A failed commit removes its staged inputs; a failed
+  import never leaves a partial set that could be selected as ready.
+- **Provenance.** The set is `method = "imported"`, `device = "user"`, and the
+  schema's `model_name` holds `sha256:<set hash>` (the schema needs a cache
+  identity; nothing produced these files, so it is the hash, never a model
+  name). Per-lane provenance keeps the original filename and content hash.
+- **No reprocessing.** Importing starts no separation job, calls no model and
+  runs no FFmpeg separation. Existing Demucs sets are untouched.
+- **Desk readiness.** A complete imported quad is loadable exactly like a Demucs
+  quad; Add / Process does not request Demucs when a complete quad already
+  exists. When one track has both an imported set and separation output, the
+  desk shows the owner-supplied set (deterministic rule) and the separation
+  files remain on disk. A group is always assembled from **one** set: a newer
+  partial set never contributes lanes alongside an intact older one.
+- **Alignment is the owner's responsibility.** Equal duration is not proof of
+  alignment; the dialog says so before the files are chosen. The desk's entry
+  nudge moves a whole group and cannot re-align one stem.
 
-No upload route, persistence, UI, or server support for user-supplied stems is
-part of this change. The contract is recorded here so a later slice does not
-invent incompatible semantics.
-
-A later bring-your-own bundle, if it is built, should stay inside that
-contract:
-
-- Attach exactly four files to an existing library track. The request names
-  each file as vocals, drums, bass, or other. Do not infer the role from the
-  filename.
-- Reject a symlink, an empty file, a file over the existing stem ceiling,
-  a non-audio file, and any set whose durations or sample rates disagree.
-  Do not resample one file to hide that disagreement.
-- Store the set with the existing stem-set records. The method is `imported`,
-  not `demucs`. The model name is a hash of the four files, and the original
-  names are kept as provenance.
-- Do not start a separation job, call a model, or hook this path into
-  `ingest()` or `_finish_import`.
-- Treat the four files as already aligned with each other. The desk entry
-  nudge moves the whole group; it does not re-align one stem inside the set.
-
-That importer is not part of the entry-nudge slice.
+A set larger than the desk's per-stem decoded ceiling is refused at import time
+with the measured byte count, so the desk never receives a set it would refuse
+to play.
 
 ## 8. Verification (commands and results)
 

@@ -286,6 +286,12 @@ function addButton(container, groupId) {
 }
 
 const DEMUCS_QUAD = ['vocals', 'drums', 'bass', 'other'].map((name) => variant(name));
+const IMPORTED_HASH = 'a1b2c3d4e5f60718';
+const IMPORTED_QUAD = ['vocals', 'drums', 'bass', 'other'].map((name) => variant(name, {
+  method: 'imported',
+  model_name: IMPORTED_HASH,
+  device: null,
+}));
 
 test('the desk lists tracks, loads four stems into group A and labels their provenance', async () => {
   const { container, desk, calls } = mount({
@@ -624,7 +630,7 @@ test('an effectively silent stem is labelled and its solo says why nothing is he
   await loadGroup(container, 'A');
 
   const rows = container.querySelectorAll('.stem-desk__row');
-  assert.match(rows[0].textContent, /effectively silent in this separation/);
+  assert.match(rows[0].textContent, /effectively silent in this set/);
   assert.doesNotMatch(rows[1].textContent, /effectively silent/);
 
   const solo = rows[0].querySelectorAll('.stem-desk__actions button')[1];
@@ -1321,4 +1327,120 @@ test('ask, preview, reject, and approve do not apply a proposal before approval'
   assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /clear solo/);
   assert.equal(desk.calls.length, soloCalls);
   assert.equal(container.querySelector('.stem-desk__proposal button:nth-child(3)').disabled, true);
+});
+
+test('a complete imported quad is ready and never requests a separation', async () => {
+  const submitted = [];
+  const { container, desk } = mount({
+    variantsByTrack: { 'track-1': IMPORTED_QUAD },
+    listJobsImpl: async () => ({ items: [] }),
+    submitSeparationImpl: async (trackId, method) => {
+      submitted.push([trackId, method]);
+      return {
+        id: 'job-imported', status: 'queued', message: 'Queued',
+        request: { track_id: trackId, method },
+      };
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+
+  const select = selectFor(container, 'A');
+  select.dispatchEvent(new window.Event('change'));
+  await flush();
+  const ready = container.querySelector('.stem-desk__status').textContent;
+  assert.match(ready, /Four imported stems are ready/);
+  assert.doesNotMatch(ready, /demucs/i);
+
+  addButton(container, 'A').click();
+  await flush();
+  assert.deepEqual(submitted, [], 'a complete imported quad must not request Demucs');
+  assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
+});
+
+test('imported provenance names the set hash and never claims Demucs', async () => {
+  const { container } = mount({ variants: IMPORTED_QUAD });
+  await flush();
+  await loadGroup(container, 'A');
+
+  const rows = [...container.querySelectorAll('.stem-desk__row')];
+  assert.equal(rows.length, 4);
+  for (const row of rows) {
+    const meta = row.querySelector('.stem-desk__meta').textContent;
+    assert.equal(meta, 'imported · set a1b2c3d4', 'provenance is imported plus the truncated set hash');
+    assert.doesNotMatch(meta, /demucs/i);
+    assert.doesNotMatch(meta, new RegExp(IMPORTED_HASH), 'the full hash is not shown');
+  }
+  assert.doesNotMatch(container.querySelector('.stem-desk__lanes').textContent, /demucs/i);
+});
+
+test('three imported lanes without the fourth are not ready and say the set is incomplete', async () => {
+  const { container, desk } = mount({
+    variantsByTrack: { 'track-1': IMPORTED_QUAD.slice(0, 3) },
+    listJobsImpl: async () => ({ items: [] }),
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+
+  selectFor(container, 'A').dispatchEvent(new window.Event('change'));
+  await flush();
+  const status = container.querySelector('.stem-desk__status').textContent;
+  assert.match(status, /3 of 4 imported stems/);
+  assert.match(status, /incomplete/i);
+  assert.doesNotMatch(status, /are ready/i);
+  assert.doesNotMatch(status, /demucs/i);
+  assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
+});
+
+test('a proposal arranges imported and Demucs groups without swapping their methods', async () => {
+  const assignments = [
+    ['imported', 'demucs'],
+    ['demucs', 'imported'],
+  ];
+  for (const [methodA, methodB] of assignments) {
+    const quad = (method, stemSetId) => (method === 'imported' ? IMPORTED_QUAD : DEMUCS_QUAD)
+      .map((entry) => ({ ...entry, method, stem_set_id: stemSetId }));
+    const { container, desk } = mount({
+      tracks: [
+        { id: 'track-1', name: 'left.wav' },
+        { id: 'track-2', name: 'right.wav' },
+      ],
+      variantsByTrack: {
+        'track-1': quad(methodA, 'set-a'),
+        'track-2': quad(methodB, 'set-b'),
+      },
+    });
+    await flush();
+    selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+    await flush();
+    selectFor(container, 'A').value = 'track-1';
+    selectFor(container, 'B').value = 'track-2';
+    await loadGroup(container, 'A');
+    await loadGroup(container, 'B');
+    const [askButton, previewButton, approveButton, rejectButton] = [
+      ...container.querySelectorAll('.stem-desk__proposal button'),
+    ];
+    const before = desk.calls.length;
+    askButton.click();
+    previewButton.click();
+    rejectButton.click();
+    assert.equal(desk.calls.length, before, `${methodA}/${methodB} reject must not apply`);
+    assert.equal(desk.state().lanes.find((lane) => lane.key === 'A:drums').muted, false);
+    askButton.click();
+    previewButton.click();
+    approveButton.click();
+    const lanes = desk.state().lanes;
+    assert.equal(lanes.find((lane) => lane.key === 'A:drums').muted, false);
+    assert.equal(lanes.find((lane) => lane.key === 'A:vocals').muted, true);
+    assert.equal(lanes.find((lane) => lane.key === 'B:vocals').muted, false);
+    assert.equal(lanes.find((lane) => lane.key === 'B:drums').muted, true);
+    assert.ok(lanes.filter((lane) => lane.trackId === 'A').every((lane) => lane.method === methodA && lane.stemSetId === 'set-a'));
+    assert.ok(lanes.filter((lane) => lane.trackId === 'B').every((lane) => lane.method === methodB && lane.stemSetId === 'set-b'));
+    const metas = [...container.querySelectorAll('.stem-desk__row .stem-desk__meta')].map((node) => node.textContent);
+    if (methodA === 'imported') assert.ok(metas.some((text) => text.startsWith('imported · set ')));
+    if (methodB === 'imported') assert.ok(metas.some((text) => text.startsWith('imported · set ')));
+    assert.equal(desk.calls.some(([name]) => name === 'play'), false);
+  }
 });
