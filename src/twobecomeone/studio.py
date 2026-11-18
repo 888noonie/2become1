@@ -2399,6 +2399,20 @@ class StudioService:
     # Owner-supplied (already separated) stems
     # ------------------------------------------------------------------
 
+    def _stem_file_looks_valid(self, path: Path) -> bool:
+        """Cheap integrity check used before trusting a cached set."""
+        try:
+            with path.open("rb") as handle:
+                header = handle.read(12)
+            return (
+                len(header) == 12
+                and header[0:4] == b"RIFF"
+                and header[8:12] == b"WAVE"
+                and path.stat().st_size > 44
+            )
+        except OSError:
+            return False
+
     def _probe_stem_audio(self, path: Path) -> dict:
         """Decode-validate and return the format facts an import must agree on."""
         # A .wav suffix is not proof of a WAV container. The desk serves these
@@ -2585,10 +2599,10 @@ class StudioService:
         cached = self._find_cached_stem_set(track_sha256, "imported", model_name)
         if cached is not None:
             cached_paths = cached.get("stems") or {}
-            intact = all(
-                self._validated_stem_path(cached_paths.get(role, ""), role) is not None
-                for role in STEM_IMPORT_ROLES
-            )
+            def _lane_intact(role: str) -> bool:
+                resolved = self._validated_stem_path(cached_paths.get(role, ""), role)
+                return resolved is not None and self._stem_file_looks_valid(resolved)
+            intact = all(_lane_intact(role) for role in STEM_IMPORT_ROLES)
             if not intact:
                 # Repair in place: rewrite only the missing lanes into the same
                 # set directory. The set id stays valid for anything that refers
@@ -2597,10 +2611,14 @@ class StudioService:
                 repair_dir.mkdir(parents=True, exist_ok=True)
                 for role in STEM_IMPORT_ROLES:
                     target = repair_dir / f"{role}.wav"
-                    if self._validated_stem_path(
-                        (cached_paths.get(role) or f"stems/{cached['id']}/{role}.wav"), role
-                    ) is None or not target.is_file():
-                        shutil.copyfile(staged_by_role[role], target)
+                    if not _lane_intact(role):
+                        staging = repair_dir / f".{role}.wav.repair"
+                        try:
+                            shutil.copyfile(staged_by_role[role], staging)
+                            os.replace(staging, target)
+                        except Exception:
+                            staging.unlink(missing_ok=True)
+                            raise
                 if all(
                     self._validated_stem_path(cached_paths.get(role, ""), role) is not None
                     for role in STEM_IMPORT_ROLES

@@ -172,15 +172,10 @@ export function mountStemDeskPanel({
   watchJobImpl = watchJob,
   createDesk = (options) => new StemDesk(options),
   // A fixed context rate makes decoded size predictable, so the import path's
-  // 48 kHz budget matches what the desk actually decodes. Fall back only if the
-  // browser refuses the explicit rate.
-  audioContextFactory = () => {
-    try {
-      return new AudioContext({ sampleRate: 48000 });
-    } catch {
-      return new AudioContext();
-    }
-  },
+  // 48 kHz budget matches what the desk actually decodes. There is deliberately
+  // no silent fallback: an unpredictable rate could refuse a set the importer
+  // accepted, so the panel reports that audio is unavailable instead.
+  audioContextFactory = () => new AudioContext({ sampleRate: 48000 }),
   onAnnounce = null,
 } = {}) {
   if (!container) throw new Error('mountStemDeskPanel requires a container');

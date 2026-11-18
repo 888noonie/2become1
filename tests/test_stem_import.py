@@ -679,3 +679,49 @@ class TestSetIntegrity:
             assert not [p for p in service.stem_dir.iterdir() if p.is_dir()]
         finally:
             service.close()
+
+class TestRepairSafety:
+    def test_a_truncated_lane_is_not_trusted_and_is_repaired(self, tmp_path):
+        service = _service(tmp_path)
+        try:
+            track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
+            files = make_stems(tmp_path / "stems")
+            first = service.import_stem_set(track["id"], _stage_all(service, files))
+            (service.stem_dir / first["stem_set_id"] / "drums.wav").write_bytes(b"RIFF")
+
+            second = service.import_stem_set(track["id"], _stage_all(service, files))
+            assert second["cached"] is True and second.get("repaired") is True
+            repaired = service.stem_dir / second["stem_set_id"] / "drums.wav"
+            assert repaired.stat().st_size > 44
+            assert len([v for v in service.list_stems(track["id"])["variants"] if v["name"] != "full"]) == 4
+        finally:
+            service.close()
+
+    def test_an_interrupted_repair_leaves_no_partial_lane(self, tmp_path, monkeypatch):
+        import shutil as shutil_module
+        from twobecomeone.studio import UserError  # noqa: F401
+
+        service = _service(tmp_path)
+        try:
+            track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
+            files = make_stems(tmp_path / "stems")
+            first = service.import_stem_set(track["id"], _stage_all(service, files))
+            broken = service.stem_dir / first["stem_set_id"] / "other.wav"
+            broken.write_bytes(b"RIFF")
+
+            real_copy = shutil_module.copyfile
+
+            def failing_copy(src, dst, *args, **kwargs):
+                if str(dst).endswith(".repair"):
+                    raise OSError("disk full")
+                return real_copy(src, dst, *args, **kwargs)
+
+            monkeypatch.setattr(shutil_module, "copyfile", failing_copy)
+            with pytest.raises(OSError):
+                service.import_stem_set(track["id"], _stage_all(service, files))
+            monkeypatch.setattr(shutil_module, "copyfile", real_copy)
+
+            assert broken.read_bytes() == b"RIFF", "the published lane is untouched"
+            assert not list((service.stem_dir / first["stem_set_id"]).glob(".other*")), "no temp remains"
+        finally:
+            service.close()
