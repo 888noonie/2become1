@@ -59,7 +59,36 @@ function provenanceLabel(variant) {
     : variant.method === 'ffmpeg'
       ? 'ffmpeg · center/side fallback'
       : (variant.method || 'unknown method');
-  return variant.device ? `${method} · ${variant.device}` : method;
+  const withDevice = variant.device ? `${method} · ${variant.device}` : method;
+  // The stem set id is what proves which separation produced this lane; two
+  // tracks both have a "vocals", so the set is part of the identity.
+  return variant.stemSetId
+    ? `${withDevice} · set ${String(variant.stemSetId).slice(0, 8)}`
+    : withDevice;
+}
+
+/** Group level is a second gain layer, independent of the crossfader. */
+function groupLevelRow(groupId, onChange) {
+  const input = createElement('input', {
+    type: 'range',
+    min: String(STEM_DESK_LIMITS.minLevelDb),
+    max: String(STEM_DESK_LIMITS.maxLevelDb),
+    step: '1',
+    value: '0',
+    class: 'stem-desk__level',
+    'aria-label': `Group ${groupId} level`,
+  });
+  const text = createElement('span', { class: 'stem-desk__meta', text: '0 dB' });
+  const row = createElement('div', { class: 'stem-desk__level-row' }, [
+    createElement('span', { class: 'stem-desk__group-label', text: 'level' }),
+    input,
+    text,
+  ]);
+  input.addEventListener('input', (event) => {
+    text.textContent = `${event.target.value} dB`;
+    onChange?.(event.target.value);
+  });
+  return { row, input, text };
 }
 
 function groupLabel(trackId) {
@@ -127,6 +156,10 @@ export function mountStemDeskPanel({
   ]);
   const lanesMount = createElement('div', { class: 'stem-desk__lanes' });
   const note = createElement('p', { class: 'stem-desk__note', hidden: 'true' });
+  const policy = createElement('p', {
+    class: 'stem-desk__meta stem-desk__policy',
+    text: 'Solo applies across both tracks. The crossfader and each group level still apply on top, so a soloed lane on a closed track is silent.',
+  });
 
   container.replaceChildren(root);
   replaceChildren(root, [
@@ -135,6 +168,7 @@ export function mountStemDeskPanel({
     status,
     transport,
     crossfader,
+    policy,
     lanesMount,
     note,
   ]);
@@ -270,15 +304,23 @@ export function mountStemDeskPanel({
       if (!view) {
         const heading = createElement('h3', { class: 'stem-desk__group-title' });
         const rows = createElement('div', { class: 'stem-desk__group-rows' });
+        const level = groupLevelRow(group.trackId, (value) => {
+          if (!desk) return;
+          const next = desk.setTrackLevel(group.trackId, value);
+          refreshTransport(next);
+          say(`Group ${group.trackId} level ${value} dB.`);
+        });
         const section = createElement('section', {
           class: 'stem-desk__group',
           dataset: { group: group.trackId },
-        }, [heading, rows]);
-        view = { section, heading, rows };
+        }, [heading, level.row, rows]);
+        view = { section, heading, rows, level };
         groupViews.set(group.trackId, view);
         lanesMount.appendChild(section);
       }
       view.heading.textContent = `Group ${group.trackId} · ${group.title}`;
+      view.level.input.value = String(group.levelDb ?? 0);
+      view.level.text.textContent = `${group.levelDb ?? 0} dB`;
       const groupLanes = lanes.filter((lane) => lane.trackId === group.trackId);
       const rows = groupLanes.map((lane) => {
         const rowView = rowViews.get(lane.key) || createRowView(lane.key);
@@ -341,14 +383,24 @@ export function mountStemDeskPanel({
   playButton.addEventListener('click', async () => {
     try {
       const before = await desk.resume();
-      const state = desk.play({ loop: false });
+      // The accepted single-track desk loops, so preserve that exactly.
+      // Two tracks are a performance mix: play once, stop at the longest lane,
+      // because looping unequal-length tracks would wrap them out of phase.
+      const groups = desk.state().groups || [];
+      const loop = groups.length <= 1;
+      const state = desk.play({ loop });
       renderLanes(state);
       refreshTransport(state);
       startPositionTimer();
       if (before.contextState && before.contextState !== 'running' && before.contextState !== 'unknown') {
         say('The browser is still blocking audio. Press Play again to allow sound.');
+      } else if (loop) {
+        say(`Looping ${state.lanes.length} lanes started on one clock.`);
       } else {
-        say(`Playing ${state.lanes.length} stems together.`);
+        say(
+          `Started ${state.lanes.length} lanes on one clock. Playback ends with the longest lane; ` +
+          'this is a shared start, not tempo or beat matching.',
+        );
       }
     } catch (err) {
       say(err?.message || 'The stem desk could not start.');
@@ -453,6 +505,7 @@ export function mountStemDeskPanel({
             method: variant.method,
             modelName: variant.model_name,
             device: variant.device,
+            stemSetId: variant.stem_set_id,
           })),
         }], { signal: controller?.signal });
         if (disposed) return;

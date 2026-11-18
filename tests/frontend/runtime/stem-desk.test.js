@@ -561,3 +561,45 @@ test('an over-budget third group is refused with S_DESK_FULL and leaves A and B 
   assert.deepEqual(refused.groups.map((group) => group.trackId), ['A', 'B']);
   assert.equal(refused.lanes.length, 8, 'the refused group did not displace loaded audio');
 });
+
+test('a track level is a second gain layer the crossfader cannot overwrite', async () => {
+  const desk = new StemDesk({ audioContext: new FakeContext(), fetchImpl: fakeFetch() });
+  const near = (actual, expected) => Math.abs(actual - expected) < 1e-9;
+  const at = (state, trackId) => state.groups.find((group) => group.trackId === trackId);
+
+  await desk.loadGroups([
+    { trackId: 'A', lanes: [lane('vocals')] },
+    { trackId: 'B', lanes: [lane('vocals', { stemSetId: 'set-b' })] },
+  ]);
+  const levelled = desk.setTrackLevel('B', -6);
+  assert.ok(near(at(levelled, 'A').gain, Math.SQRT1_2), 'A keeps the crossfade value');
+  assert.ok(near(at(levelled, 'B').gain, Math.SQRT1_2 * Math.pow(10, -6 / 20)));
+  assert.equal(levelled.lanes.find((entry) => entry.key === 'B:vocals').stemSetId, 'set-b',
+    'a lane carries the stem set that produced it');
+
+  const crossed = desk.setCrossfader(100);
+  assert.ok(near(at(crossed, 'B').levelDb, -6), 'the level survives a crossfade move');
+  assert.ok(near(at(crossed, 'B').xfadeGain, 1));
+  assert.ok(near(at(crossed, 'B').gain, Math.pow(10, -6 / 20)));
+
+  const soloed = desk.setSolo('A:vocals', true);
+  const a = soloed.lanes.find((entry) => entry.key === 'A:vocals');
+  const b = soloed.lanes.find((entry) => entry.key === 'B:vocals');
+  assert.equal(a.audible, true);
+  assert.ok(near(a.effectiveGain, 0), 'A is crossfaded away, so its effective gain is 0');
+  assert.equal(b.audible, false);
+  assert.equal(b.effectiveGain, 0);
+
+  const opened = desk.setCrossfader(0);
+  const aOpen = opened.lanes.find((entry) => entry.key === 'A:vocals');
+  assert.ok(near(aOpen.effectiveGain, 1), 'opening the track restores the soloed lane');
+});
+
+test('track level is clamped to the documented range', async () => {
+  const desk = new StemDesk({ audioContext: new FakeContext(), fetchImpl: fakeFetch() });
+  await desk.load([lane('vocals')]);
+  assert.equal(desk.setTrackLevel('A', -400).groups[0].levelDb, STEM_DESK_LIMITS.minLevelDb);
+  assert.equal(desk.setTrackLevel('A', 40).groups[0].levelDb, STEM_DESK_LIMITS.maxLevelDb);
+  assert.throws(() => desk.setTrackLevel('A', 'loud'), /must be a number/);
+  assert.throws(() => desk.setTrackLevel('Z', 0), /no stem group/);
+});

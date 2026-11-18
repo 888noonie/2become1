@@ -38,6 +38,12 @@ export const STEM_DESK_LIMITS = Object.freeze({
   minGainDb: -60,
   maxGainDb: 6,
   /**
+   * Per-track level is a second gain layer, independent of the crossfader, so
+   * a crossfade move can never overwrite a track level the user set.
+   */
+  minLevelDb: -40,
+  maxLevelDb: 6,
+  /**
    * A lane at or below this RMS is "effectively silent in this separation".
    * It is a truthful label, not a mixer rule: the lane still loads, still
    * obeys mute/solo/gain, and is never removed. The 2026-11-17 audition
@@ -290,6 +296,7 @@ export class StemDesk {
       trackId: spec.trackId,
       title: spec.title,
       lanes: loaded,
+      levelDb: existing?.levelDb ?? 0,
       node: null,
     };
     this._groups = [...otherGroups, group];
@@ -347,6 +354,7 @@ export class StemDesk {
       method: lane.method || null,
       modelName: lane.modelName || null,
       device: lane.device || null,
+      stemSetId: lane.stemSetId || null,
       buffer,
       gainDb: 0,
       muted: false,
@@ -394,12 +402,22 @@ export class StemDesk {
     }
   }
 
-  _groupGainValue(group) {
+  _xfadeValue(group) {
     const ordered = this._orderedGroups();
     if (!ordered.length) return 0;
+    // One loaded track is never faded to silence by a crossfader that has no
+    // second side; the desk reports it as disabled instead.
     if (ordered.length === 1) return 1;
     const law = equalPowerGains(this._crossfader);
     return ordered.indexOf(group) === 0 ? law.gainA : law.gainB;
+  }
+
+  /**
+   * The group gain is the crossfade gain multiplied by the track level. They
+   * are separate layers: moving the crossfader must not rewrite the level.
+   */
+  _groupGainValue(group) {
+    return this._xfadeValue(group) * dbToLinear(group.levelDb ?? 0);
   }
 
   _crossfaderState() {
@@ -588,6 +606,22 @@ export class StemDesk {
   }
 
   /** Crossfade the two groups with the same equal-power law as LiveMixer. */
+  /** Independent per-track level, in dB, applied on top of the crossfade. */
+  setTrackLevel(trackId, db) {
+    const group = this._requireGroup(trackId);
+    const value = Number(db);
+    if (!Number.isFinite(value)) {
+      throw new StemDeskError('S_BAD_GAIN', `level for ${trackId} must be a number`);
+    }
+    group.levelDb = Math.max(
+      STEM_DESK_LIMITS.minLevelDb,
+      Math.min(STEM_DESK_LIMITS.maxLevelDb, value),
+    );
+    this._applyGains();
+    return this.state();
+  }
+
+  /** Equal-power A/B crossfade; it multiplies each track's own level. */
   setCrossfader(position) {
     const value = Number(position);
     if (!Number.isFinite(value)) {
@@ -621,6 +655,15 @@ export class StemDesk {
     return this._groups.find((group) => group.trackId === String(trackId));
   }
 
+  /** Like _group but refuses an unknown track with a truthful error. */
+  _requireGroup(trackId) {
+    const group = this._group(trackId);
+    if (!group) {
+      throw new StemDeskError('S_UNKNOWN_TRACK', `no stem group named ${String(trackId)}`);
+    }
+    return group;
+  }
+
   _laneCount() {
     return this._groups.reduce((total, group) => total + group.lanes.length, 0);
   }
@@ -648,6 +691,9 @@ export class StemDesk {
     const duration = this._duration();
     const anySolo = this._lanes.some((lane) => lane.solo);
     const crossfader = this._crossfaderState();
+    const groupGainByTrack = new Map(
+      this._orderedGroups().map((group) => [group.trackId, this._groupGainValue(group)]),
+    );
     return Object.freeze({
       status: this._status,
       contextState: this._ctx?.state ?? 'unknown',
@@ -669,6 +715,8 @@ export class StemDesk {
         trackId: group.trackId,
         title: group.title,
         gain: this._groupGainValue(group),
+        xfadeGain: this._xfadeValue(group),
+        levelDb: group.levelDb ?? 0,
         laneCount: group.lanes.length,
         laneKeys: group.lanes.map((lane) => lane.key),
       })),
@@ -680,6 +728,7 @@ export class StemDesk {
         method: lane.method,
         modelName: lane.modelName,
         device: lane.device,
+        stemSetId: lane.stemSetId,
         durationSeconds: lane.durationSeconds,
         gainDb: lane.gainDb,
         muted: lane.muted,
@@ -688,8 +737,11 @@ export class StemDesk {
         rmsDb: lane.rmsDb,
         peakDb: lane.peakDb,
         silent: lane.silent,
+        // Post-crossfade, post-level: what this lane actually contributes now.
+        // A soloed lane at a hard crossfade away from its track is truthfully 0.
+        groupGain: groupGainByTrack.get(lane.trackId) ?? 0,
         effectiveGain: (anySolo ? lane.solo : !lane.muted)
-          ? dbToLinear(lane.gainDb)
+          ? dbToLinear(lane.gainDb) * (groupGainByTrack.get(lane.trackId) ?? 0)
           : 0,
       })),
     });

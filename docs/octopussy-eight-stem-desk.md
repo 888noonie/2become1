@@ -44,9 +44,26 @@ was touched. The panel only calls the existing read-only `listTracks` and
 There is one master GainNode connected to the destination. Group A and group B
 each have one gain node feeding master. Each lane has one gain node feeding its
 group. The crossfader imports `equalPowerGains` from `js/runtime/crossfader.js`;
-0 is A only, 100 is B only, 50 gives both groups `1/√2`. With only one loaded
-track the crossfader is disabled and that group's gain is forced to 1, so a
-single track is never faded to silence.
+0 is A only, 100 is B only, 50 gives both groups `1/√2`.
+
+**There are two independent gain layers**, which is why a crossfade move cannot
+wipe out a track level:
+
+```
+group gain = equalPowerGains(crossfader) × dbToLinear(track level, −40…+6 dB)
+lane gain  = audible ? dbToLinear(lane gain, −60…+6 dB) : 0
+effectiveGain (reported) = lane gain × the lane's own group gain
+```
+
+The per-track level defaults to 0 dB and is set with `setTrackLevel(trackId,db)`
+from the group's own slider. Moving the crossfader rewrites only the equal-power
+factor. At the crossfader midpoint each group sits at `1/√2`, so a track sounds
+about 3 dB quieter there than at its own end of the fader; that is the standard
+equal-power behaviour, and the panel shows `gainA`/`gainB` so it is visible
+rather than surprising.
+
+With only one loaded track the crossfader is disabled and that group's gain is
+forced to 1 (times its level), so a single track is never faded to silence.
 
 Solo is evaluated **across all eight lanes**, not per group:
 
@@ -56,7 +73,10 @@ lane gain = audible ? dbToLinear(clamp(gainDb, -60, +6)) : 0
 ```
 
 Soloing `A:vocals` therefore suppresses B as well as the other A lanes. Releasing
-solo restores the previous per-lane mute flags. A silent lane keeps its
+solo restores the previous per-lane mute flags. The panel states this policy in
+plain words (“Solo applies across both tracks…”) and the runtime reports a
+post-crossfade `effectiveGain`, so a soloed lane on a closed track reads 0
+instead of looking broken. A silent lane keeps its
 `silentRmsDb <= -50` label, still loads, still obeys mute/solo/gain and is never
 removed.
 
@@ -84,9 +104,13 @@ modified. A media failure inside an otherwise valid group is still an honest
 
 ## 4. Transport: no wrapping by default
 
-`play({ loop = false, offset = 0 })` now defaults to **no loop**. Every
-scheduled lane receives the same `when` (one context clock plus the 0.05 s
-lead), so start alignment is tested as a schedule property. There is
+`play({ loop = false, offset = 0 })` defaults to **no loop**. The panel keeps
+the accepted four-stem experience by asking for `loop: true` when exactly one
+track is loaded, and asks for `loop: false` for a two-track programme. Looping
+two tracks of different lengths would wrap them against each other, so that is
+deliberately not offered. Every scheduled lane receives the same `when` (one
+context clock plus the 0.05 s lead), so start alignment is tested as a schedule
+property. There is
 deliberately **no per-lane `loopEnd`**: a loop, when explicitly requested,
 loops the whole buffer rather than letting each lane define its own end point.
 
@@ -110,9 +134,12 @@ The panel renders:
 - one Play/Stop transport and one position label;
 - one crossfader slider with `gainA`/`gainB` readout, disabled when only one
   track is loaded;
+- one level slider per group (`-40…+6 dB`), independent of the crossfader;
 - eight rows under two group headings (`Group A · title`, `Group B · title`);
-- provenance (`demucs · model · device` or the ffmpeg center/side note) and the
-  “effectively silent in this separation” note on each affected row;
+- provenance (`demucs · model · device · set <first 8>` or the ffmpeg
+  center/side note) and the “effectively silent in this separation” note on each
+  affected row; the stem-set id is what distinguishes two tracks that both have
+  a “vocals”;
 - group-qualified accessible names such as `Mute A · Vocals`, `Solo B · Drums`.
 
 Changing a lane gain updates that row's value and dB readout **in place**; the
@@ -229,3 +256,112 @@ reached.
   persistence exists.
 - The frontend suite needed local `node_modules` and `.venv` links in this
   fresh worktree. Those links are gitignored and are not part of the commit.
+
+## 10. Independent challenge and what it changed
+
+Cursor Grok 4.5 (High) challenged the design read-only before this
+implementation was accepted. Its verdict was **NEEDS CHANGES**, and the
+following blocking items were adopted rather than argued away:
+
+| Finding | Change made |
+| --- | --- |
+| Group gain collapsed into the crossfader would overwrite a track level | added the second gain layer `setTrackLevel` / per-group slider |
+| The accepted single-track desk loops; a blanket `loop:false` regresses it | panel loops for one track, plays once for two |
+| `effectiveGain` ignored the group gain, so a crossfaded-out solo looked broken | `effectiveGain = lane gain × group gain`; policy stated in the UI |
+| 320 MiB was asserted, not measured | measured on this machine (§11) |
+| A lane needs its stem set to be identifiable | `stemSetId` carried per lane and shown in provenance |
+| "Played N stems together" overclaims | "Started N lanes on one clock … not tempo or beat matching" |
+| The wrap defect had no negative control | proven below against the pre-change runtime |
+
+Non-blocking notes kept open: the `-60 dB` `audible`/`effectiveGain` edge, and
+`stem_audio_path` status hardening (both pre-existing and unchanged here).
+
+## 11. Measured memory (this machine, headless Chromium)
+
+Real two-track demonstration stems (19.2 s and 16.0 s, eight lanes):
+
+| Stage | Used JS heap |
+| --- | --- |
+| before load | 0.68 MB |
+| after eight lanes decode | 48.3 MB |
+| during playback | 48.3 MB |
+| after `unloadGroup('B')` | 48.3 MB (4 lanes) |
+| after `unload()` | 48.3 MB (0 lanes) |
+| after `dispose()` + context close | 52.3 MB |
+
+Desk accounting at load: **47.37 MiB decoded** (5.92 MiB per lane).
+
+The 320 MiB ceiling was then reached deliberately with eight 118 s stereo
+44.1 kHz stems: **317.61 MiB decoded**, heap 318.3 MB, the desk accepted them,
+played, unloaded and disposed without an error. So the ceiling is reachable on
+this desktop rather than merely arithmetic.
+
+Honest limits on that number: it is one headless Chromium on one 6 GB laptop.
+The browser did not visibly return decoded memory after `unload()` even with a
+forced GC — that is a browser-level retention observation, not a desk
+reference leak (the desk clears `_groups`, `_lanes` and `_decodedBytes`).
+Three consecutive load/unload cycles held flat at **52.3 MB**, so there is no
+per-cycle growth. Mobile was not profiled; the per-track 160 MiB and per-stem
+40 MiB ceilings bound each track independently of the total.
+
+## 12. Negative control: the wrap defect and its repair
+
+`wrap_negative_control.mjs` renders one 1.2 s lane beside one 0.4 s lane and
+measures the short lane's energy after its own end.
+
+| Runtime / call | Short-lane tail RMS | Status after longest lane |
+| --- | --- | --- |
+| pre-change runtime, `loop:true` (what the old panel asked for) | **0.244** | **`playing`** |
+| this change, two-track `loop:false` | **3.96 × 10⁻¹⁷** | **`ready`** |
+
+That is the defect the two-track desk removes: a short stem used to wrap under
+a longer one while the transport still claimed to be playing.
+
+## 13. Demonstration
+
+Two original arrangements, separated with the real engine:
+
+| | Track A | Track B |
+| --- | --- | --- |
+| fixture | 100 BPM, A minor, 8 bars | **120 BPM, G minor, 8 bars** |
+| duration | 19.20 s | 16.00 s |
+| stem set | `2022192fb2384b3c91e42282d74a6f95` | `847423aefc3b4ba993a4dbfb16e4eeef` |
+| stem RMS (vocals/drums/bass/other) | −29.6 / −23.5 / −23.9 / −29.1 dBFS | −31.3 / −22.3 / −22.7 / −28.0 dBFS |
+| four-stem reconstruction residual | −29.3 dB rel mix | −27.7 dB rel mix |
+
+Both sets contain meaningful content in all four lanes and neither clips. The
+tempos differ on purpose: this slice does not beat-match, so the demonstration
+must not imply that it does.
+
+Run the desk against that temporary library:
+
+```bash
+cd /tmp/opencode/octopussy-desk
+PYTHONPATH=$PWD/src /home/richardn/2become1/.venv/bin/twobecomeone web \
+  --port 8767 --data-dir /tmp/opencode/octopussy-demo
+```
+
+Then: pick Track A in group A → **Load A**; pick Track B in group B →
+**Load B**; press **Play**. Use each group's level slider, the eight M/S/gain
+rows and the A/B crossfader. Playback is one-shot and ends with the longer
+track.
+
+## 14. Full verification run (final HEAD)
+
+```bash
+npm test                     # 508 tests, 508 pass, 0 fail
+.venv/bin/pytest -q          # 580 passed, 1 skipped
+node tests/browser/run.js --viewport 1280x800   # 39 checks, 0 failures
+node tests/browser/run.js --viewport 390x844    # 39 checks, 5 failures
+node tests/browser/stem_desk_ux.js --viewport 1280x800     # pass
+node tests/browser/stem_desk_two_track_ux.js --viewport 1280x800  # 21/21
+node tests/browser/stem_desk_two_track_ux.js --viewport 390x844   # 21/21
+node tests/browser/stem_desk_two_track_audio.js            # 6/6
+node tests/browser/stem_desk_two_track_real.js ...         # 8/8
+node tests/browser/stem_desk_audio.js                      # 8/8 (single-desk regression)
+node tests/browser/stem_desk_real_audio.js ...             # 15/15 (single-desk regression)
+```
+
+The five mobile failures are the same pre-existing moderate accessibility
+findings recorded at the accepted baseline; they are not new and are kept
+separate from this change.

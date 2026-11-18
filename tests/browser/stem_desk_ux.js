@@ -149,25 +149,25 @@ try {
     if (!/htdemucs@4\.1\.0/.test(text)) fail('lane provenance does not name the model');
 
     const drums = rows.nth(1);
-    await drums.getByRole('button', { name: 'Mute Drums' }).click();
+    await drums.getByRole('button', { name: 'Mute A · Drums' }).click();
     await sleep(300);
-    if ((await drums.getByRole('button', { name: 'Mute Drums' }).getAttribute('aria-pressed')) !== 'true') {
+    if ((await drums.getByRole('button', { name: 'Mute A · Drums' }).getAttribute('aria-pressed')) !== 'true') {
       fail('mutting Drums did not report pressed state');
     }
 
-    await rows.nth(2).getByRole('button', { name: 'Solo Bass' }).click();
+    await rows.nth(2).getByRole('button', { name: 'Solo A · Bass' }).click();
     await sleep(300);
-    if ((await rows.nth(2).getByRole('button', { name: 'Solo Bass' }).getAttribute('aria-pressed')) !== 'true') {
+    if ((await rows.nth(2).getByRole('button', { name: 'Solo A · Bass' }).getAttribute('aria-pressed')) !== 'true') {
       fail('soloing Bass did not report pressed state');
     }
-    if ((await rows.nth(0).getByRole('button', { name: 'Mute Vocals' }).getAttribute('aria-pressed')) !== 'false') {
+    if ((await rows.nth(0).getByRole('button', { name: 'Mute A · Vocals' }).getAttribute('aria-pressed')) !== 'false') {
       fail('solo should not rewrite another lane mute flag');
     }
 
     await page.getByRole('button', { name: 'Play', exact: true }).click();
     await sleep(1200);
     const playingText = await desk.innerText();
-    if (!/Playing 4 stems together/.test(playingText)) {
+    if (!/Looping 4 lanes started on one clock/.test(playingText)) {
       fail(`Play did not report a truthful playing state: ${playingText.slice(0, 200)}`);
     }
 

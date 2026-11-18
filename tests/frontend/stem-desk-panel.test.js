@@ -107,7 +107,10 @@ class FakeDesk {
       groups: this.groups.map((group, index) => ({
         trackId: group.trackId,
         title: group.title,
-        gain: this.groups.length === 1 ? 1 : (index === 0 ? crossfader.gainA : crossfader.gainB),
+        gain: (this.groups.length === 1 ? 1 : (index === 0 ? crossfader.gainA : crossfader.gainB))
+          * Math.pow(10, (group.levelDb || 0) / 20),
+        xfadeGain: this.groups.length === 1 ? 1 : (index === 0 ? crossfader.gainA : crossfader.gainB),
+        levelDb: group.levelDb || 0,
         laneCount: group.lanes.length,
         laneKeys: group.lanes.map((lane) => lane.key),
       })),
@@ -170,6 +173,13 @@ class FakeDesk {
   setCrossfader(value) {
     this.calls.push(['setCrossfader', Number(value)]);
     this.crossfaderPosition = Number(value);
+    return this.state();
+  }
+
+  setTrackLevel(trackId, db) {
+    this.calls.push(['setTrackLevel', trackId, Number(db)]);
+    const group = this.groups.find((entry) => entry.trackId === trackId);
+    if (group) group.levelDb = Number(db);
     return this.state();
   }
 
@@ -399,7 +409,7 @@ test('a fallback center/sides split is labelled honestly and never as vocals', a
   assert.doesNotMatch(container.textContent, /Vocals/);
 });
 
-test('play and stop drive the one transport with loop off and reset the clock label', async () => {
+test('play and stop drive the one transport and keep the accepted single-track loop', async () => {
   const { container, desk } = mount({
     variants: [variant('vocals'), variant('drums'), variant('bass'), variant('other')],
   });
@@ -412,7 +422,12 @@ test('play and stop drive the one transport with loop off and reset the clock la
   play.click();
   await flush();
   assert.ok(desk.calls.some(([name]) => name === 'play'));
-  assert.deepEqual(desk.calls.find(([name]) => name === 'play'), ['play', false], 'the desk does not wrap by default');
+  // One loaded track keeps the accepted four-stem behaviour: it loops.
+  assert.deepEqual(
+    desk.calls.find(([name]) => name === 'play'),
+    ['play', true],
+    'the accepted single-track desk still loops',
+  );
   assert.equal(play.textContent, 'Restart');
   stop.click();
   await flush();
@@ -573,4 +588,56 @@ test('an effectively silent stem is labelled and its solo says why nothing is he
   const status = container.querySelector('.stem-desk__status').textContent;
   assert.match(status, /Solo A · Vocals/);
   assert.match(status, /effectively silent/);
+});
+
+test('each group has its own level control that is not the crossfader', async () => {
+  const { container, desk } = mount({
+    tracks: [
+      { id: 'track-1', name: 'night-drive.wav', title: 'Night Drive' },
+      { id: 'track-2', name: 'slow-burn.wav', title: 'Slow Burn' },
+    ],
+    variantsByTrack: {
+      'track-1': [variant('vocals'), variant('drums')],
+      'track-2': [variant('vocals'), variant('drums')],
+    },
+  });
+  await flush();
+  await loadGroup(container, 'A', 'track-1');
+  await loadGroup(container, 'B', 'track-2');
+
+  const levelA = container.querySelector('.stem-desk__group[data-group="A"] .stem-desk__level');
+  assert.ok(levelA, 'group A has a level control');
+  levelA.value = '-6';
+  levelA.dispatchEvent(new window.Event('input'));
+  await flush();
+
+  const call = desk.calls.find(([name]) => name === 'setTrackLevel');
+  assert.deepEqual(call, ['setTrackLevel', 'A', -6]);
+  const crossfaderCalls = desk.calls.filter(([name]) => name === 'setCrossfader').length;
+  assert.equal(crossfaderCalls, 0, 'a level move is not a crossfade move');
+});
+
+test('two loaded tracks play once and say so, without claiming beat matching', async () => {
+  const { container, desk } = mount({
+    tracks: [
+      { id: 'track-1', name: 'night-drive.wav', title: 'Night Drive' },
+      { id: 'track-2', name: 'slow-burn.wav', title: 'Slow Burn' },
+    ],
+    variantsByTrack: {
+      'track-1': [variant('vocals'), variant('drums')],
+      'track-2': [variant('vocals'), variant('drums')],
+    },
+  });
+  await flush();
+  await loadGroup(container, 'A', 'track-1');
+  await loadGroup(container, 'B', 'track-2');
+
+  const play = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Play');
+  play.click();
+  await flush();
+  assert.deepEqual(desk.calls.find(([name]) => name === 'play'), ['play', false], 'two tracks play once');
+  const status = container.querySelector('.stem-desk__status').textContent;
+  assert.match(status, /one clock/);
+  assert.match(status, /not tempo or beat matching/);
+  assert.doesNotMatch(status, /beat.?matched/i);
 });
