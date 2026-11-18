@@ -296,11 +296,11 @@ The five largest files at that eight-stem measurement were `ghost-controller.js`
 
 ### Library connection
 
-Measured from `4265ac1` (708,866 bytes, 69 files) to this slice (721,808 bytes,
-69 files): **+12,942 bytes (+1.83%)**. The file count did not change, and
+Measured from `4265ac1` (708,866 bytes, 69 files) to this slice (722,580 bytes,
+69 files): **+13,714 bytes (+1.94%)**. The file count did not change, and
 `stem-desk.js` stayed 31,989 bytes. Nothing was minified.
 
-- `stem-desk-panel.js` 24,337 → **35,938** (+11,601): Choose from Library,
+- `stem-desk-panel.js` 24,337 → **36,710** (+12,373): Choose from Library,
   Add / Process Track, and the separation status line.
 - `source-picker.js` 11,465 → **12,247** (+782): a library pick can return the
   track without assigning a deck.
@@ -308,11 +308,11 @@ Measured from `4265ac1` (708,866 bytes, 69 files) to this slice (721,808 bytes,
   44px target.
 - `dialog.js` +186 and `studio.js` +123 wire the same dialog into the desk.
 
-Against the older 650,905-byte baseline the tree is now +70,903 bytes
-(+10.89%). The +50,000 byte investigation trigger was already crossed by the
+Against the older 650,905-byte baseline the tree is now +71,675 bytes
+(+11.01%). The +50,000 byte investigation trigger was already crossed by the
 eight-stem desk. This slice does not cross the 15% trigger. The five largest
 files are now `ghost-controller.js` (55,945), `live-mixer.js` (39,556),
-`stem-desk-panel.js` (35,938), `stem-desk.js` (31,989) and `studio.css`
+`stem-desk-panel.js` (36,710), `stem-desk.js` (31,989) and `studio.css`
 (30,851).
 
 `git diff --check bdad67a769a8eaca0ef0d9f77993f2927634a1b9..HEAD` was clean.

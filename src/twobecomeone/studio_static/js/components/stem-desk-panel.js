@@ -307,16 +307,20 @@ export function mountStemDeskPanel({
     say(`${name} has no separated stems yet. Use Add / Process Track to separate it.`);
   }
 
-  async function findActiveSeparation(trackId) {
+  async function separationJobsFor(trackId) {
     const page = await listJobsImpl({ kind: 'separate', limit: 50 });
     const items = Array.isArray(page?.items) ? page.items : (Array.isArray(page) ? page : []);
-    return items.find((job) => (
+    return items.filter((job) => (
       job
       && (job.kind == null || job.kind === 'separate')
       && job.request
       && job.request.track_id === trackId
-      && (job.status === 'queued' || job.status === 'running')
-    )) || null;
+    ));
+  }
+
+  async function findActiveSeparation(trackId) {
+    const jobs = await separationJobsFor(trackId);
+    return jobs.find((job) => job.status === 'queued' || job.status === 'running') || null;
   }
 
   function jobDetail(job) {
@@ -452,13 +456,14 @@ export function mountStemDeskPanel({
     stopSeparationWatch(groupId);
     const name = track.title || track.name || track.id;
     const imported = `Imported ${name}. The full mix is in the library.`;
-    let active = null;
+    let jobs = [];
     try {
-      active = await findActiveSeparation(track.id);
+      jobs = await separationJobsFor(track.id);
     } catch {
-      active = null;
+      jobs = [];
     }
     if (disposed || groupSelects[groupId].value !== track.id) return;
+    const active = jobs.find((job) => job.status === 'queued' || job.status === 'running');
     if (active) {
       say(`${imported} Separation is a separate step and is not finished yet.`);
       watchSeparation(groupId, track.id, active);
@@ -473,6 +478,16 @@ export function mountStemDeskPanel({
     if (disposed || groupSelects[groupId].value !== track.id) return;
     if (demucsQuad(variants)) {
       say(`${imported} Separation has since finished: Four Demucs stems are ready. Load ${groupId} to play them.`);
+      return;
+    }
+    const terminal = jobs.find((job) => (
+      job.status === 'failed' || job.status === 'cancelled' || job.status === 'interrupted'
+    ));
+    if (terminal) {
+      const reason = terminal.error || terminal.message || terminal.status;
+      const split = variants.some((variant) => variant && (variant.name === 'center' || variant.name === 'sides'));
+      const extra = split ? ' A center/sides split is not four Demucs stems.' : '';
+      say(`Separation ${terminal.status} for ${name}: ${reason}.${extra} Use Add / Process Track to retry.`);
       return;
     }
     if (variants.some((variant) => variant && (variant.name === 'center' || variant.name === 'sides'))) {

@@ -865,6 +865,39 @@ test('a fast separation is reported only after the stem list is read', async () 
   assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
 });
 
+test('a failed or cancelled automatic separation is named after import', async () => {
+  for (const status of ['failed', 'cancelled']) {
+    const { container, dispose } = mount({
+      tracks: [{ id: 'track-1', name: 'night-drive.wav' }],
+      variantsByTrack: { 'track-1': DEMUCS_QUAD, fresh: [] },
+      listJobsImpl: async () => ({
+        items: [{
+          id: `job-${status}`,
+          kind: 'separate',
+          status,
+          error: 'Stem decode failed',
+          request: { track_id: 'fresh', method: 'auto' },
+        }],
+      }),
+      openPicker: async (_store, _slot, options) => {
+        await options.onImported({ id: 'fresh', name: 'fresh.wav' });
+        return 'close';
+      },
+    });
+    await flush();
+    selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+    await flush();
+    addButton(container, 'A').click();
+    await flush();
+    const text = container.querySelector('.stem-desk__status').textContent;
+    assert.match(text, new RegExp(status, 'i'));
+    assert.match(text, /Stem decode failed/);
+    assert.match(text, /retry/i);
+    assert.doesNotMatch(text, /not finished yet/);
+    dispose();
+  }
+});
+
 test('a track without Demucs stems requests processing and does not claim a center/sides result', async () => {
   const submitted = [];
   let onUpdate = null;
