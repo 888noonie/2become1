@@ -104,7 +104,7 @@ try {
       freq,
     }));
 
-    async function render({ crossfader = 50, stemSeconds = 1, renderSeconds = 1.6, offset = 0 } = {}) {
+    async function render({ crossfader = 50, stemSeconds = 1, renderSeconds = 1.6, offset = 0, levels = {} } = {}) {
       const ctx = new OfflineAudioContext(1, Math.round(RATE * renderSeconds), RATE);
       const freqByUrl = new Map();
       for (const groupId of ['A', 'B']) {
@@ -127,6 +127,7 @@ try {
         throw new Error(`load failed: ${JSON.stringify(loaded.error ?? loaded.status)}`);
       }
       desk.setCrossfader(crossfader);
+      for (const [trackId, db] of Object.entries(levels)) desk.setTrackLevel(trackId, db);
       const started = desk.play({ loop: false, offset });
       const rendered = await ctx.startRendering();
       const channel = rendered.getChannelData(0);
@@ -162,6 +163,8 @@ try {
       crossfade_middle: await render({ crossfader: 50 }),
       crossfade_right: await render({ crossfader: 100 }),
       end_of_programme: await render({ crossfader: 50, stemSeconds: 0.6, renderSeconds: 1 }),
+      // A track level must move only its own track's PCM.
+      level_b_minus_12: await render({ crossfader: 50, levels: { B: -12 } }),
     };
     return { rate: RATE, amplitude: AMP, scenarios };
   }, { runtimeSource: source, crossfaderSource });
@@ -195,6 +198,18 @@ try {
     groups(scenarios.crossfade_middle, 'A').every((value) => tolerance(value, amplitude * Math.SQRT1_2, 0.25)) &&
     groups(scenarios.crossfade_middle, 'B').every((value) => tolerance(value, amplitude * Math.SQRT1_2, 0.25)),
     scenarios.crossfade_middle.measured);
+
+  const levelB = scenarios.level_b_minus_12;
+  const baseB = groups(scenarios.crossfade_middle, 'B');
+  const cutB = groups(levelB, 'B');
+  const baseA = groups(scenarios.crossfade_middle, 'A');
+  const cutA = groups(levelB, 'A');
+  const mean = (values) => values.reduce((sum, value) => sum + value, 0) / values.length;
+  const bRatio = mean(cutB) / mean(baseB);
+  const aRatio = mean(cutA) / mean(baseA);
+  check('a track level attenuates only that track',
+    Math.abs(bRatio - 0.2512) < 0.05 && Math.abs(aRatio - 1) < 0.02,
+    { bRatio: +bRatio.toFixed(4), aRatio: +aRatio.toFixed(4), expectedBRatio: 0.2512 });
 
   check('eight lanes at the crossfader midpoint do not clip',
     scenarios.crossfade_middle.peak < 1,

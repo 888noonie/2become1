@@ -645,10 +645,22 @@ export class StemDesk {
 
   _lane(name) {
     const key = String(name);
-    let lane = this._lanes.find((item) => item.key === key);
-    if (!lane) lane = this._lanes.find((item) => item.name === key);
-    if (!lane) throw new StemDeskError('S_UNKNOWN_STEM', `no stem lane named ${key}`);
-    return lane;
+    const exact = this._lanes.find((item) => item.key === key);
+    if (exact) return exact;
+    // A bare stem name is only safe when it is unique. Two loaded tracks both
+    // have a "vocals", so an ambiguous bare name must not silently address the
+    // first match.
+    const matches = this._lanes.filter((item) => item.name === key);
+    if (matches.length > 1) {
+      throw new StemDeskError(
+        'S_AMBIGUOUS_STEM',
+        `stem name ${key} exists in more than one track; address it as track:name`,
+      );
+    }
+    if (!matches.length) {
+      throw new StemDeskError('S_UNKNOWN_STEM', `no stem lane named ${key}`);
+    }
+    return matches[0];
   }
 
   _group(trackId) {

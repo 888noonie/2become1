@@ -122,6 +122,7 @@ class FakeDesk {
         method: lane.method,
         modelName: lane.modelName,
         device: lane.device,
+        stemSetId: lane.stemSetId,
         durationSeconds: 12,
         gainDb: lane.gainDb,
         muted: lane.muted,
@@ -268,6 +269,11 @@ test('the desk lists tracks, loads four stems into group A and labels their prov
   assert.equal(rows[0].querySelector('.stem-desk__name').textContent, 'Vocals');
   assert.match(rows[0].querySelector('.stem-desk__meta').textContent, /demucs/);
   assert.match(rows[0].querySelector('.stem-desk__meta').textContent, /htdemucs@4\.1\.0/);
+  assert.match(
+    rows[0].querySelector('.stem-desk__meta').textContent,
+    /set set-1/,
+    'provenance names the stem set that produced the lane',
+  );
   assert.equal(rows[3].querySelector('.stem-desk__name').textContent, 'Other');
   assert.match(container.querySelector('.stem-desk__group-title').textContent, /Group A/);
   assert.deepEqual(desk.calls.find(([name]) => name === 'loadGroups'), ['loadGroups', 'A', ['vocals', 'drums', 'bass', 'other']]);

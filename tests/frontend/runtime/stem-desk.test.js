@@ -603,3 +603,18 @@ test('track level is clamped to the documented range', async () => {
   assert.throws(() => desk.setTrackLevel('A', 'loud'), /must be a number/);
   assert.throws(() => desk.setTrackLevel('Z', 0), /no stem group/);
 });
+
+test('a bare stem name is refused when two tracks both have it', async () => {
+  const desk = new StemDesk({ audioContext: new FakeContext(), fetchImpl: fakeFetch() });
+  await desk.loadGroups([
+    { trackId: 'A', lanes: [lane('vocals')] },
+    { trackId: 'B', lanes: [lane('vocals')] },
+  ]);
+  assert.throws(() => desk.setGain('vocals', -6), /more than one track/);
+  const state = desk.setGain('B:vocals', -6);
+  assert.equal(state.lanes.find((entry) => entry.key === 'B:vocals').gainDb, -6);
+  // With one track the bare name is unambiguous and keeps working.
+  const single = new StemDesk({ audioContext: new FakeContext(), fetchImpl: fakeFetch() });
+  await single.load([lane('vocals')]);
+  assert.equal(single.setGain('vocals', -3).lanes[0].gainDb, -3);
+});

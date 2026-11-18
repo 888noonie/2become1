@@ -93,7 +93,8 @@ removed.
 | decoded bytes per stem | 40 MiB |
 | decoded bytes per track | 160 MiB |
 | decoded bytes for the desk | 320 MiB |
-| gain range | −60 … +6 dB |
+| per-lane gain range | −60 … +6 dB |
+| per-track level range | −40 … +6 dB |
 | silent RMS threshold | −50 dBFS |
 
 A group is decoded into temporary lane objects first. It is committed only if
@@ -278,31 +279,56 @@ Non-blocking notes kept open: the `-60 dB` `audible`/`effectiveGain` edge, and
 
 ## 11. Measured memory (this machine, headless Chromium)
 
-Real two-track demonstration stems (19.2 s and 16.0 s, eight lanes):
+All figures below are copied from the probe files in
+`/tmp/opencode/octopussy-evidence/` (`memory-probe.json`,
+`memory-probe-ceiling*.json`, `cycle-probe.json`). They are one machine's
+measurements, not a browser guarantee.
+
+Real two-track demonstration stems (19.2 s and 16.0 s, eight lanes) decoded by
+a real `AudioContext`, which Chromium runs at **48 kHz** and therefore
+resamples these 44.1 kHz files:
 
 | Stage | Used JS heap |
 | --- | --- |
 | before load | 0.68 MB |
-| after eight lanes decode | 48.3 MB |
-| during playback | 48.3 MB |
-| after `unloadGroup('B')` | 48.3 MB (4 lanes) |
-| after `unload()` | 48.3 MB (0 lanes) |
-| after `dispose()` + context close | 52.3 MB |
+| after eight lanes decode | 52.41 MB |
+| during playback | 52.42 MB |
+| after `unloadGroup('B')` | 52.44 MB (4 lanes) |
+| after `unload()` | 52.44 MB (0 lanes) |
+| after `dispose()` + context close | 52.45 MB |
+| after a forced GC | 52.29 MB |
 
-Desk accounting at load: **47.37 MiB decoded** (5.92 MiB per lane).
+Desk accounting at load: **51.56 MiB decoded**, **6.45 MiB per lane**. The
+earlier 47.37 MiB figure came from an `OfflineAudioContext` at 44.1 kHz; the
+same files decode larger at 48 kHz. The sample rate of the context, not the file
+header, decides the decoded size, so the duration a lane limit buys is not a
+single number:
 
-The 320 MiB ceiling was then reached deliberately with eight 118 s stereo
-44.1 kHz stems: **317.61 MiB decoded**, heap 318.3 MB, the desk accepted them,
-played, unloaded and disposed without an error. So the ceiling is reachable on
-this desktop rather than merely arithmetic.
+| Context rate | 40 MiB per-lane budget buys | 320 MiB desk budget buys |
+| --- | --- | --- |
+| 44.1 kHz | ≈118.9 s per lane | ≈951 s across eight lanes |
+| 48 kHz (Chromium real) | ≈109.2 s per lane | ≈873 s across eight lanes |
 
-Honest limits on that number: it is one headless Chromium on one 6 GB laptop.
-The browser did not visibly return decoded memory after `unload()` even with a
-forced GC — that is a browser-level retention observation, not a desk
-reference leak (the desk clears `_groups`, `_lanes` and `_decodedBytes`).
-Three consecutive load/unload cycles held flat at **52.3 MB**, so there is no
-per-cycle growth. Mobile was not profiled; the per-track 160 MiB and per-stem
-40 MiB ceilings bound each track independently of the total.
+**The guard was exercised at the ceiling and refused honestly.** Eight 118 s
+stereo stems were offered to a real `AudioContext`; the first lane decodes to
+45,312,000 bytes, above the 40 MiB per-lane ceiling, and the desk refused with
+`S_STEM_TOO_LONG` (“stem vocals decodes to 45312000 bytes; the desk holds at
+most 41943040 per stem”) without loading anything. So the ceiling is enforced
+per lane before a track can starve the desk, and the refusal is truthful rather
+than a crash.
+
+In an `OfflineAudioContext` at 44.1 kHz the full desk ceiling was reached
+deliberately: **317.61 MiB decoded**, heap 318.3 MB, accepted, played, unloaded
+and disposed without error. That number is a bound check of the total budget,
+not a claim that eight full-length lanes are comfortable in a real-time context.
+
+Reclamation is lazy in the browser: the heap did not visibly fall after
+`unload()` even with a forced GC. That is a browser-level observation, not a
+desk reference leak — the desk clears `_groups`, `_lanes` and `_decodedBytes`
+(unit-tested), and three consecutive load/unload cycles held flat at
+**52.3 MB** (`cycle-probe.json`), so there is no per-cycle growth. Mobile was
+not profiled; the per-track 160 MiB and per-stem 40 MiB ceilings bound each
+track independently of the total.
 
 ## 12. Negative control: the wrap defect and its repair
 
@@ -356,7 +382,7 @@ node tests/browser/run.js --viewport 390x844    # 39 checks, 5 failures
 node tests/browser/stem_desk_ux.js --viewport 1280x800     # pass
 node tests/browser/stem_desk_two_track_ux.js --viewport 1280x800  # 21/21
 node tests/browser/stem_desk_two_track_ux.js --viewport 390x844   # 21/21
-node tests/browser/stem_desk_two_track_audio.js            # 6/6
+node tests/browser/stem_desk_two_track_audio.js            # 7/7
 node tests/browser/stem_desk_two_track_real.js ...         # 8/8
 node tests/browser/stem_desk_audio.js                      # 8/8 (single-desk regression)
 node tests/browser/stem_desk_real_audio.js ...             # 15/15 (single-desk regression)
