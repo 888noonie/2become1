@@ -18,18 +18,22 @@ import { resolveChromium } from './chromium.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUNTIME = path.join(ROOT, 'src/twobecomeone/studio_static/js/runtime/stem-desk.js');
+const CROSSFADER = path.join(ROOT, 'src/twobecomeone/studio_static/js/runtime/crossfader.js');
 const outIndex = process.argv.indexOf('--out');
 const OUT = outIndex >= 0 && process.argv[outIndex + 1]
   ? path.resolve(process.argv[outIndex + 1])
   : path.join(ROOT, 'tests/browser/artifacts');
 
 const source = readFileSync(RUNTIME, 'utf8');
+const crossfaderSource = readFileSync(CROSSFADER, 'utf8');
 
 const browser = await chromium.launch({ executablePath: resolveChromium(), headless: true });
 try {
   const page = await browser.newPage();
-  const result = await page.evaluate(async (runtimeSource) => {
-    const moduleUrl = URL.createObjectURL(new Blob([runtimeSource], { type: 'text/javascript' }));
+  const result = await page.evaluate(async ({ runtimeSource, crossfaderSource }) => {
+    const crossfaderUrl = URL.createObjectURL(new Blob([crossfaderSource], { type: 'text/javascript' }));
+    const patched = runtimeSource.replace('./crossfader.js', crossfaderUrl);
+    const moduleUrl = URL.createObjectURL(new Blob([patched], { type: 'text/javascript' }));
     const { StemDesk } = await import(moduleUrl);
 
     const RATE = 44100;
@@ -118,7 +122,7 @@ try {
       stopped: await render({ stopImmediately: true }),
     };
     return { rate: RATE, seconds: SECONDS, amplitude: AMP, scenarios };
-  }, source);
+  }, { runtimeSource: source, crossfaderSource });
 
   const tolerance = (value, expected, relative = 0.2) => Math.abs(value - expected) <= expected * relative;
   const cases = [];

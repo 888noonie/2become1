@@ -1,29 +1,38 @@
 // js/runtime/stem-desk.js — Stem Performance Desk runtime.
 //
-// One track's separated stems, decoded once and started on one shared
-// AudioContext clock. Each stem owns a GainNode; mute, solo and gain are
-// applied on that node, so the mix law is testable without a sound card.
+// Two separated tracks (groups A and B), up to four stem lanes each, decoded
+// once and started on one shared AudioContext clock. Each lane owns a GainNode
+// fed into its group's GainNode, and both groups feed one master GainNode.
+// Mute, solo, lane gain and the A/B crossfader are therefore exact node values,
+// testable without a sound card.
 //
 // Design hard-lines:
 //   * no DOM, no fetch of its own; the caller injects both;
 //   * the desk never closes an AudioContext it did not create;
-//   * decoded PCM is bounded before it is kept, and refused with a truthful
-//     error rather than growing without limit;
+//   * decoded PCM is bounded per stem, per group and for the whole desk, and
+//     an over-budget group is refused without touching groups already loaded;
 //   * a stopped or unloaded desk disconnects every node it made.
 //
 // Sync model: every source is scheduled with the same `when` (one shared
 // context clock, one look-ahead offset), so stems cannot drift apart by
-// construction. `startedAt` is the context time that `when` refers to, and
-// `position()` is derived from the context clock, not from a media element.
+// construction. That is start alignment, not beat matching or tempo sync.
+// `startedAt` is the context time that `when` refers to, and `position()` is
+// derived from the context clock, not from a media element.
+
+import { equalPowerGains } from './crossfader.js';
 
 export const STEM_DESK_LIMITS = Object.freeze({
-  maxLanes: 4,
+  maxTracks: 2,
+  maxLanesPerTrack: 4,
+  maxLanes: 8,
   /** Per-stem fetch ceiling before decode (a 3:47 stereo 44.1 kHz WAV). */
   maxStemBytes: 40 * 1024 * 1024,
   /** Per-stem decoded PCM ceiling (same duration at 4 bytes/sample/channel). */
   maxStemDecodedBytes: 40 * 1024 * 1024,
-  /** Whole-desk decoded PCM ceiling for four stems. */
-  maxDecodedBytes: 160 * 1024 * 1024,
+  /** Decoded PCM ceiling for one four-lane group. */
+  maxTrackDecodedBytes: 160 * 1024 * 1024,
+  /** Whole-desk decoded PCM ceiling for two groups / eight lanes. */
+  maxDecodedBytes: 320 * 1024 * 1024,
   /** Look-ahead so `start(when)` lands in the future for every lane. */
   startLeadSeconds: 0.05,
   minGainDb: -60,
@@ -79,6 +88,44 @@ function assertName(name) {
   return name;
 }
 
+function normalizeGroup(group) {
+  const trackId = group?.trackId == null || group.trackId === ''
+    ? 'A'
+    : String(group.trackId);
+  const lanes = group?.lanes;
+  if (!Array.isArray(lanes) || lanes.length === 0) {
+    throw new StemDeskError('S_NO_STEMS', 'no stem lanes were supplied');
+  }
+  if (lanes.length > STEM_DESK_LIMITS.maxLanesPerTrack) {
+    throw new StemDeskError(
+      'S_TOO_MANY_STEMS',
+      `a stem group holds at most ${STEM_DESK_LIMITS.maxLanesPerTrack} stems`,
+    );
+  }
+  const names = new Set();
+  for (const lane of lanes) {
+    const name = assertName(lane?.name);
+    if (names.has(name)) throw new StemDeskError('S_DUPLICATE_STEM', `duplicate stem lane: ${name}`);
+    names.add(name);
+    if (typeof lane.audioUrl !== 'string' || !lane.audioUrl) {
+      throw new StemDeskError('S_NO_STEM_URL', `stem ${name} has no audio URL`);
+    }
+  }
+  return {
+    trackId,
+    title: String(group?.title || trackId),
+    lanes,
+  };
+}
+
+function budgetFailure(group, detail) {
+  return {
+    name: group.trackId,
+    code: 'S_DESK_FULL',
+    message: `group ${group.trackId} was refused: ${detail}`,
+  };
+}
+
 export class StemDesk {
   constructor({ audioContext, fetchImpl = null, now = null, ownsContext = false } = {}) {
     if (!audioContext) {
@@ -87,14 +134,17 @@ export class StemDesk {
     this._ctx = audioContext;
     this._fetch = fetchImpl;
     this._now = now || (() => this._ctx.currentTime);
+    this._groups = [];
     this._lanes = [];
     this._master = null;
     this._sources = [];
     this._status = 'idle';
     this._error = null;
     this._startedAt = null;
+    this._endAt = null;
     this._offset = 0;
-    this._loop = true;
+    this._loop = false;
+    this._crossfader = 50;
     this._ownsContext = Boolean(ownsContext);
     this._decodedBytes = 0;
   }
@@ -104,35 +154,125 @@ export class StemDesk {
   }
 
   /**
-   * Load up to four separated stems. Any lane that fails is reported as
-   * unavailable with its reason; the desk keeps whatever did load.
+   * Compatibility wrapper for the original four-lane desk. It replaces the
+   * whole desk with one group called A, exactly as the single-track desk did.
    */
-  async load(lanes, { signal } = {}) {
-    if (!Array.isArray(lanes) || lanes.length === 0) {
-      throw new StemDeskError('S_NO_STEMS', 'no stem lanes were supplied');
+  async load(lanes, options = {}) {
+    this.unload();
+    return this.loadGroups([{ trackId: 'A', lanes }], options);
+  }
+
+  /**
+   * Load or replace one or more groups without touching the others. A group
+   * that would exceed the lane or decoded-PCM budget is refused with
+   * S_DESK_FULL and the groups already loaded stay intact.
+   */
+  async loadGroups(groups, { signal } = {}) {
+    if (!Array.isArray(groups) || groups.length === 0) {
+      throw new StemDeskError('S_NO_STEMS', 'no stem groups were supplied');
     }
-    if (lanes.length > STEM_DESK_LIMITS.maxLanes) {
-      throw new StemDeskError('S_TOO_MANY_STEMS', `the stem desk holds at most ${STEM_DESK_LIMITS.maxLanes} stems`);
+    const seen = new Set();
+    const specs = groups.map((group) => {
+      const spec = normalizeGroup(group);
+      if (seen.has(spec.trackId)) {
+        throw new StemDeskError('S_DUPLICATE_TRACK', `duplicate stem group: ${spec.trackId}`);
+      }
+      seen.add(spec.trackId);
+      return spec;
+    });
+
+    const wasPlaying = this._status === 'playing';
+    const failures = [];
+    let changed = false;
+
+    for (const spec of specs) {
+      const outcome = await this._loadGroup(spec, signal);
+      failures.push(...outcome.failures);
+      if (outcome.committed) changed = true;
     }
-    const names = new Set();
-    for (const lane of lanes) {
-      const name = assertName(lane?.name);
-      if (names.has(name)) throw new StemDeskError('S_DUPLICATE_STEM', `duplicate stem lane: ${name}`);
-      names.add(name);
-      if (typeof lane.audioUrl !== 'string' || !lane.audioUrl) {
-        throw new StemDeskError('S_NO_STEM_URL', `stem ${name} has no audio URL`);
+
+    if (changed) {
+      if (wasPlaying) this._stopSources();
+      this._startedAt = null;
+      this._endAt = null;
+      this._offset = 0;
+      this._rebuildGraph();
+      if (wasPlaying) this._status = 'ready';
+    }
+
+    this._decodedBytes = this._groups.reduce(
+      (total, group) => total + group.lanes.reduce((sum, lane) => sum + lane.decodedBytes, 0),
+      0,
+    );
+
+    if (this._lanes.length === 0) {
+      this._status = failures.length ? 'unavailable' : 'idle';
+      this._error = failures[0] || null;
+    } else {
+      if (this._status !== 'playing') this._status = 'ready';
+      if (failures.length) {
+        const only = failures.length === 1 ? failures[0] : null;
+        this._error = only && only.code === 'S_DESK_FULL'
+          ? { code: 'S_DESK_FULL', message: only.message, failures }
+          : { code: 'S_STEM_PARTIAL', message: 'some stems are unavailable', failures };
+      } else {
+        this._error = null;
       }
     }
+    return this.state();
+  }
 
-    this.unload();
-    this._status = 'loading';
-    this._error = null;
+  async _loadGroup(spec, signal) {
+    const existing = this._group(spec.trackId);
+    const otherGroups = this._groups.filter((group) => group.trackId !== spec.trackId);
+    const existingBytes = existing
+      ? existing.lanes.reduce((sum, lane) => sum + lane.decodedBytes, 0)
+      : 0;
+    const existingLaneCount = existing ? existing.lanes.length : 0;
+    const projectedLanes = this._laneCount() - existingLaneCount + spec.lanes.length;
 
+    if (otherGroups.length + 1 > STEM_DESK_LIMITS.maxTracks) {
+      return {
+        committed: false,
+        failures: [budgetFailure(spec, `the desk holds at most ${STEM_DESK_LIMITS.maxTracks} tracks`)],
+      };
+    }
+    if (projectedLanes > STEM_DESK_LIMITS.maxLanes) {
+      return {
+        committed: false,
+        failures: [budgetFailure(spec, `the desk holds at most ${STEM_DESK_LIMITS.maxLanes} lanes`)],
+      };
+    }
+
+    const candidateBytes = this._decodedBytes - existingBytes;
     const loaded = [];
     const failures = [];
-    for (const lane of lanes) {
+    let groupBytes = 0;
+
+    for (const lane of spec.lanes) {
       try {
-        loaded.push(await this._loadLane(lane, signal));
+        const decoded = await this._decodeLane(lane, spec.trackId, signal);
+        const nextGroupBytes = groupBytes + decoded.decodedBytes;
+        if (nextGroupBytes > STEM_DESK_LIMITS.maxTrackDecodedBytes) {
+          return {
+            committed: false,
+            failures: [
+              ...failures,
+              budgetFailure(spec, `at most ${STEM_DESK_LIMITS.maxTrackDecodedBytes} decoded bytes per track`),
+            ],
+          };
+        }
+        if (candidateBytes + nextGroupBytes > STEM_DESK_LIMITS.maxDecodedBytes) {
+          return {
+            committed: false,
+            failures: [
+              ...failures,
+              budgetFailure(spec, `at most ${STEM_DESK_LIMITS.maxDecodedBytes} decoded bytes for the desk`),
+            ],
+          };
+        }
+        groupBytes = nextGroupBytes;
+        loaded.push(decoded);
       } catch (err) {
         failures.push({
           name: String(lane?.name ?? 'stem'),
@@ -142,19 +282,23 @@ export class StemDesk {
       }
     }
 
-    this._lanes = loaded;
-    this._rebuildGraph();
     if (loaded.length === 0) {
-      this._status = 'unavailable';
-      this._error = failures[0] || { code: 'S_STEM_UNAVAILABLE', message: 'no stem media loaded' };
-    } else {
-      this._status = 'ready';
-      this._error = failures.length ? { code: 'S_STEM_PARTIAL', message: 'some stems are unavailable', failures } : null;
+      return { committed: false, failures };
     }
-    return this.state();
+
+    const group = {
+      trackId: spec.trackId,
+      title: spec.title,
+      lanes: loaded,
+      node: null,
+    };
+    this._groups = [...otherGroups, group];
+    this._lanes = this._groups.flatMap((entry) => entry.lanes);
+    this._decodedBytes = candidateBytes + groupBytes;
+    return { committed: true, failures };
   }
 
-  async _loadLane(lane, signal) {
+  async _decodeLane(lane, trackId, signal) {
     const fetchImpl = this._fetch || (typeof fetch === 'function' ? fetch : null);
     if (!fetchImpl) throw new StemDeskError('S_NO_FETCH', 'no fetch implementation is available');
 
@@ -193,16 +337,11 @@ export class StemDesk {
         `stem ${lane.name} decodes to ${decodedBytes} bytes; the desk holds at most ${STEM_DESK_LIMITS.maxStemDecodedBytes} per stem`,
       );
     }
-    if (this._decodedBytes + decodedBytes > STEM_DESK_LIMITS.maxDecodedBytes) {
-      throw new StemDeskError(
-        'S_DESK_FULL',
-        `the stem desk holds at most ${STEM_DESK_LIMITS.maxDecodedBytes} decoded bytes`,
-      );
-    }
-    this._decodedBytes += decodedBytes;
     const measured = measureBuffer(buffer);
 
     return {
+      key: `${trackId}:${lane.name}`,
+      trackId,
       name: lane.name,
       label: lane.label || lane.name,
       method: lane.method || null,
@@ -228,11 +367,17 @@ export class StemDesk {
     this._master = this._ctx.createGain();
     this._master.gain.value = 1;
     this._master.connect(this._ctx.destination);
-    for (const lane of this._lanes) {
+    for (const group of this._groups) {
       const node = this._ctx.createGain();
-      node.gain.value = 1;
+      node.gain.value = this._groupGainValue(group);
       node.connect(this._master);
-      lane.node = node;
+      group.node = node;
+      for (const lane of group.lanes) {
+        const laneNode = this._ctx.createGain();
+        laneNode.gain.value = 1;
+        laneNode.connect(node);
+        lane.node = laneNode;
+      }
     }
     this._applyGains();
   }
@@ -244,6 +389,35 @@ export class StemDesk {
       const audible = anySolo ? lane.solo : !lane.muted;
       lane.node.gain.value = audible ? dbToLinear(lane.gainDb) : 0;
     }
+    for (const group of this._groups) {
+      if (group.node) group.node.gain.value = this._groupGainValue(group);
+    }
+  }
+
+  _groupGainValue(group) {
+    const ordered = this._orderedGroups();
+    if (!ordered.length) return 0;
+    if (ordered.length === 1) return 1;
+    const law = equalPowerGains(this._crossfader);
+    return ordered.indexOf(group) === 0 ? law.gainA : law.gainB;
+  }
+
+  _crossfaderState() {
+    const law = equalPowerGains(this._crossfader);
+    const ordered = this._orderedGroups();
+    if (ordered.length === 0) {
+      return { position: this._crossfader, gainA: 0, gainB: 0, disabled: true };
+    }
+    if (ordered.length === 1) {
+      const onlyB = ordered[0].trackId === 'B';
+      return {
+        position: this._crossfader,
+        gainA: onlyB ? 0 : 1,
+        gainB: onlyB ? 1 : 0,
+        disabled: true,
+      };
+    }
+    return { position: this._crossfader, gainA: law.gainA, gainB: law.gainB, disabled: false };
   }
 
   /**
@@ -268,7 +442,8 @@ export class StemDesk {
     return this.state();
   }
 
-  play({ loop = true, offset = 0 } = {}) {
+  play({ loop = false, offset = 0 } = {}) {
+    this._maybeEnd();
     if (this._status !== 'ready' && this._status !== 'playing') {
       throw new StemDeskError('S_NOT_READY', 'the stem desk is not ready to play');
     }
@@ -280,23 +455,42 @@ export class StemDesk {
     }
     this._stopSources();
     const duration = this._duration();
-    const safeOffset = duration > 0 ? Math.max(0, Math.min(offset, duration - 0.001)) : 0;
+    const requested = Number(offset);
+    const safeOffset = duration > 0
+      ? Math.max(0, Math.min(Number.isFinite(requested) ? requested : 0, duration - 0.001))
+      : 0;
     const when = this._now() + STEM_DESK_LIMITS.startLeadSeconds;
+    const endAt = loop ? null : when + Math.max(0, duration - safeOffset);
 
     for (const lane of this._lanes) {
+      // A lane shorter than the requested start offset contributes nothing;
+      // do not schedule a source that would start in the past.
+      if (safeOffset >= lane.durationSeconds) {
+        lane.source = null;
+        continue;
+      }
       const source = this._ctx.createBufferSource();
       source.buffer = lane.buffer;
       source.loop = loop;
       if (loop) {
+        // The whole buffer loops; there is deliberately no per-lane loopEnd,
+        // so lanes of different lengths never define separate loop points.
         source.loopStart = 0;
-        source.loopEnd = lane.durationSeconds;
       }
       source.connect(lane.node);
       source.start(when, safeOffset);
+      if (endAt !== null && typeof source.stop === 'function') {
+        try {
+          source.stop(endAt);
+        } catch {
+          // A source that cannot take an end time is still stopped on state().
+        }
+      }
       lane.source = source;
       this._sources.push(source);
     }
     this._startedAt = when;
+    this._endAt = endAt;
     this._offset = safeOffset;
     this._loop = loop;
     this._status = 'playing';
@@ -307,9 +501,21 @@ export class StemDesk {
   stop() {
     this._stopSources();
     this._startedAt = null;
+    this._endAt = null;
     this._offset = 0;
     if (this._status === 'playing') this._status = 'ready';
     return this.state();
+  }
+
+  _maybeEnd() {
+    if (this._status !== 'playing' || this._loop || this._startedAt === null) return false;
+    if (this._endAt === null || this._now() < this._endAt) return false;
+    this._stopSources();
+    this._startedAt = null;
+    this._endAt = null;
+    this._offset = 0;
+    this._status = 'ready';
+    return true;
   }
 
   _stopSources() {
@@ -340,6 +546,16 @@ export class StemDesk {
         lane.node = null;
       }
     }
+    for (const group of this._groups) {
+      if (group.node) {
+        try {
+          group.node.disconnect();
+        } catch {
+          // Already disconnected.
+        }
+        group.node = null;
+      }
+    }
     if (this._master) {
       try {
         this._master.disconnect();
@@ -353,7 +569,7 @@ export class StemDesk {
   setGain(name, db) {
     const lane = this._lane(name);
     const value = Number(db);
-    if (!Number.isFinite(value)) throw new StemDeskError('S_BAD_GAIN', `gain for ${name} must be a number`);
+    if (!Number.isFinite(value)) throw new StemDeskError('S_BAD_GAIN', `gain for ${lane.key} must be a number`);
     lane.gainDb = Math.max(STEM_DESK_LIMITS.minGainDb, Math.min(STEM_DESK_LIMITS.maxGainDb, value));
     this._applyGains();
     return this.state();
@@ -371,6 +587,17 @@ export class StemDesk {
     return this.state();
   }
 
+  /** Crossfade the two groups with the same equal-power law as LiveMixer. */
+  setCrossfader(position) {
+    const value = Number(position);
+    if (!Number.isFinite(value)) {
+      throw new StemDeskError('S_BAD_CROSSFADER', 'the crossfader must be a number from 0 to 100');
+    }
+    this._crossfader = Math.max(0, Math.min(100, value));
+    this._applyGains();
+    return this.state();
+  }
+
   /** True when the lane would be heard with the current mute/solo state. */
   audible(name) {
     const lane = this._lane(name);
@@ -383,9 +610,23 @@ export class StemDesk {
   }
 
   _lane(name) {
-    const lane = this._lanes.find((item) => item.name === name);
-    if (!lane) throw new StemDeskError('S_UNKNOWN_STEM', `no stem lane named ${String(name)}`);
+    const key = String(name);
+    let lane = this._lanes.find((item) => item.key === key);
+    if (!lane) lane = this._lanes.find((item) => item.name === key);
+    if (!lane) throw new StemDeskError('S_UNKNOWN_STEM', `no stem lane named ${key}`);
     return lane;
+  }
+
+  _group(trackId) {
+    return this._groups.find((group) => group.trackId === String(trackId));
+  }
+
+  _laneCount() {
+    return this._groups.reduce((total, group) => total + group.lanes.length, 0);
+  }
+
+  _orderedGroups() {
+    return [...this._groups].sort((a, b) => String(a.trackId).localeCompare(String(b.trackId)));
   }
 
   _duration() {
@@ -394,6 +635,7 @@ export class StemDesk {
 
   /** Desk position from the shared context clock; null when not playing. */
   position() {
+    this._maybeEnd();
     if (this._status !== 'playing' || this._startedAt === null) return 0;
     const elapsed = Math.max(0, this._now() - this._startedAt + this._offset);
     const duration = this._duration();
@@ -402,7 +644,10 @@ export class StemDesk {
   }
 
   state() {
+    this._maybeEnd();
     const duration = this._duration();
+    const anySolo = this._lanes.some((lane) => lane.solo);
+    const crossfader = this._crossfaderState();
     return Object.freeze({
       status: this._status,
       contextState: this._ctx?.state ?? 'unknown',
@@ -415,10 +660,21 @@ export class StemDesk {
         clock: 'audiocontext',
         startLeadSeconds: STEM_DESK_LIMITS.startLeadSeconds,
         // Every lane is started with the same `when`, so this is a claim about
-        // the schedule, not a measurement of speakers.
+        // the schedule, not a measurement of speakers, tempo or beat grid.
         scheduledTogether: this._status === 'playing',
+        beatMatched: false,
       },
+      crossfader,
+      groups: this._orderedGroups().map((group) => Object.freeze({
+        trackId: group.trackId,
+        title: group.title,
+        gain: this._groupGainValue(group),
+        laneCount: group.lanes.length,
+        laneKeys: group.lanes.map((lane) => lane.key),
+      })),
       lanes: this._lanes.map((lane) => Object.freeze({
+        key: lane.key,
+        trackId: lane.trackId,
         name: lane.name,
         label: lane.label,
         method: lane.method,
@@ -428,24 +684,50 @@ export class StemDesk {
         gainDb: lane.gainDb,
         muted: lane.muted,
         solo: lane.solo,
-        audible: this.audible(lane.name),
+        audible: anySolo ? lane.solo : !lane.muted,
         rmsDb: lane.rmsDb,
         peakDb: lane.peakDb,
         silent: lane.silent,
-        effectiveGain: (this._lanes.some((item) => item.solo) ? lane.solo : !lane.muted)
+        effectiveGain: (anySolo ? lane.solo : !lane.muted)
           ? dbToLinear(lane.gainDb)
           : 0,
       })),
     });
   }
 
+  /** Free one group without disturbing the other group's decoded audio. */
+  unloadGroup(trackId) {
+    const id = String(trackId);
+    if (!this._group(id)) return this.state();
+    if (this._status === 'playing') {
+      this._stopSources();
+      this._startedAt = null;
+      this._endAt = null;
+      this._offset = 0;
+      this._status = 'ready';
+    }
+    this._groups = this._groups.filter((group) => group.trackId !== id);
+    this._lanes = this._groups.flatMap((group) => group.lanes);
+    this._decodedBytes = this._groups.reduce(
+      (total, group) => total + group.lanes.reduce((sum, lane) => sum + lane.decodedBytes, 0),
+      0,
+    );
+    this._rebuildGraph();
+    if (this._lanes.length === 0) this._status = 'idle';
+    else if (this._status !== 'playing') this._status = 'ready';
+    this._error = null;
+    return this.state();
+  }
+
   /** Drop decoded audio and nodes; the desk can be loaded again. */
   unload() {
     this._stopSources();
     this._teardownNodes();
+    this._groups = [];
     this._lanes = [];
     this._decodedBytes = 0;
     this._startedAt = null;
+    this._endAt = null;
     this._offset = 0;
     this._status = 'idle';
     this._error = null;

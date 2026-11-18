@@ -23,6 +23,7 @@ import { resolveChromium } from './chromium.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUNTIME = path.join(ROOT, 'src', 'twobecomeone', 'studio_static', 'js', 'runtime', 'stem-desk.js');
+const CROSSFADER = path.join(ROOT, 'src', 'twobecomeone', 'studio_static', 'js', 'runtime', 'crossfader.js');
 const NAMES = ['vocals', 'drums', 'bass', 'other'];
 
 const value = (flag, fallback = null) => {
@@ -64,12 +65,15 @@ const server = http.createServer((req, res) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const source = readFileSync(RUNTIME, 'utf8');
+const crossfaderSource = readFileSync(CROSSFADER, 'utf8');
 
 const browser = await chromium.launch({ executablePath: resolveChromium(), headless: true });
 try {
   const page = await browser.newPage();
-  const result = await page.evaluate(async ({ runtimeSource, baseUrl, names }) => {
-    const moduleUrl = URL.createObjectURL(new Blob([runtimeSource], { type: 'text/javascript' }));
+  const result = await page.evaluate(async ({ runtimeSource, crossfaderSource, baseUrl, names }) => {
+    const crossfaderUrl = URL.createObjectURL(new Blob([crossfaderSource], { type: 'text/javascript' }));
+    const patched = runtimeSource.replace('./crossfader.js', crossfaderUrl);
+    const moduleUrl = URL.createObjectURL(new Blob([patched], { type: 'text/javascript' }));
     const { StemDesk, STEM_DESK_LIMITS } = await import(moduleUrl);
     const RATE = 44100;
     const checks = [];
@@ -196,7 +200,7 @@ try {
       },
       checks,
     };
-  }, { runtimeSource: source, baseUrl: base, names: NAMES });
+  }, { runtimeSource: source, crossfaderSource, baseUrl: base, names: NAMES });
 
   mkdirSync(outDir, { recursive: true });
   writeFileSync(path.join(outDir, 'stem-desk-real-audio.json'), JSON.stringify(result, null, 2));

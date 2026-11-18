@@ -1,18 +1,21 @@
 // components/stem-desk-panel.js — Stem Performance Desk.
 //
-// One separated track, up to four stem lanes, one transport. Lanes are
-// decoded by stem-desk.js and started together on a single AudioContext, so
-// mute/solo/gain are exact gain-node values rather than UI-only state.
+// Two separated tracks (groups A and B), up to four stem lanes each, one
+// transport and one equal-power crossfader. Lanes are decoded by stem-desk.js
+// and started together on a single AudioContext, so mute/solo/gain are exact
+// gain-node values rather than UI-only state.
 //
-// Bounded by design: the panel loads one track on demand, aborts a stale
-// request, and disposes its desk (and its own AudioContext) on unmount. It
-// reuses existing stem endpoints; it never writes a stem, project or render.
+// Bounded by design: the panel loads each group on demand, aborts a stale
+// request for that group, and disposes its desk (and its own AudioContext) on
+// unmount. It reuses existing read-only stem endpoints; it never writes a
+// stem, project or render.
 
 import { createElement, replaceChildren } from '../dom.js';
 import { listTracks, listStems } from '../api.js';
 import { StemDesk, STEM_DESK_LIMITS } from '../runtime/stem-desk.js';
 
 const STEM_ORDER = ['vocals', 'drums', 'bass', 'other', 'center', 'sides'];
+const GROUP_IDS = ['A', 'B'];
 const FALLBACK_NOTE = 'Fallback split: center and sides are channel separations, not isolated vocals or instruments.';
 
 function sortLanes(variants) {
@@ -26,7 +29,7 @@ function sortLanes(variants) {
 /**
  * A track can legitimately have both a Demucs set and an ffmpeg fallback set.
  * Prefer the four isolated Demucs stems; only fall back to other variants when
- * no Demucs lane exists, and never exceed the desk's four lanes.
+ * no Demucs lane exists, and never exceed the per-track lane limit.
  */
 function selectLanes(variants) {
   const usable = variants.filter((variant) => variant && variant.name && variant.name !== 'full');
@@ -34,7 +37,7 @@ function selectLanes(variants) {
   const demucs = ['vocals', 'drums', 'bass', 'other']
     .filter((name) => byName.has(name))
     .map((name) => byName.get(name));
-  const chosen = demucs.length ? demucs : usable.slice(0, STEM_DESK_LIMITS.maxLanes);
+  const chosen = demucs.length ? demucs : usable.slice(0, STEM_DESK_LIMITS.maxLanesPerTrack);
   return sortLanes(chosen);
 }
 
@@ -59,6 +62,10 @@ function provenanceLabel(variant) {
   return variant.device ? `${method} · ${variant.device}` : method;
 }
 
+function groupLabel(trackId) {
+  return String(trackId);
+}
+
 export function mountStemDeskPanel({
   container,
   listTracksImpl = listTracks,
@@ -74,34 +81,72 @@ export function mountStemDeskPanel({
     'aria-label': 'Stem Performance Desk',
   });
   const title = createElement('h2', { class: 'stem-desk__title', text: 'Stem Performance Desk' });
-  const status = createElement('p', { class: 'stem-desk__status', role: 'status', text: 'Choose a separated track.' });
-  const trackSelect = createElement('select', { class: 'stem-desk__select', 'aria-label': 'Track with separated stems' }, [
-    createElement('option', { value: '', text: 'Choose a track…' }),
-  ]);
-  const loadButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Load stems' });
+  const status = createElement('p', { class: 'stem-desk__status', role: 'status', text: 'Choose separated tracks for group A and group B.' });
+  const groupControls = createElement('div', { class: 'stem-desk__groups' });
+  const groupSelects = {};
+  const groupButtons = {};
+  for (const groupId of GROUP_IDS) {
+    const select = createElement('select', {
+      class: 'stem-desk__select',
+      'aria-label': `Track for group ${groupId}`,
+    }, [createElement('option', { value: '', text: 'Choose a track…' })]);
+    const loadButton = createElement('button', {
+      class: 'button button--sm stem-desk__load',
+      type: 'button',
+      text: `Load ${groupId}`,
+      'aria-label': `Load stems ${groupId}`,
+      dataset: { group: groupId },
+    });
+    const row = createElement('div', { class: 'stem-desk__group-controls', dataset: { group: groupId } }, [
+      createElement('span', { class: 'stem-desk__group-label', text: `Group ${groupId}` }),
+      select,
+      loadButton,
+    ]);
+    groupSelects[groupId] = select;
+    groupButtons[groupId] = loadButton;
+    groupControls.appendChild(row);
+  }
   const playButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Play', disabled: 'true' });
   const stopButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Stop', disabled: 'true' });
   const positionLabel = createElement('span', { class: 'stem-desk__meta', text: '0.0 s' });
-  const transport = createElement('div', { class: 'stem-desk__actions' }, [playButton, stopButton, positionLabel]);
-  const lanesMount = createElement('div', {});
+  const transport = createElement('div', { class: 'stem-desk__actions stem-desk__transport' }, [playButton, stopButton, positionLabel]);
+  const crossfaderInput = createElement('input', {
+    type: 'range',
+    min: '0',
+    max: '100',
+    step: '1',
+    value: '50',
+    class: 'stem-desk__crossfader',
+    'aria-label': 'Crossfader A to B',
+  });
+  const crossfaderGains = createElement('span', { class: 'stem-desk__meta stem-desk__crossfader-gains', text: 'gainA 1.00 · gainB 0.00' });
+  const crossfader = createElement('div', { class: 'stem-desk__crossfader-row' }, [
+    createElement('span', { class: 'stem-desk__group-label', text: 'A / B' }),
+    crossfaderInput,
+    crossfaderGains,
+  ]);
+  const lanesMount = createElement('div', { class: 'stem-desk__lanes' });
   const note = createElement('p', { class: 'stem-desk__note', hidden: 'true' });
 
   container.replaceChildren(root);
   replaceChildren(root, [
     title,
-    createElement('div', { class: 'stem-desk__toolbar' }, [trackSelect, loadButton]),
+    groupControls,
     status,
     transport,
+    crossfader,
     lanesMount,
     note,
   ]);
 
   let desk = null;
-  let abort = null;
+  const aborts = new Map();
   let positionTimer = null;
   let disposed = false;
   let tracksLoaded = false;
   let tracksPending = null;
+  const rowViews = new Map();
+  const groupViews = new Map();
 
   function say(message) {
     status.textContent = message;
@@ -116,101 +161,189 @@ export function mountStemDeskPanel({
     return desk;
   }
 
+  function trackTitle(trackId) {
+    for (const groupId of GROUP_IDS) {
+      const select = groupSelects[groupId];
+      if (select.value !== trackId) continue;
+      const option = [...select.options].find((entry) => entry.value === trackId);
+      if (option) return option.textContent;
+    }
+    const option = [...groupSelects.A.options].find((entry) => entry.value === trackId);
+    return option ? option.textContent : trackId;
+  }
+
+  function createRowView(key) {
+    const nameEl = createElement('div', { class: 'stem-desk__name' });
+    const metaEl = createElement('div', { class: 'stem-desk__meta' });
+    const silentEl = createElement('div', { class: 'stem-desk__meta stem-desk__silent' });
+    const mute = createElement('button', {
+      class: 'button button--sm',
+      type: 'button',
+      text: 'M',
+    });
+    const solo = createElement('button', {
+      class: 'button button--sm',
+      type: 'button',
+      text: 'S',
+    });
+    const gain = createElement('input', {
+      type: 'range',
+      min: String(STEM_DESK_LIMITS.minGainDb),
+      max: String(STEM_DESK_LIMITS.maxGainDb),
+      step: '1',
+      value: '0',
+    });
+    const gainText = createElement('span', { class: 'stem-desk__meta', text: '0 dB' });
+    const row = createElement('div', { class: 'stem-desk__row', dataset: { key } }, [
+      createElement('div', {}, [nameEl, metaEl, silentEl]),
+      createElement('div', { class: 'stem-desk__actions' }, [mute, solo, gain, gainText]),
+    ]);
+    const view = { key, row, nameEl, metaEl, silentEl, mute, solo, gain, gainText, lane: null };
+
+    mute.addEventListener('click', () => {
+      if (!view.lane) return;
+      const label = `${groupLabel(view.lane.trackId)} · ${stemLabel(view.lane.name)}`;
+      const next = !view.lane.muted;
+      const nextState = desk.setMuted(view.lane.key, next);
+      say(`${label} ${next ? 'muted' : 'unmuted'}.`);
+      renderLanes(nextState);
+    });
+    solo.addEventListener('click', () => {
+      if (!view.lane) return;
+      const label = `${groupLabel(view.lane.trackId)} · ${stemLabel(view.lane.name)}`;
+      const next = !view.lane.solo;
+      const nextState = desk.setSolo(view.lane.key, next);
+      const stateLane = nextState.lanes.find((entry) => entry.key === view.lane.key);
+      const silentNote = next && stateLane?.silent
+        ? ' This stem is effectively silent in this separation.'
+        : '';
+      say(`${next ? 'Solo' : 'Solo released for'} ${label}.${silentNote}`);
+      renderLanes(nextState);
+    });
+    gain.addEventListener('input', (event) => {
+      if (!view.lane) return;
+      const nextState = desk.setGain(view.lane.key, event.target.value);
+      const stateLane = nextState.lanes.find((entry) => entry.key === view.key);
+      if (stateLane) view.lane = stateLane;
+      // The row itself is deliberately not rebuilt: only its own readout and
+      // live gain-node state change while the user drags.
+      gainText.textContent = `${event.target.value} dB`;
+    });
+
+    rowViews.set(key, view);
+    return view;
+  }
+
+  function updateRowView(view, lane) {
+    view.lane = lane;
+    const label = `${groupLabel(lane.trackId)} · ${stemLabel(lane.name)}`;
+    view.nameEl.textContent = stemLabel(lane.name);
+    view.metaEl.textContent = provenanceLabel(lane);
+    view.silentEl.textContent = lane.silent ? 'effectively silent in this separation' : '';
+    view.silentEl.hidden = !lane.silent;
+    view.mute.setAttribute('aria-label', `Mute ${label}`);
+    view.mute.setAttribute('aria-pressed', lane.muted ? 'true' : 'false');
+    view.solo.setAttribute('aria-label', `Solo ${label}`);
+    view.solo.setAttribute('aria-pressed', lane.solo ? 'true' : 'false');
+    view.gain.setAttribute('aria-label', `${label} gain`);
+    view.gain.value = String(lane.gainDb);
+    view.gainText.textContent = `${lane.gainDb} dB`;
+  }
+
   function renderLanes(state) {
     const lanes = state?.lanes || [];
-    if (!lanes.length) {
-      replaceChildren(lanesMount, []);
-      return;
-    }
+    const groups = state?.groups || [];
     const anyFallback = lanes.some((lane) => lane.name === 'center' || lane.name === 'sides');
     note.hidden = !anyFallback;
     note.textContent = anyFallback ? FALLBACK_NOTE : '';
-    replaceChildren(lanesMount, lanes.map((lane) => {
-      const mute = createElement('button', {
-        class: 'button button--sm',
-        type: 'button',
-        text: 'M',
-        'aria-label': `Mute ${stemLabel(lane.name)}`,
-        'aria-pressed': lane.muted ? 'true' : 'false',
-      });
-      const solo = createElement('button', {
-        class: 'button button--sm',
-        type: 'button',
-        text: 'S',
-        'aria-label': `Solo ${stemLabel(lane.name)}`,
-        'aria-pressed': lane.solo ? 'true' : 'false',
-      });
-      const gain = createElement('input', {
-        type: 'range',
-        min: String(STEM_DESK_LIMITS.minGainDb),
-        max: String(STEM_DESK_LIMITS.maxGainDb),
-        step: '1',
-        value: String(lane.gainDb),
-        'aria-label': `${stemLabel(lane.name)} gain`,
-      });
-      const gainText = createElement('span', { class: 'stem-desk__meta', text: `${lane.gainDb} dB` });
 
-      mute.addEventListener('click', () => {
-        const next = !lane.muted;
-        const nextState = desk.setMuted(lane.name, next);
-        say(`${stemLabel(lane.name)} ${next ? 'muted' : 'unmuted'}.`);
-        renderLanes(nextState);
-      });
-      solo.addEventListener('click', () => {
-        const next = !lane.solo;
-        const nextState = desk.setSolo(lane.name, next);
-        const stateLane = nextState.lanes.find((entry) => entry.name === lane.name);
-        const silentNote = next && stateLane?.silent
-          ? ' This stem is effectively silent in this separation.'
-          : '';
-        say(`${next ? 'Solo' : 'Solo released for'} ${stemLabel(lane.name)}.${silentNote}`);
-        renderLanes(nextState);
-      });
-      gain.addEventListener('input', (event) => {
-        const nextState = desk.setGain(lane.name, event.target.value);
-        gainText.textContent = `${event.target.value} dB`;
-        renderLanes(nextState);
-      });
+    const liveGroupIds = new Set(groups.map((group) => group.trackId));
+    for (const [groupId, view] of groupViews) {
+      if (!liveGroupIds.has(groupId)) {
+        view.section.remove();
+        groupViews.delete(groupId);
+      }
+    }
 
-      return createElement('div', { class: 'stem-desk__row' }, [
-        createElement('div', {}, [
-          createElement('div', { class: 'stem-desk__name', text: stemLabel(lane.name) }),
-          createElement('div', { class: 'stem-desk__meta', text: provenanceLabel(lane) }),
-          ...(lane.silent
-            ? [createElement('div', {
-              class: 'stem-desk__meta stem-desk__silent',
-              text: 'effectively silent in this separation',
-            })]
-            : []),
-        ]),
-        createElement('div', { class: 'stem-desk__actions' }, [mute, solo, gain, gainText]),
-      ]);
-    }));
+    for (const group of groups) {
+      let view = groupViews.get(group.trackId);
+      if (!view) {
+        const heading = createElement('h3', { class: 'stem-desk__group-title' });
+        const rows = createElement('div', { class: 'stem-desk__group-rows' });
+        const section = createElement('section', {
+          class: 'stem-desk__group',
+          dataset: { group: group.trackId },
+        }, [heading, rows]);
+        view = { section, heading, rows };
+        groupViews.set(group.trackId, view);
+        lanesMount.appendChild(section);
+      }
+      view.heading.textContent = `Group ${group.trackId} · ${group.title}`;
+      const groupLanes = lanes.filter((lane) => lane.trackId === group.trackId);
+      const rows = groupLanes.map((lane) => {
+        const rowView = rowViews.get(lane.key) || createRowView(lane.key);
+        updateRowView(rowView, lane);
+        return rowView.row;
+      });
+      // replaceChildren moves the existing row nodes instead of recreating
+      // them, so a gain drag keeps the same element and focus.
+      replaceChildren(view.rows, rows);
+    }
+
+    const liveKeys = new Set(lanes.map((lane) => lane.key));
+    for (const [key, view] of rowViews) {
+      if (!liveKeys.has(key)) {
+        view.row.remove();
+        rowViews.delete(key);
+      }
+    }
   }
 
-  function refreshTransport() {
-    const state = desk?.state();
+  function updateCrossfader(state) {
+    const value = state?.crossfader || { position: 50, gainA: 0, gainB: 0, disabled: true };
+    crossfaderInput.value = String(value.position);
+    crossfaderInput.disabled = Boolean(value.disabled);
+    crossfaderGains.textContent = `gainA ${value.gainA.toFixed(2)} · gainB ${value.gainB.toFixed(2)}`;
+    crossfaderInput.setAttribute(
+      'aria-valuetext',
+      `gainA ${value.gainA.toFixed(2)}, gainB ${value.gainB.toFixed(2)}`,
+    );
+  }
+
+  function refreshTransport(state = desk?.state()) {
     const playing = state?.status === 'playing';
-    playButton.disabled = !state || (!playing && state.status !== 'ready') ? 'true' : undefined;
+    const hasLanes = Boolean(state?.lanes?.length);
+    playButton.disabled = !hasLanes || (!playing && state.status !== 'ready') ? 'true' : undefined;
     stopButton.disabled = playing ? undefined : 'true';
     playButton.textContent = playing ? 'Restart' : 'Play';
     if (!playing) positionLabel.textContent = '0.0 s';
+    if (state) updateCrossfader(state);
   }
 
   function startPositionTimer() {
     window.clearInterval(positionTimer);
     positionTimer = window.setInterval(() => {
       if (!desk) return;
-      positionLabel.textContent = `${desk.position().toFixed(1)} s`;
+      const state = desk.state();
+      if (state.status !== 'playing') {
+        window.clearInterval(positionTimer);
+        positionTimer = null;
+        positionLabel.textContent = '0.0 s';
+        refreshTransport(state);
+        renderLanes(state);
+        if (state.status === 'ready') say('The stem desk reached the end.');
+        return;
+      }
+      positionLabel.textContent = `${state.positionSeconds.toFixed(1)} s`;
     }, 200);
   }
 
   playButton.addEventListener('click', async () => {
     try {
       const before = await desk.resume();
-      const state = desk.play({ loop: true });
+      const state = desk.play({ loop: false });
       renderLanes(state);
-      refreshTransport();
+      refreshTransport(state);
       startPositionTimer();
       if (before.contextState && before.contextState !== 'running' && before.contextState !== 'unknown') {
         say('The browser is still blocking audio. Press Play again to allow sound.');
@@ -229,8 +362,15 @@ export function mountStemDeskPanel({
     const state = desk.stop();
     renderLanes(state);
     positionLabel.textContent = '0.0 s';
-    refreshTransport();
+    refreshTransport(state);
     say('Stem desk stopped.');
+  });
+
+  crossfaderInput.addEventListener('input', (event) => {
+    if (!desk) return;
+    const state = desk.setCrossfader(event.target.value);
+    updateCrossfader(state);
+    say(`Crossfader A ${state.crossfader.gainA.toFixed(2)} / B ${state.crossfader.gainB.toFixed(2)}.`);
   });
 
   // Fetched on demand, never on mount: mounting the Studio must not add a
@@ -241,21 +381,29 @@ export function mountStemDeskPanel({
     tracksPending = (async () => {
       try {
         const page = await listTracksImpl({ limit: 50 });
-      const tracks = Array.isArray(page?.items)
-        ? page.items
-        : Array.isArray(page?.tracks)
-          ? page.tracks
-          : (Array.isArray(page) ? page : []);
-      const options = tracks.map((track) => createElement('option', {
-        value: track.id,
-        text: track.title || track.name || track.originalName || track.id,
-      }));
-        replaceChildren(trackSelect, options.length
-          ? options
-          : [createElement('option', { value: '', text: 'No tracks in the library' })]);
-        trackSelect.disabled = options.length === 0 ? 'true' : undefined;
+        const tracks = Array.isArray(page?.items)
+          ? page.items
+          : Array.isArray(page?.tracks)
+            ? page.tracks
+            : (Array.isArray(page) ? page : []);
+        const options = tracks.map((track) => createElement('option', {
+          value: track.id,
+          text: track.title || track.name || track.originalName || track.id,
+        }));
+        for (const groupId of GROUP_IDS) {
+          const select = groupSelects[groupId];
+          const previous = select.value;
+          replaceChildren(select, options.length
+            ? options.map((option) => option.cloneNode(true))
+            : [createElement('option', { value: '', text: 'No tracks in the library' })]);
+          select.disabled = options.length === 0 ? 'true' : undefined;
+          if (previous && options.some((option) => option.value === previous)) select.value = previous;
+          else if (options.length) select.value = options[0].value;
+        }
         tracksLoaded = options.length > 0;
-        say(options.length ? 'Choose a separated track, then load its stems.' : 'No tracks are available.');
+        say(options.length
+          ? 'Choose separated tracks for A and B, then load each group.'
+          : 'No tracks are available.');
         return options.length > 0;
       } catch (err) {
         say(`Could not list tracks: ${err?.message || 'request failed'}`);
@@ -267,69 +415,85 @@ export function mountStemDeskPanel({
     return tracksPending;
   }
 
-  trackSelect.addEventListener('focus', () => { void ensureTracks(); });
-  trackSelect.addEventListener('pointerdown', () => { void ensureTracks(); });
+  for (const groupId of GROUP_IDS) {
+    const select = groupSelects[groupId];
+    select.addEventListener('focus', () => { void ensureTracks(); });
+    select.addEventListener('pointerdown', () => { void ensureTracks(); });
 
-  loadButton.addEventListener('click', async () => {
-    if (!tracksLoaded) await ensureTracks();
-    const trackId = trackSelect.value;
-    if (!trackId) {
-      say('Choose a track first.');
-      return;
-    }
-    abort?.abort();
-    abort = typeof AbortController === 'function' ? new AbortController() : null;
-    loadButton.disabled = 'true';
-    say('Loading separated stems...');
-    try {
-      const stems = await listStemsImpl(trackId, abort?.signal);
-      if (disposed) return;
-      const variants = Array.isArray(stems?.variants) ? stems.variants : [];
-      const lanes = selectLanes(variants);
-      if (!lanes.length) {
-        replaceChildren(lanesMount, []);
-        refreshTransport();
-        say('This track has no separated stems yet. Separate it in the Stem dialog first.');
+    groupButtons[groupId].addEventListener('click', async () => {
+      if (!tracksLoaded) await ensureTracks();
+      const trackId = select.value;
+      if (!trackId) {
+        say(`Choose a track for group ${groupId} first.`);
         return;
       }
-      const state = await ensureDesk().load(lanes.map((variant) => ({
-        name: variant.name,
-        label: stemLabel(variant.name),
-        audioUrl: variant.audio_url,
-        method: variant.method,
-        modelName: variant.model_name,
-        device: variant.device,
-      })), { signal: abort?.signal });
-      if (disposed) return;
-      renderLanes(state);
-      refreshTransport();
-      if (state.status === 'unavailable') {
-        say(`Stems unavailable: ${state.error?.message || 'no playable media'}`);
-      } else if (state.error?.code === 'S_STEM_PARTIAL') {
-        const missing = (state.error.failures || []).map((entry) => entry.name).join(', ');
-        say(`Loaded ${state.lanes.length} stems. Unavailable: ${missing || 'some stems'}.`);
-      } else {
-        const silent = state.lanes
-          .filter((entry) => entry.silent)
-          .map((entry) => stemLabel(entry.name));
-        say(
-          silent.length
-            ? `Loaded ${state.lanes.length} separated stems. ${silent.join(', ')} ` +
-              `${silent.length === 1 ? 'is' : 'are'} effectively silent in this separation.`
-            : `Loaded ${state.lanes.length} separated stems on one transport.`,
-        );
+      aborts.get(groupId)?.abort();
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      if (controller) aborts.set(groupId, controller);
+      const button = groupButtons[groupId];
+      button.disabled = 'true';
+      say(`Loading separated stems for group ${groupId}...`);
+      try {
+        const stems = await listStemsImpl(trackId, controller?.signal);
+        if (disposed) return;
+        const variants = Array.isArray(stems?.variants) ? stems.variants : [];
+        const lanes = selectLanes(variants);
+        if (!lanes.length) {
+          refreshTransport();
+          say(`Group ${groupId}: this track has no separated stems yet. Separate it in the Stem dialog first.`);
+          return;
+        }
+        const state = await ensureDesk().loadGroups([{
+          trackId: groupId,
+          title: trackTitle(trackId),
+          lanes: lanes.map((variant) => ({
+            name: variant.name,
+            label: stemLabel(variant.name),
+            audioUrl: variant.audio_url,
+            method: variant.method,
+            modelName: variant.model_name,
+            device: variant.device,
+          })),
+        }], { signal: controller?.signal });
+        if (disposed) return;
+        renderLanes(state);
+        refreshTransport(state);
+        const groupLanes = state.lanes.filter((entry) => entry.trackId === groupId);
+        if (!groupLanes.length) {
+          say(`Group ${groupId} was refused: ${state.error?.message || 'no playable media'}`);
+        } else if (state.error?.code === 'S_DESK_FULL') {
+          say(`Group ${groupId} was refused by the memory budget. The other group is unchanged.`);
+        } else if (state.error?.code === 'S_STEM_PARTIAL') {
+          const missing = (state.error.failures || [])
+            .filter((entry) => entry.name !== groupId)
+            .map((entry) => entry.name)
+            .join(', ');
+          say(`Loaded ${groupLanes.length} stems into group ${groupId}. Unavailable: ${missing || 'some stems'}.`);
+        } else {
+          const silent = groupLanes
+            .filter((entry) => entry.silent)
+            .map((entry) => stemLabel(entry.name));
+          say(
+            silent.length
+              ? `Loaded ${groupLanes.length} stems into group ${groupId}. ${silent.join(', ')} ` +
+                `${silent.length === 1 ? 'is' : 'are'} effectively silent in this separation.`
+              : `Loaded ${groupLanes.length} stems into group ${groupId} on one transport.`,
+          );
+        }
+      } catch (err) {
+        say(`Could not load group ${groupId}: ${err?.message || 'request failed'}`);
+      } finally {
+        if (!controller || aborts.get(groupId) === controller) aborts.delete(groupId);
+        button.disabled = undefined;
       }
-    } catch (err) {
-      say(`Could not load stems: ${err?.message || 'request failed'}`);
-    } finally {
-      loadButton.disabled = undefined;
-    }
-  });
+    });
+  }
 
   return function dispose() {
     if (disposed) return;
     disposed = true;
-    abort?.abort();
+    for (const controller of aborts.values()) controller.abort();
+    aborts.clear();
     window.clearInterval(positionTimer);
     positionTimer = null;
     desk?.dispose();

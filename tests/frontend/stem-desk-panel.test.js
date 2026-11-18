@@ -20,41 +20,100 @@ function variant(name, overrides = {}) {
   };
 }
 
-/** A desk stand-in that applies the same mute/solo/gain law the runtime owns. */
+function equalPower(position) {
+  const angle = Math.max(0, Math.min(100, Number(position))) * Math.PI / 200;
+  return { gainA: Math.cos(angle), gainB: Math.sin(angle) };
+}
+
+/** A desk stand-in that applies the same two-group mute/solo/gain law as the runtime. */
 class FakeDesk {
   constructor() {
     this.calls = [];
     this.disposed = false;
-    this.lanes = [];
+    this.groups = [];
     this.silentNames = [];
     this.status = 'idle';
     this.position = 0;
+    this.crossfaderPosition = 50;
+    this.error = null;
+  }
+
+  setLanes(trackId, title, lanes) {
+    return {
+      trackId,
+      title,
+      lanes: lanes.map((lane) => ({
+        ...lane,
+        key: `${trackId}:${lane.name}`,
+        trackId,
+        gainDb: 0,
+        muted: false,
+        solo: false,
+        silent: this.silentNames.includes(lane.name),
+        rmsDb: this.silentNames.includes(lane.name) ? -68 : -24,
+      })),
+    };
   }
 
   async load(lanes) {
     this.calls.push(['load', lanes.map((lane) => lane.name)]);
-    this.lanes = lanes.map((lane) => ({
-      ...lane,
-      gainDb: 0,
-      muted: false,
-      solo: false,
-      silent: this.silentNames.includes(lane.name),
-      rmsDb: this.silentNames.includes(lane.name) ? -68 : -24,
-    }));
-    this.status = 'ready';
+    this.groups = [];
+    return this.loadGroups([{ trackId: 'A', title: 'Load', lanes }]);
+  }
+
+  async loadGroups(groups) {
+    for (const group of groups) {
+      const trackId = group.trackId || 'A';
+      const title = group.title || trackId;
+      this.calls.push(['loadGroups', trackId, group.lanes.map((lane) => lane.name)]);
+      const next = this.setLanes(trackId, title, group.lanes);
+      const index = this.groups.findIndex((entry) => entry.trackId === trackId);
+      if (index >= 0) this.groups[index] = next;
+      else this.groups.push(next);
+    }
+    this.status = this.groups.length ? 'ready' : 'unavailable';
+    this.error = null;
     return this.state();
   }
 
+  crossfader() {
+    if (!this.groups.length) return { position: this.crossfaderPosition, gainA: 0, gainB: 0, disabled: true };
+    if (this.groups.length === 1) {
+      const onlyB = this.groups[0].trackId === 'B';
+      return {
+        position: this.crossfaderPosition,
+        gainA: onlyB ? 0 : 1,
+        gainB: onlyB ? 1 : 0,
+        disabled: true,
+      };
+    }
+    const law = equalPower(this.crossfaderPosition);
+    return { position: this.crossfaderPosition, gainA: law.gainA, gainB: law.gainB, disabled: false };
+  }
+
   state() {
-    const anySolo = this.lanes.some((lane) => lane.solo);
+    const lanes = this.groups.flatMap((group) => group.lanes);
+    const anySolo = lanes.some((lane) => lane.solo);
+    const crossfader = this.crossfader();
     return {
       status: this.status,
       contextState: this.contextState || 'running',
-      error: null,
+      error: this.error,
       playing: this.status === 'playing',
+      loop: false,
       positionSeconds: this.position,
       durationSeconds: 12,
-      lanes: this.lanes.map((lane) => ({
+      crossfader,
+      groups: this.groups.map((group, index) => ({
+        trackId: group.trackId,
+        title: group.title,
+        gain: this.groups.length === 1 ? 1 : (index === 0 ? crossfader.gainA : crossfader.gainB),
+        laneCount: group.lanes.length,
+        laneKeys: group.lanes.map((lane) => lane.key),
+      })),
+      lanes: lanes.map((lane) => ({
+        key: lane.key,
+        trackId: lane.trackId,
         name: lane.name,
         label: lane.label,
         method: lane.method,
@@ -72,9 +131,15 @@ class FakeDesk {
     };
   }
 
+  _find(name) {
+    const key = String(name);
+    return this.groups.flatMap((group) => group.lanes)
+      .find((lane) => lane.key === key || lane.name === key);
+  }
+
   async resume() { this.calls.push(['resume']); return this.state(); }
-  play() {
-    this.calls.push(['play']);
+  play(options = {}) {
+    this.calls.push(['play', Boolean(options.loop)]);
     if (this.contextState === 'suspended' || this.contextState === 'interrupted') {
       const error = new Error('the audio context is suspended by the browser');
       error.code = 'S_CONTEXT_SUSPENDED';
@@ -86,19 +151,32 @@ class FakeDesk {
   stop() { this.calls.push(['stop']); this.status = 'ready'; this.position = 0; return this.state(); }
   setGain(name, db) {
     this.calls.push(['setGain', name, Number(db)]);
-    this.lanes.find((lane) => lane.name === name).gainDb = Number(db);
+    this._find(name).gainDb = Number(db);
     return this.state();
   }
 
   setMuted(name, value) {
     this.calls.push(['setMuted', name, value]);
-    this.lanes.find((lane) => lane.name === name).muted = Boolean(value);
+    this._find(name).muted = Boolean(value);
     return this.state();
   }
 
   setSolo(name, value) {
     this.calls.push(['setSolo', name, value]);
-    this.lanes.find((lane) => lane.name === name).solo = Boolean(value);
+    this._find(name).solo = Boolean(value);
+    return this.state();
+  }
+
+  setCrossfader(value) {
+    this.calls.push(['setCrossfader', Number(value)]);
+    this.crossfaderPosition = Number(value);
+    return this.state();
+  }
+
+  unloadGroup(trackId) {
+    this.calls.push(['unloadGroup', trackId]);
+    this.groups = this.groups.filter((group) => group.trackId !== trackId);
+    this.status = this.groups.length ? 'ready' : 'idle';
     return this.state();
   }
 
@@ -107,7 +185,12 @@ class FakeDesk {
   dispose() { this.disposed = true; }
 }
 
-function mount({ variants, tracks = [{ id: 'track-1', name: 'night-drive.wav' }], silentNames = [] } = {}) {
+function mount({
+  variants = [],
+  variantsByTrack = null,
+  tracks = [{ id: 'track-1', name: 'night-drive.wav' }],
+  silentNames = [],
+} = {}) {
   const container = document.createElement('div');
   const desk = new FakeDesk();
   desk.silentNames = silentNames;
@@ -120,10 +203,17 @@ function mount({ variants, tracks = [{ id: 'track-1', name: 'night-drive.wav' }]
       calls.push(['createDesk', options]);
       return desk;
     },
-    listTracksImpl: async () => ({ items: tracks, total: tracks.length, limit: 50, offset: 0 }),
+    listTracksImpl: async () => {
+      calls.push(['listTracks']);
+      return { items: tracks, total: tracks.length, limit: 50, offset: 0 };
+    },
     listStemsImpl: async (trackId) => {
       calls.push(['listStems', trackId]);
-      return { stems: ['full', ...(variants || []).map((v) => v.name)], variants: [{ name: 'full' }, ...(variants || [])] };
+      const selected = variantsByTrack ? (variantsByTrack[trackId] || []) : variants;
+      return {
+        stems: ['full', ...selected.map((entry) => entry.name)],
+        variants: [{ name: 'full' }, ...selected],
+      };
     },
   });
   return { container, desk, calls, dispose };
@@ -134,21 +224,34 @@ async function flush() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-test('the desk lists tracks, loads four stems and labels them with provenance', async () => {
+function loadButton(container, groupId) {
+  return container.querySelector(`button[aria-label="Load stems ${groupId}"]`);
+}
+
+async function loadGroup(container, groupId) {
+  loadButton(container, groupId).click();
+  await flush();
+}
+
+function selectFor(container, groupId) {
+  return container.querySelector(`select[aria-label="Track for group ${groupId}"]`);
+}
+
+test('the desk lists tracks, loads four stems into group A and labels their provenance', async () => {
   const { container, desk, calls } = mount({
     variants: [variant('vocals'), variant('drums'), variant('bass'), variant('other')],
   });
   await flush();
-  const select = container.querySelector('select');
+  const select = selectFor(container, 'A');
   select.dispatchEvent(new window.Event('focus'));
   await flush();
 
-  const options = [...container.querySelectorAll('option')].map((option) => option.textContent);
+  const options = [...select.options].map((option) => option.textContent);
   assert.deepEqual(options, ['night-drive.wav']);
   assert.equal(select.value, 'track-1');
+  assert.equal(selectFor(container, 'B').value, 'track-1', 'both groups can choose a track');
 
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
 
   const rows = container.querySelectorAll('.stem-desk__row');
   assert.equal(rows.length, 4);
@@ -156,9 +259,77 @@ test('the desk lists tracks, loads four stems and labels them with provenance', 
   assert.match(rows[0].querySelector('.stem-desk__meta').textContent, /demucs/);
   assert.match(rows[0].querySelector('.stem-desk__meta').textContent, /htdemucs@4\.1\.0/);
   assert.equal(rows[3].querySelector('.stem-desk__name').textContent, 'Other');
-  assert.deepEqual(desk.calls[0], ['load', ['vocals', 'drums', 'bass', 'other']]);
-  assert.equal(desk.lanes.length, 4);
+  assert.match(container.querySelector('.stem-desk__group-title').textContent, /Group A/);
+  assert.deepEqual(desk.calls.find(([name]) => name === 'loadGroups'), ['loadGroups', 'A', ['vocals', 'drums', 'bass', 'other']]);
+  assert.equal(desk.groups.length, 1);
   assert.equal(calls.some(([name]) => name === 'createDesk'), true);
+});
+
+test('two group selects load two tracks into eight rows under two headings', async () => {
+  const { container, desk } = mount({
+    tracks: [
+      { id: 'track-1', name: 'night-drive.wav', title: 'Night Drive' },
+      { id: 'track-2', name: 'slow-burn.wav', title: 'Slow Burn' },
+    ],
+    variantsByTrack: {
+      'track-1': [variant('vocals'), variant('drums'), variant('bass'), variant('other')],
+      'track-2': [variant('vocals'), variant('drums'), variant('bass'), variant('other')],
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  selectFor(container, 'A').value = 'track-1';
+  selectFor(container, 'B').value = 'track-2';
+
+  await loadGroup(container, 'A');
+  await loadGroup(container, 'B');
+
+  const sections = container.querySelectorAll('.stem-desk__group');
+  assert.equal(sections.length, 2);
+  const headings = [...container.querySelectorAll('.stem-desk__group-title')].map((el) => el.textContent);
+  assert.match(headings[0], /Group A · Night Drive/);
+  assert.match(headings[1], /Group B · Slow Burn/);
+  assert.equal(container.querySelectorAll('.stem-desk__row').length, 8);
+  assert.deepEqual(desk.groups.map((group) => group.trackId), ['A', 'B']);
+
+  const muteA = container.querySelector('button[aria-label="Mute A · Vocals"]');
+  const muteB = container.querySelector('button[aria-label="Mute B · Vocals"]');
+  assert.ok(muteA, 'each row names its group and lane for assistive tech');
+  assert.ok(muteB);
+});
+
+test('loading group B is non-destructive and keeps group A rows alive', async () => {
+  const { container, desk } = mount({
+    tracks: [
+      { id: 'track-1', name: 'night-drive.wav', title: 'Night Drive' },
+      { id: 'track-2', name: 'slow-burn.wav', title: 'Slow Burn' },
+    ],
+    variantsByTrack: {
+      'track-1': [variant('vocals'), variant('drums')],
+      'track-2': [variant('vocals'), variant('drums')],
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  selectFor(container, 'A').value = 'track-1';
+  selectFor(container, 'B').value = 'track-2';
+
+  await loadGroup(container, 'A');
+  const aRows = [...container.querySelectorAll('.stem-desk__row')];
+  await loadGroup(container, 'B');
+
+  assert.equal(desk.groups.length, 2);
+  assert.equal(container.querySelectorAll('.stem-desk__row').length, 4);
+  assert.equal(aRows.length, 2, 'group A still has both rows before and after loading B');
+  assert.ok(container.querySelector('.stem-desk__row[data-key="A:vocals"]'), 'group A row survives loading B');
+  assert.ok(container.querySelector('.stem-desk__row[data-key="A:drums"]'), 'group A drums survive loading B');
+  assert.deepEqual(
+    desk.calls.filter(([name]) => name === 'loadGroups').map(([, groupId]) => groupId),
+    ['A', 'B'],
+  );
+  assert.equal(container.querySelectorAll('.stem-desk__transport button').length, 2, 'one transport only');
 });
 
 test('mute and solo are separate controls and report pressed state', async () => {
@@ -166,30 +337,28 @@ test('mute and solo are separate controls and report pressed state', async () =>
     variants: [variant('vocals'), variant('drums'), variant('bass'), variant('other')],
   });
   await flush();
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
 
   const row = container.querySelectorAll('.stem-desk__row')[1]; // drums
   const [mute, solo] = row.querySelectorAll('.stem-desk__actions button');
 
   mute.click();
   await flush();
-  assert.deepEqual(desk.calls.at(-1), ['setMuted', 'drums', true]);
+  assert.deepEqual(desk.calls.at(-1), ['setMuted', 'A:drums', true]);
   assert.equal(container.querySelectorAll('.stem-desk__row')[1].querySelectorAll('button')[0].getAttribute('aria-pressed'), 'true');
 
   solo.click();
   await flush();
-  assert.deepEqual(desk.calls.at(-1), ['setSolo', 'drums', true]);
+  assert.deepEqual(desk.calls.at(-1), ['setSolo', 'A:drums', true]);
   assert.equal(container.querySelectorAll('.stem-desk__row')[1].querySelectorAll('button')[1].getAttribute('aria-pressed'), 'true');
 });
 
-test('a gain change targets one stem and shows the new dB value', async () => {
+test('a gain input updates that row in place and shows the new dB value', async () => {
   const { container, desk } = mount({
     variants: [variant('vocals'), variant('drums'), variant('bass'), variant('other')],
   });
   await flush();
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
 
   const row = container.querySelectorAll('.stem-desk__row')[2]; // bass
   const gain = row.querySelector('input[type="range"]');
@@ -197,17 +366,17 @@ test('a gain change targets one stem and shows the new dB value', async () => {
   gain.dispatchEvent(new window.Event('input', { bubbles: true }));
   await flush();
 
-  assert.deepEqual(desk.calls.at(-1), ['setGain', 'bass', -12]);
+  assert.deepEqual(desk.calls.at(-1), ['setGain', 'A:bass', -12]);
   const refreshed = container.querySelectorAll('.stem-desk__row')[2];
+  assert.equal(refreshed, row, 'the same row node is updated, not rebuilt');
   assert.match(refreshed.textContent, /-12 dB/);
-  assert.equal(desk.lanes.find((lane) => lane.name === 'vocals').gainDb, 0);
+  assert.equal(desk._find('A:vocals').gainDb, 0);
 });
 
 test('a track with no separated stems says so instead of showing an empty desk', async () => {
   const { container } = mount({ variants: [] });
   await flush();
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
   assert.match(container.textContent, /no separated stems/i);
   assert.equal(container.querySelectorAll('.stem-desk__row').length, 0);
 });
@@ -220,8 +389,7 @@ test('a fallback center/sides split is labelled honestly and never as vocals', a
     ],
   });
   await flush();
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
 
   const rows = [...container.querySelectorAll('.stem-desk__row')];
   assert.equal(rows.length, 2);
@@ -231,28 +399,58 @@ test('a fallback center/sides split is labelled honestly and never as vocals', a
   assert.doesNotMatch(container.textContent, /Vocals/);
 });
 
-test('play and stop drive the one transport and a stop resets the clock label', async () => {
+test('play and stop drive the one transport with loop off and reset the clock label', async () => {
   const { container, desk } = mount({
     variants: [variant('vocals'), variant('drums'), variant('bass'), variant('other')],
   });
   await flush();
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
 
-  const transportButtons = container.querySelectorAll('.stem-desk__actions')[0].querySelectorAll('button');
-  // transport row is the first .stem-desk__actions rendered outside a stem row
   const allButtons = [...container.querySelectorAll('button')];
   const play = allButtons.find((button) => button.textContent === 'Play');
   const stop = allButtons.find((button) => button.textContent === 'Stop');
   play.click();
   await flush();
   assert.ok(desk.calls.some(([name]) => name === 'play'));
+  assert.deepEqual(desk.calls.find(([name]) => name === 'play'), ['play', false], 'the desk does not wrap by default');
   assert.equal(play.textContent, 'Restart');
   stop.click();
   await flush();
   assert.ok(desk.calls.some(([name]) => name === 'stop'));
   assert.equal(desk.status, 'ready');
-  assert.ok(transportButtons.length >= 0);
+});
+
+test('the crossfader is disabled for one track and writes equal-power gains for two', async () => {
+  const { container, desk } = mount({
+    tracks: [
+      { id: 'track-1', name: 'night-drive.wav', title: 'Night Drive' },
+      { id: 'track-2', name: 'slow-burn.wav', title: 'Slow Burn' },
+    ],
+    variantsByTrack: {
+      'track-1': [variant('vocals'), variant('drums')],
+      'track-2': [variant('vocals'), variant('drums')],
+    },
+  });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  selectFor(container, 'A').value = 'track-1';
+  selectFor(container, 'B').value = 'track-2';
+
+  await loadGroup(container, 'A');
+  const slider = container.querySelector('.stem-desk__crossfader');
+  assert.equal(slider.disabled, true, 'one track has nothing to crossfade');
+  assert.match(container.querySelector('.stem-desk__crossfader-gains').textContent, /gainA 1\.00 · gainB 0\.00/);
+
+  await loadGroup(container, 'B');
+  assert.equal(slider.disabled, false);
+  assert.match(container.querySelector('.stem-desk__crossfader-gains').textContent, /gainA 0\.71 · gainB 0\.71/);
+
+  slider.value = '0';
+  slider.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await flush();
+  assert.deepEqual(desk.calls.at(-1), ['setCrossfader', 0]);
+  assert.match(container.querySelector('.stem-desk__crossfader-gains').textContent, /gainA 1\.00 · gainB 0\.00/);
 });
 
 test('dispose releases the desk and clears the panel', async () => {
@@ -260,8 +458,7 @@ test('dispose releases the desk and clears the panel', async () => {
     variants: [variant('vocals'), variant('drums')],
   });
   await flush();
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
   dispose();
   assert.equal(desk.disposed, true);
   assert.equal(container.childElementCount, 0);
@@ -276,19 +473,17 @@ test('the desk prefers four Demucs lanes when a fallback set also exists, never 
     ],
   });
   await flush();
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
 
-  assert.equal(desk.lanes.length, 4);
-  assert.deepEqual(desk.lanes.map((lane) => lane.name), ['vocals', 'drums', 'bass', 'other']);
+  assert.equal(desk.groups[0].lanes.length, 4);
+  assert.deepEqual(desk.groups[0].lanes.map((lane) => lane.name), ['vocals', 'drums', 'bass', 'other']);
   assert.equal(container.querySelectorAll('.stem-desk__row').length, 4);
 });
 
 test('the panel owns and passes ownsContext so the desk can close its own context', async () => {
   const { container, calls } = mount({ variants: [variant('vocals'), variant('drums')] });
   await flush();
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
   const [name, options] = calls.find(([entry]) => entry === 'createDesk');
   assert.equal(name, 'createDesk');
   assert.equal(options.ownsContext, true);
@@ -307,8 +502,7 @@ test('a browser-suspended audio context is reported instead of claimed as playin
     listStemsImpl: async () => ({ variants: [variant('vocals'), variant('drums')] }),
   });
   await flush();
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
   [...container.querySelectorAll('button')].find((button) => button.textContent === 'Play').click();
   await flush();
   assert.doesNotMatch(container.textContent, /Playing \d+ stems together/);
@@ -350,8 +544,7 @@ test('the real StemDesk runtime renders four lanes through the panel', async () 
     }),
   });
   await flush();
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
 
   const rows = container.querySelectorAll('.stem-desk__row');
   assert.equal(rows.length, 4);
@@ -368,8 +561,7 @@ test('an effectively silent stem is labelled and its solo says why nothing is he
     silentNames: ['vocals'],
   });
   await flush();
-  container.querySelector('button.button--sm').click();
-  await flush();
+  await loadGroup(container, 'A');
 
   const rows = container.querySelectorAll('.stem-desk__row');
   assert.match(rows[0].textContent, /effectively silent in this separation/);
@@ -379,6 +571,6 @@ test('an effectively silent stem is labelled and its solo says why nothing is he
   solo.click();
   await flush();
   const status = container.querySelector('.stem-desk__status').textContent;
-  assert.match(status, /Solo Vocals/);
+  assert.match(status, /Solo A · Vocals/);
   assert.match(status, /effectively silent/);
 });

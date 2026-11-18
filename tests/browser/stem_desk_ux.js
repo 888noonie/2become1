@@ -133,10 +133,10 @@ try {
     const desk = page.locator('.stem-desk');
     if ((await desk.count()) !== 1) fail('the Stem Desk is not mounted in the Studio');
 
-    await page.locator('.stem-desk select').focus();
+    await page.locator('.stem-desk select[aria-label="Track for group A"]').focus();
     await sleep(500);
-    await page.locator('.stem-desk select').selectOption('track-1');
-    await page.getByRole('button', { name: 'Load stems' }).click();
+    await page.locator('.stem-desk select[aria-label="Track for group A"]').selectOption('track-1');
+    await page.getByRole('button', { name: 'Load stems A' }).click();
     await sleep(2500);
 
     const rows = page.locator('.stem-desk .stem-desk__row');
