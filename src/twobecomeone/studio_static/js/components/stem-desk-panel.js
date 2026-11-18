@@ -488,6 +488,11 @@ export function mountStemDeskPanel({
     select.addEventListener('pointerdown', () => { void ensureTracks(); });
 
     groupButtons[groupId].addEventListener('click', async () => {
+      // Reserve the single load slot BEFORE any await: two clicks while the
+      // library is still being fetched used to start two concurrent loads.
+      if (loadingCount > 0) return;
+      loadingCount += 1;
+      syncLoadButtons();
       if (!tracksLoaded) await ensureTracks();
       const trackId = select.value;
       if (!trackId) {
@@ -498,13 +503,10 @@ export function mountStemDeskPanel({
       const controller = typeof AbortController === 'function' ? new AbortController() : null;
       if (controller) aborts.set(groupId, controller);
       const button = groupButtons[groupId];
-      // Two overlapping loads used to race in the runtime; it now recomputes
-      // at commit, and the panel also keeps one load in flight at a time so
-      // the buttons tell the truth while a fetch is pending.
-      loadingCount += 1;
-      syncLoadButtons();
-      say(`Loading separated stems for group ${groupId}...`);
       try {
+        // Inside the try: an announcement listener that throws must not leave
+        // both buttons disabled for the rest of the session.
+        say(`Loading separated stems for group ${groupId}...`);
         const stems = await listStemsImpl(trackId, controller?.signal);
         if (disposed) return;
         const variants = Array.isArray(stems?.variants) ? stems.variants : [];

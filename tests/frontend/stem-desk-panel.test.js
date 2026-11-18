@@ -674,3 +674,34 @@ test('a refused replacement shows the runtime reason, not a bare success', async
   assert.match(status, /S_STEM_TOO_LONG/);
   assert.match(status, /at most 41943040 per stem/);
 });
+
+test('two quick Load clicks start only one load, even before the library resolves', async () => {
+  const container = document.createElement('div');
+  const desk = new FakeDesk();
+  let releaseTracks;
+  const tracksGate = new Promise((resolve) => { releaseTracks = resolve; });
+  const dispose = mountStemDeskPanel({
+    container,
+    audioContextFactory: () => ({ name: 'fake-context' }),
+    createDesk: () => desk,
+    listTracksImpl: async () => {
+      await tracksGate;
+      return { items: [{ id: 'track-1', name: 'night-drive.wav' }] };
+    },
+    listStemsImpl: async () => ({ variants: [variant('vocals'), variant('drums')] }),
+  });
+  await flush();
+
+  const loadA = container.querySelector('button[aria-label="Load stems A"]');
+  loadA.click();
+  loadA.click();
+  releaseTracks();
+  await flush();
+  await flush();
+
+  const loads = desk.calls.filter(([name]) => name === 'loadGroups');
+  assert.equal(loads.length, 1, 'the second click is ignored while one load is reserved');
+  assert.equal(container.querySelector('button[aria-label="Load stems A"]').disabled, false,
+    'the button is usable again after the load settles');
+  dispose();
+});

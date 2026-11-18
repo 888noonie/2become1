@@ -332,6 +332,12 @@ export class StemDesk {
       0,
     );
     const currentOtherLanes = currentOthers.reduce((total, entry) => total + entry.lanes.length, 0);
+    if (currentOthers.length + 1 > STEM_DESK_LIMITS.maxTracks) {
+      return {
+        committed: false,
+        failures: [budgetFailure(spec, `the desk holds at most ${STEM_DESK_LIMITS.maxTracks} tracks`)],
+      };
+    }
     if (currentOtherLanes + loaded.length > STEM_DESK_LIMITS.maxLanes) {
       return {
         committed: false,
@@ -552,6 +558,12 @@ export class StemDesk {
       );
     }
     this._stopSources();
+    // A multi-group load publishes each group's lanes before it rebuilds the
+    // graph. If Play lands in that window, build the graph first rather than
+    // connecting a source to a missing node.
+    if (this._lanes.length && this._lanes.some((lane) => !lane.node || !lane.node.gain)) {
+      this._rebuildGraph();
+    }
     const duration = this._duration();
     const requested = Number(offset);
     const safeOffset = duration > 0

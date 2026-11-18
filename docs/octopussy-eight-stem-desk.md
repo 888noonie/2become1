@@ -406,7 +406,7 @@ track.
 ## 14. Full verification run (final HEAD)
 
 ```bash
-npm test                     # 514 tests, 514 pass, 0 fail
+npm test                     # 517 tests, 517 pass, 0 fail
 .venv/bin/pytest -q          # 580 passed, 1 skipped
 node tests/browser/run.js --viewport 1280x800   # 39 checks, 0 failures
 node tests/browser/run.js --viewport 390x844    # 39 checks, 5 failures
@@ -472,7 +472,20 @@ are re-checked against that current state. The panel also keeps one load in
 flight at a time so the buttons do not invite the race. A unit test starts both
 loads before either can commit and asserts that both groups survive.
 
-The broader frontend suite (`npm test`) is 514/514 on this HEAD. The reviewer
+The broader frontend suite (`npm test`) is 517/517 on this HEAD. The reviewer
 saw `mashup-session.test.js` and `url-queue-panel.test.js` fail in its own run;
 both pass in isolation and in the full suite here, and neither touches the Stem
 Desk.
+
+## 17. Fourth pass: the remaining overlap and mid-load edges
+
+Three more edge cases were reproduced and closed at the source:
+
+| Edge | Fix | Proof |
+| --- | --- | --- |
+| A third track could be accepted when three loads overlapped, because `maxTracks` was only checked at entry | the commit-time merge re-checks the track limit as well as lanes and bytes, and refuses with `S_DESK_FULL` | unit test “a third track is refused at commit, not just at entry” |
+| Two quick Load clicks could both start while the library was still being fetched, because the busy slot was taken after an `await` | the panel reserves the single load slot before any `await` and ignores a second click | panel test “two quick Load clicks start only one load, even before the library resolves” |
+| Play during a multi-group load could connect a source to a lane whose gain node did not exist yet, leaving a `playing` desk that had thrown | `play()` rebuilds the graph first when any lane lacks a node | unit test “play during a multi-group load builds the graph instead of throwing” |
+
+A throwing announcement listener could also leave both Load buttons disabled;
+the announcement now runs inside the same `try` as the load.

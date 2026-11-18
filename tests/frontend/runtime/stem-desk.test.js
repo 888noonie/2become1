@@ -726,3 +726,56 @@ test('two overlapping loads keep both groups instead of dropping the first', asy
     'the group that finished first is not discarded');
   assert.deepEqual(afterB.lanes.map((entry) => entry.key).sort(), ['A:vocals', 'B:vocals']);
 });
+
+test('a third track is refused at commit, not just at entry', async () => {
+  const desk = new StemDesk({ audioContext: new FakeContext(), fetchImpl: fakeFetch() });
+  let releaseC;
+  const gateC = new Promise((resolve) => { releaseC = resolve; });
+  const slowFetch = async (url) => {
+    if (url.includes('/C')) await gateC;
+    return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(64).buffer };
+  };
+  const racing = new StemDesk({ audioContext: new FakeContext(), fetchImpl: slowFetch });
+  await racing.loadGroups([{ trackId: 'A', lanes: [lane('vocals')] }]);
+
+  const loadC = racing.loadGroups([{ trackId: 'C', lanes: [lane('vocals', { audioUrl: '/C' })] }]);
+  const loadB = racing.loadGroups([{ trackId: 'B', lanes: [lane('vocals', { audioUrl: '/B' })] }]);
+  await loadB;
+  releaseC();
+  const after = await loadC;
+
+  assert.deepEqual(after.groups.map((group) => group.trackId).sort(), ['A', 'B'],
+    'a third overlapping group is refused rather than accepted');
+  assert.equal(after.error.code, 'S_DESK_FULL');
+  assert.match(after.error.message, /at most 2 tracks/);
+  assert.equal(desk.state().status, 'idle');
+});
+
+test('play during a multi-group load builds the graph instead of throwing', async () => {
+  const ctx = new FakeContext();
+  let releaseB;
+  const gateB = new Promise((resolve) => { releaseB = resolve; });
+  const desk = new StemDesk({
+    audioContext: ctx,
+    fetchImpl: async (url) => {
+      if (url.includes('/B')) await gateB;
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(64).buffer };
+    },
+  });
+  await desk.loadGroups([{ trackId: 'A', lanes: [lane('vocals')] }]);
+
+  // A multi-group load publishes A's lanes before it rebuilds the graph.
+  const pending = desk.loadGroups([
+    { trackId: 'A', lanes: [lane('vocals', { audioUrl: '/A' })] },
+    { trackId: 'B', lanes: [lane('vocals', { audioUrl: '/B' })] },
+  ]);
+  await Promise.resolve();
+  const state = desk.play({ loop: true });
+  releaseB();
+  await pending;
+
+  assert.ok(['playing', 'ready'].includes(state.status), 'Play did not throw mid-load');
+  for (const entry of desk._lanes) {
+    assert.ok(entry.node, `lane ${entry.key} has a gain node`);
+  }
+});
