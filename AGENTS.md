@@ -48,6 +48,10 @@ real view functions with `node --test tests/frontend/*.js`.
   `submit_separation(method="demucs")` when the selected track has no complete
   Demucs vocals/drums/bass/other set. It watches the existing job. A finished
   import is not a finished separation, and center/sides stay a channel split.
+- A Stem Desk entry nudge is a per-group millisecond offset applied on the
+  next Play. Negative is earlier, positive is later, and Reset is zero. It
+  moves the whole group together and does not change playback rate, pitch,
+  or tempo. It is not beat matching.
 - The Studio sidebar queue adds a track that is already in the library. It has
   no YouTube paste box. YouTube import stays in Choose Track. The queue is not
   persisted.

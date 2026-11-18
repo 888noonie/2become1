@@ -91,6 +91,56 @@ function groupLevelRow(groupId, onChange) {
   return { row, input, text };
 }
 
+const ENTRY_STEP_MS = 10;
+
+/** Signed milliseconds, so 0, earlier and later cannot be confused. */
+function formatEntryOffset(ms) {
+  const rounded = Math.round(Number(ms) || 0);
+  if (rounded > 0) return `+${rounded} ms`;
+  if (rounded < 0) return `−${Math.abs(rounded)} ms`;
+  return '0 ms';
+}
+
+/**
+ * Manual entry nudge for one whole group. It stores a value; Play applies it.
+ * Earlier is negative (the group is already underway). Later is positive.
+ */
+function groupTimingRow(groupId, onNudge) {
+  const readout = createElement('span', {
+    class: 'stem-desk__meta stem-desk__offset',
+    text: '0 ms',
+  });
+  const earlier = createElement('button', {
+    class: 'button button--sm',
+    type: 'button',
+    text: 'Earlier',
+    'aria-label': `Group ${groupId} earlier`,
+  });
+  const later = createElement('button', {
+    class: 'button button--sm',
+    type: 'button',
+    text: 'Later',
+    'aria-label': `Group ${groupId} later`,
+  });
+  const reset = createElement('button', {
+    class: 'button button--sm',
+    type: 'button',
+    text: 'Reset',
+    'aria-label': `Group ${groupId} reset entry`,
+  });
+  earlier.addEventListener('click', () => onNudge(-ENTRY_STEP_MS));
+  later.addEventListener('click', () => onNudge(ENTRY_STEP_MS));
+  reset.addEventListener('click', () => onNudge(null));
+  const row = createElement('div', { class: 'stem-desk__timing' }, [
+    earlier,
+    readout,
+    later,
+    reset,
+    createElement('span', { class: 'stem-desk__meta', text: 'Takes effect on the next Play.' }),
+  ]);
+  return { row, readout };
+}
+
 function groupLabel(trackId) {
   return String(trackId);
 }
@@ -616,17 +666,30 @@ export function mountStemDeskPanel({
           refreshTransport(next);
           say(`Group ${group.trackId} level ${value} dB.`);
         });
+        const timing = groupTimingRow(group.trackId, (delta) => {
+          if (!desk) return;
+          const current = desk.state().groups
+            .find((entry) => entry.trackId === group.trackId)?.entryOffsetMs ?? 0;
+          const nextMs = delta == null ? 0 : current + delta;
+          const next = desk.setGroupEntryOffset(group.trackId, nextMs);
+          const stored = next.groups
+            .find((entry) => entry.trackId === group.trackId)?.entryOffsetMs ?? 0;
+          const live = groupViews.get(group.trackId);
+          if (live?.timing) live.timing.readout.textContent = formatEntryOffset(stored);
+          say(`Group ${group.trackId} entry ${formatEntryOffset(stored)}. Takes effect on the next Play.`);
+        });
         const section = createElement('section', {
           class: 'stem-desk__group',
           dataset: { group: group.trackId },
-        }, [heading, level.row, rows]);
-        view = { section, heading, rows, level };
+        }, [heading, level.row, timing.row, rows]);
+        view = { section, heading, rows, level, timing };
         groupViews.set(group.trackId, view);
         lanesMount.appendChild(section);
       }
       view.heading.textContent = `Group ${group.trackId} · ${group.title}`;
       view.level.input.value = String(group.levelDb ?? 0);
       view.level.text.textContent = `${group.levelDb ?? 0} dB`;
+      if (view.timing) view.timing.readout.textContent = formatEntryOffset(group.entryOffsetMs);
       const groupLanes = lanes.filter((lane) => lane.trackId === group.trackId);
       const rows = groupLanes.map((lane) => {
         const rowView = rowViews.get(lane.key) || createRowView(lane.key);
@@ -705,8 +768,12 @@ export function mountStemDeskPanel({
       } else if (loop) {
         say(`Looping ${state.lanes.length} lanes started on one clock.`);
       } else {
+        const nudged = (state.groups || [])
+          .filter((group) => group.entryOffsetMs)
+          .map((group) => `Group ${group.trackId} ${formatEntryOffset(group.entryOffsetMs)}`);
+        const entryNote = nudged.length ? ` Entry ${nudged.join(', ')}.` : '';
         say(
-          `Started ${state.lanes.length} lanes on one clock. Playback ends with the longest lane; ` +
+          `Started ${state.lanes.length} lanes on one clock.${entryNote} Playback ends with the longest lane; ` +
           'this is a shared start, not tempo or beat matching.',
         );
       }

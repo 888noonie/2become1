@@ -204,6 +204,25 @@ No upload route, persistence, UI, or server support for user-supplied stems is
 part of this change. The contract is recorded here so a later slice does not
 invent incompatible semantics.
 
+A later bring-your-own bundle, if it is built, should stay inside that
+contract:
+
+- Attach exactly four files to an existing library track. The request names
+  each file as vocals, drums, bass, or other. Do not infer the role from the
+  filename.
+- Reject a symlink, an empty file, a file over the existing stem ceiling,
+  a non-audio file, and any set whose durations or sample rates disagree.
+  Do not resample one file to hide that disagreement.
+- Store the set with the existing stem-set records. The method is `imported`,
+  not `demucs`. The model name is a hash of the four files, and the original
+  names are kept as provenance.
+- Do not start a separation job, call a model, or hook this path into
+  `ingest()` or `_finish_import`.
+- Treat the four files as already aligned with each other. The desk entry
+  nudge moves the whole group; it does not re-align one stem inside the set.
+
+That importer is not part of the entry-nudge slice.
+
 ## 8. Verification (commands and results)
 
 All commands were run from the worktree root.
@@ -315,12 +334,37 @@ files are now `ghost-controller.js` (55,945), `live-mixer.js` (39,556),
 `stem-desk-panel.js` (36,710), `stem-desk.js` (31,989) and `studio.css`
 (30,851).
 
+### Entry nudge
+
+Measured from the library-connection tree (722,580 bytes, 69 files) to this
+slice (726,637 bytes, 69 files): **+4,057 bytes (+0.56%)**. The file count did
+not change. Nothing was minified.
+
+- `stem-desk.js` 31,989 → **32,985** (+996): one stored millisecond offset per
+  group, applied when Play schedules that group's four sources.
+- `stem-desk-panel.js` 36,710 → **39,407** (+2,697): Earlier, Later, Reset,
+  and the signed readout.
+- `styles/studio.css` 30,851 → **31,215** (+364): the timing row wraps and
+  keeps the 44px target.
+
+Negative means that group is already underway (a buffer offset at the shared
+Play). Positive means that group starts later. Reset is 0 ms. The stored value
+is clamped to ±4,000 ms and is not a playback-rate, pitch, or tempo change.
+`beatMatched` stays false. A change is stored immediately and heard on the
+next Play, including Restart.
+
+Against the older 650,905-byte baseline the tree is now +75,732 bytes
+(+11.63%). The +50,000 byte investigation trigger was already crossed by the
+eight-stem desk. This slice does not cross the 15% trigger.
+
 `git diff --check bdad67a769a8eaca0ef0d9f77993f2927634a1b9..HEAD` was clean.
 
 ## 9. Limitations
 
-- **A/B are start-aligned, not beat-matched.** 100 BPM and 120 BPM material
-  stays at its own tempo; there is no warp, tempo ratio or phrase lock.
+- **A/B are start-aligned, not beat-matched.** A group entry nudge can move
+  one four-stem track earlier or later by a stored number of milliseconds.
+  It does not warp, change playback rate, or lock a tempo. 100 BPM against
+  86 BPM still drifts after the first hit lines up.
 - The real-stem gate runs headless Chromium on captured PCM. It cannot prove
   speakers, headphones or room acoustics; the PM must audition.
 - A real separation can still contain effectively silent lanes. The desk

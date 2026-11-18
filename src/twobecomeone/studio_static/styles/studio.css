@@ -1556,6 +1556,23 @@
   min-height: var(--target-min);
   min-width: var(--target-min);
 }
+.stem-desk__timing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.stem-desk__timing .button {
+  min-height: var(--target-min);
+  min-width: var(--target-min);
+}
+.stem-desk__offset {
+  min-width: 4.5rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--color-text);
+}
 .stem-desk__actions {
   display: flex;
   align-items: center;
