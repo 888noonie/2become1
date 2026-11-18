@@ -475,16 +475,16 @@ class TestHardening:
 
     def test_a_database_failure_removes_the_published_directory(self, tmp_path, monkeypatch):
         import sqlite3 as sqlite_module
-        from twobecomeone.studio import UserError
+        from twobecomeone.studio import UserError  # noqa: F401  (documents the contract)
 
         service = _service(tmp_path)
         try:
             track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
             entries = _stage_all(service, make_stems(tmp_path / "stems"))
-
             real_connect = service._connect
+            state = {"publishedDir": None, "inserted": False}
 
-            class BrokenConn:
+            class InsertFails:
                 def __init__(self, conn):
                     self._conn = conn
 
@@ -492,19 +492,26 @@ class TestHardening:
                     return self
 
                 def __exit__(self, *exc):
-                    self._conn.__exit__(*exc)
+                    return self._conn.__exit__(*exc)
 
-                def execute(self, *args, **kwargs):
-                    raise sqlite_module.OperationalError("disk I/O error")
+                def execute(self, sql, *args, **kwargs):
+                    if "INSERT INTO stem_sets" in sql:
+                        # Record what is on disk at the moment the row would land.
+                        state["publishedDir"] = [
+                            p.name for p in service.stem_dir.iterdir() if p.is_dir()
+                        ]
+                        state["inserted"] = True
+                        raise sqlite_module.OperationalError("disk I/O error")
+                    return self._conn.execute(sql, *args, **kwargs)
 
-            def broken_connect():
-                return BrokenConn(real_connect())
-
-            monkeypatch.setattr(service, "_connect", broken_connect)
+            monkeypatch.setattr(service, "_connect", lambda: InsertFails(real_connect()))
             with pytest.raises(sqlite_module.OperationalError):
                 service.import_stem_set(track["id"], entries)
             monkeypatch.setattr(service, "_connect", real_connect)
-            assert not [p for p in service.stem_dir.iterdir() if p.is_dir()]
+
+            assert state["inserted"] is True, "the failure happens after publication"
+            assert state["publishedDir"], "a set directory existed when the INSERT failed"
+            assert not [p for p in service.stem_dir.iterdir() if p.is_dir()], "it was removed"
             assert [v["name"] for v in service.list_stems(track["id"])["variants"]] == ["full"]
         finally:
             service.close()
@@ -523,3 +530,62 @@ class TestHardening:
             )
         finally:
             service.close()
+
+class TestNonQuadVariants:
+    def test_center_and_sides_stay_visible_beside_a_complete_quad(self, tmp_path):
+        import json
+        import sqlite3
+        import time
+
+        service = _service(tmp_path)
+        try:
+            track = _ingest(service, stem_wav(tmp_path / "mix.wav", freq=200.0))
+            track_sha = service._track_content_hash(track["id"])
+
+            def publish(set_id, roles, method, created):
+                folder = service.stem_dir / set_id
+                folder.mkdir(parents=True)
+                paths = {}
+                for role in roles:
+                    stem_wav(folder / f"{role}.wav", freq=ROLE_FREQ.get(role, 300.0))
+                    paths[role] = f"stems/{set_id}/{role}.wav"
+                with sqlite3.connect(service.data_dir / "studio.sqlite3") as conn:
+                    conn.execute(
+                        "INSERT INTO stem_sets (id, track_id, method, model, device, status,"
+                        " paths_json, track_sha256, model_name, created_at)"
+                        " VALUES (?, ?, ?, 'x', 'cpu', 'complete', ?, ?, ?, ?)",
+                        (set_id, track["id"], method, json.dumps(paths), track_sha, "x", created),
+                    )
+
+            publish("quad", ("vocals", "drums", "bass", "other"), "demucs", time.time() - 100)
+            publish("split", ("center", "sides"), "ffmpeg", time.time())
+
+            names = {v["name"] for v in service.list_stems(track["id"])["variants"]}
+            assert {"vocals", "drums", "bass", "other"} <= names
+            assert {"center", "sides"} <= names, "center/sides must stay available"
+            quad_sets = {
+                v["stem_set_id"] for v in service.list_stems(track["id"])["variants"]
+                if v["name"] in {"vocals", "drums", "bass", "other"}
+            }
+            assert quad_sets == {"quad"}, "the quad still comes from one set"
+        finally:
+            service.close()
+
+
+class TestHttpStagingGuards:
+    @pytest.mark.anyio
+    async def test_staging_refuses_a_non_wav_suffix(self, tmp_path):
+        pytest.importorskip("fastapi")
+        import httpx
+        from twobecomeone.webapp import create_app
+
+        app = create_app(tmp_path / "data")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+            wav = stem_wav(tmp_path / "vocals.wav", freq=440.0)
+            with wav.open("rb") as handle:
+                refused = await client.post(
+                    "/api/stems/stage", files={"file": ("vocals.flac", handle, "audio/flac")}
+                )
+            assert refused.status_code == 400
+            assert "WAV" in refused.text

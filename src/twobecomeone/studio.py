@@ -2318,6 +2318,18 @@ class StudioService:
                 break
         if best is not None:
             _, row, valid = best
+            # Quad lanes come from the chosen set only. Non-quad variants
+            # (center/sides) may live in a different set and are still offered:
+            # the desk ignores them when a quad exists, and the existing Stem
+            # dialog needs them visible.
+            extra: dict[str, sqlite3.Row] = {}
+            for other in rows:
+                other_paths = json.loads(other["paths_json"]) if other["paths_json"] else {}
+                for name, rel in other_paths.items():
+                    if name in valid or name in extra:
+                        continue
+                    if self._validated_stem_path(rel, name) is not None:
+                        extra[name] = other
             for name in sorted(valid):
                 available[name] = True
                 order.append(name)
@@ -2341,6 +2353,18 @@ class StudioService:
                         except json.JSONDecodeError:
                             pass
                 variants.append(variant)
+            for name in sorted(extra):
+                other = extra[name]
+                available[name] = True
+                order.append(name)
+                variants.append({
+                    "name": name,
+                    "stem_set_id": other["id"],
+                    "method": other["method"],
+                    "model_name": other["model_name"],
+                    "device": other["device"],
+                    "audio_url": f"/api/stems/{other['id']}/audio?name={name}",
+                })
 
         stems = sorted({"full", *available.keys()})
         variants.sort(key=lambda v: stems.index(v["name"]))
@@ -2548,7 +2572,10 @@ class StudioService:
         cached = self._find_cached_stem_set(track_sha256, "imported", model_name)
         if cached is not None:
             for path in staged:
-                path.unlink(missing_ok=True)
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             return {
                 "stem_set_id": cached["id"],
                 "cached": True,
@@ -2602,7 +2629,10 @@ class StudioService:
             if winner is None:
                 raise UserError("a concurrent import won but no cache row exists")
             for path in staged:
-                path.unlink(missing_ok=True)
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             return {
                 "stem_set_id": winner["id"], "cached": True, "method": "imported",
                 "set_hash": set_hash, "roles": list(STEM_IMPORT_ROLES),

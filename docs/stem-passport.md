@@ -26,7 +26,7 @@ timeline with the same start point, and equal length is not proof of alignment.
 | Failure | no partial set becomes ready; a database failure removes the published directory; staged inputs are removed (the commit route, or the dialog's discard call when staging itself fails), and the same staged file cannot fill two roles |
 | Provenance | `method="imported"`, `device="user"`, `model_name = sha256:<set hash>`, per-lane original name + SHA-256 |
 | Reprocessing | never starts a separation job, FFmpeg separation or model call |
-| Desk | a complete imported quad is ready; imported sets are shown ahead of separation output for the same lane; Add / Process does not request Demucs while a complete quad exists; **one group is always built from one set**, never from two |
+| Desk | a complete imported quad is ready; imported sets are shown ahead of separation output for the same lane; Add / Process does not request Demucs while a complete quad exists; **one group is always built from one set**, never from two, while center/sides variants stay visible to the existing Stem dialog |
 
 ## Implementation
 
@@ -48,13 +48,13 @@ timeline with the same start point, and equal length is not proof of alignment.
 | Gate | Result |
 | --- | --- |
 | Frontend suite | **546/546** |
-| Python suite | **594 passed, 1 skipped** |
-| Import unit + route tests | **19/19** (roles, format, decode, rate/channels, duration, traversal, cache hit, retry, no job, HTTP stage+commit, staged cleanup) |
+| Python suite | **601 passed, 1 skipped** |
+| Import unit + route tests | **21/21** (roles, format, decode, rate/channels, duration, traversal, cache hit, retry, no job, HTTP stage+commit, staged cleanup) |
 | Eight-lane PCM with imported A + Demucs B | **9/9** |
 | Browser import journey | **15/15** |
 | Desktop / mobile journeys | 39/0 · 39/5 (same five historical a11y findings) |
 | Existing desk gates | two-track UI **24/24**, two-track PCM **8/8**, single-desk UX pass |
-| Static assets | 733,873 bytes / 69 files, +82,968 (+12.75%); 15% trigger not crossed |
+| Static assets | 734,515 bytes / 69 files, +83,610 (+12.85%); 15% trigger not crossed |
 
 PCM detail from the imported/Demucs render: eight lanes start together, mix RMS
 0.169 with peak 0.617 (inside full scale), soloing an imported lane leaves a real
