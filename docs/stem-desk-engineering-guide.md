@@ -167,3 +167,19 @@ replacement refusal cannot read as a success.
   `/tmp/opencode/octopussy-evidence/` (probes, controls, PCM, screenshots);
   treat that path as transient and re-run the commands rather than citing it as
   a permanent record.
+
+## 8. Owner-supplied stems (Stem Passport)
+
+- Roles are explicit: vocals, drums, bass, other. Never infer a role from a
+  filename.
+- Import accepts **WAV only** and never transcodes or resamples. It checks
+  decode, one sample rate, one channel count (1 or 2) and durations within
+  10 ms; a mismatch is refused with the measured values.
+- Publish atomically under the existing `stems/<set>/<role>.wav` layout; a
+  failed import must remove its staged inputs and leave no partial set.
+- Provenance: `method="imported"`, `device="user"`, `model_name` =
+  `sha256:<set hash>`, plus per-lane original name and content hash. Never call
+  it Demucs and never start a separation job for an import.
+- The desk shows an owner-supplied set ahead of separation output for the same
+  lane, deterministically; the other files stay on disk.
+- Equal duration is not alignment. Say so in the UI and in any demo notes.

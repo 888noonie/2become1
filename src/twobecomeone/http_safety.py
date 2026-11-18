@@ -38,7 +38,10 @@ class RequestSafetyMiddleware:
             if (origin is not None and origin != f"{scope['scheme']}://{host}") or headers.get('sec-fetch-site') == 'cross-site':
                 return await self.error(403, 'invalid_origin', 'Cross-origin changes are not allowed')(scope, receive, send)
         limit = self.max_body_bytes
-        if scope.get('path') not in {'/api/tracks', '/api/imports/upload'}:
+        # Bulk upload routes stream bytes; everything else keeps the 1 MiB
+        # JSON guard. Staged owner-supplied stems are as large as a track upload
+        # and use the same bounded staging path.
+        if scope.get('path') not in {'/api/tracks', '/api/imports/upload', '/api/stems/stage'}:
             limit = min(limit, 1024 * 1024)
         content_length = headers.get('content-length')
         if content_length is not None:

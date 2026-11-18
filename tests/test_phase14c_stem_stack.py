@@ -124,7 +124,7 @@ def test_migration_12_creates_stem_stack_assets(tmp_path):
                 ).fetchall()
             }
         assert "stem_stack_assets" in tables
-        assert latest_version() == 12
+        assert latest_version() == 13
     finally:
         service.close()
 

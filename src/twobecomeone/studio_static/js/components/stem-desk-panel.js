@@ -11,7 +11,10 @@
 // job. The panel does not write stem files, projects, or renders itself.
 
 import { createElement, replaceChildren } from '../dom.js';
-import { listJobs, listStems, listTracks, submitSeparation, watchJob } from '../api.js';
+import { openDialog } from './dialog.js';
+import {
+  importStemSet, listJobs, listStems, listTracks, stageStemFile, submitSeparation, watchJob,
+} from '../api.js';
 import { StemDesk, STEM_DESK_LIMITS } from '../runtime/stem-desk.js';
 
 const STEM_ORDER = ['vocals', 'drums', 'bass', 'other', 'center', 'sides'];
@@ -58,7 +61,10 @@ function provenanceLabel(variant) {
   // An imported set is the user's own separated stems, identified by its set
   // hash; there is no separation model to name and no device that ran one.
   if (variant.method === 'imported') {
-    const setHash = variant.modelName ? String(variant.modelName).slice(0, 8) : '';
+    // The schema's model identity is `sha256:<set hash>`; show the hash only.
+    const setHash = variant.modelName
+      ? String(variant.modelName).replace(/^sha256:/, '').slice(0, 8)
+      : '';
     return setHash ? `imported · set ${setHash}` : 'imported';
   }
   const method = variant.method === 'demucs'
@@ -160,6 +166,8 @@ export function mountStemDeskPanel({
   listStemsImpl = listStems,
   listJobsImpl = listJobs,
   submitSeparationImpl = submitSeparation,
+  stageStemFileImpl = stageStemFile,
+  importStemSetImpl = importStemSet,
   watchJobImpl = watchJob,
   createDesk = (options) => new StemDesk(options),
   audioContextFactory = () => new AudioContext(),
@@ -177,6 +185,7 @@ export function mountStemDeskPanel({
   const groupSelects = {};
   const groupButtons = {};
   const groupChoose = {};
+  const groupImport = {};
   const groupProcess = {};
   for (const groupId of GROUP_IDS) {
     const select = createElement('select', {
@@ -202,17 +211,25 @@ export function mountStemDeskPanel({
       'aria-label': `Load stems ${groupId}`,
       dataset: { group: groupId },
     });
+    const importStemsButton = createElement('button', {
+      class: 'button button--sm',
+      type: 'button',
+      text: 'Import My Stems',
+      'aria-label': `Import My Stems for group ${groupId}`,
+    });
     const row = createElement('div', { class: 'stem-desk__group-controls', dataset: { group: groupId } }, [
       createElement('span', { class: 'stem-desk__group-label', text: `Group ${groupId}` }),
       select,
       chooseLibrary,
       addOrProcess,
+      importStemsButton,
       loadButton,
     ]);
     groupSelects[groupId] = select;
     groupButtons[groupId] = loadButton;
     groupChoose[groupId] = chooseLibrary;
     groupProcess[groupId] = addOrProcess;
+    groupImport[groupId] = importStemsButton;
     groupControls.appendChild(row);
   }
   const playButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Play', disabled: 'true' });
@@ -928,6 +945,100 @@ export function mountStemDeskPanel({
     await startSeparation(groupId, trackId);
   }
 
+  /**
+   * Import four already-separated files into the group's selected track.
+   * The owner names each role; a filename never decides one. The dialog stays
+   * open on failure so the same files can be retried.
+   */
+  function openImportDialog(groupId) {
+    const trackId = groupSelects[groupId].value;
+    if (!trackId) {
+      say(`Choose the target track for group ${groupId} first.`);
+      return;
+    }
+    const layer = document.getElementById('dialog-layer');
+    if (!layer) {
+      say('The import dialog is unavailable in this page.');
+      return;
+    }
+    const title = trackTitle(trackId);
+    const dialog = createElement('dialog', { class: 'dialog' });
+    const inputs = {};
+    const status = createElement('p', { class: 'stem-desk__meta', role: 'status', text: '' });
+
+    const body = createElement('div', { class: 'dialog__body' }, [
+      createElement('h2', { class: 'dialog__title', text: `Import my stems · ${title}` }),
+      createElement('p', {
+        class: 'dialog__description',
+        text:
+          'Choose the four files you separated yourself and name each role. They must come '
+          + 'from one timeline: the same start point, sample rate and length. Equal length is '
+          + 'not proof of alignment — you are responsible for supplying aligned stems. Nothing '
+          + 'is resampled, time-stretched or separated.',
+      }),
+      ...QUAD_NAMES.map((role) => {
+        const input = createElement('input', {
+          type: 'file',
+          accept: '.wav,audio/wav,audio/x-wav',
+          'aria-label': `${stemLabel(role)} file`,
+        });
+        inputs[role] = input;
+        return createElement('div', { class: 'stem-desk__import-row' }, [
+          createElement('span', { class: 'stem-desk__group-label', text: stemLabel(role) }),
+          input,
+        ]);
+      }),
+      status,
+    ]);
+
+    const cancel = createElement('button', { type: 'button', class: 'button', text: 'Cancel' });
+    const commit = createElement('button', {
+      type: 'button', class: 'button button--primary', text: 'Import four stems',
+    });
+    cancel.addEventListener('click', () => dialog.close());
+    commit.addEventListener('click', async () => {
+      const chosen = QUAD_NAMES.map((role) => [role, inputs[role].files?.[0] || null]);
+      const missing = chosen.filter(([, file]) => !file).map(([role]) => stemLabel(role));
+      if (missing.length) {
+        status.textContent = `Choose a file for: ${missing.join(', ')}.`;
+        return;
+      }
+      commit.disabled = true;
+      cancel.disabled = true;
+      try {
+        const entries = [];
+        for (const [role, file] of chosen) {
+          status.textContent = `Staging ${stemLabel(role)}…`;
+          const staged = await stageStemFileImpl(file);
+          entries.push({
+            role,
+            staging_key: staged.staging_key,
+            original_name: staged.original_name || file.name,
+          });
+        }
+        status.textContent = 'Validating and publishing the four stems…';
+        const result = await importStemSetImpl(trackId, entries);
+        dialog.close();
+        say(
+          `Imported four ${result?.method === 'imported' ? 'owner-supplied' : ''} stems into `
+          + `${title}. Load ${groupId} to play them.`,
+        );
+        await reportReadiness(groupId, trackId);
+      } catch (err) {
+        status.textContent = `Could not import: ${err?.message || 'request failed'}.`;
+      } finally {
+        commit.disabled = undefined;
+        cancel.disabled = undefined;
+      }
+    });
+
+    body.appendChild(createElement('div', { class: 'dialog__actions' }, [cancel, commit]));
+    dialog.appendChild(body);
+    layer.appendChild(dialog);
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  }
+
   for (const groupId of GROUP_IDS) {
     const select = groupSelects[groupId];
     select.addEventListener('focus', () => { void ensureTracks(); });
@@ -937,6 +1048,7 @@ export function mountStemDeskPanel({
       void reportReadiness(groupId);
     });
     groupChoose[groupId].addEventListener('click', () => { void onChoose(groupId); });
+    groupImport[groupId].addEventListener('click', () => { openImportDialog(groupId); });
     groupProcess[groupId].addEventListener('click', () => { void onAdd(groupId); });
 
     groupButtons[groupId].addEventListener('click', async () => {
