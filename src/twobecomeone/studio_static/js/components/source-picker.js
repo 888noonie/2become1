@@ -146,9 +146,25 @@ function renderUploadPanel(panel, store, slot, disposers, onImported) {
     createElement('strong', { text: 'Drop audio files here' }),
     createElement('span', { text: 'or click to browse (multiple files supported)' }),
   ]);
+  const nameInput = createElement('input', {
+    class: 'input', type: 'text', maxlength: '200', autocomplete: 'off',
+    placeholder: 'Name this track', 'aria-label': 'Track Name',
+  });
+  const importBtn = createElement('button', {
+    class: 'button button--primary', type: 'button', text: 'Import',
+  });
+  const nameField = createElement('div', { class: 'field' }, [
+    createElement('label', { text: 'Track Name' }),
+    nameInput,
+    createElement('p', {
+      class: 'picker__hint',
+      text: 'Leave blank to use the file name. A name applies when one file is imported.',
+    }),
+  ]);
   const status = createElement('div', { class: 'picker__hint' });
 
-  panel.replaceChildren(fileInput, drop, status);
+  panel.replaceChildren(fileInput, drop, nameField, importBtn, status);
+  let pending = [];
 
   const openFile = () => fileInput.click();
   drop.addEventListener('click', openFile);
@@ -168,19 +184,36 @@ function renderUploadPanel(panel, store, slot, disposers, onImported) {
   }));
   drop.addEventListener('drop', (event) => {
     const files = [...event.dataTransfer.files];
-    if (files.length) handleFiles(files);
+    if (files.length) stageFiles(files);
   });
   fileInput.addEventListener('change', () => {
-    if (fileInput.files.length) handleFiles([...fileInput.files]);
+    if (fileInput.files.length) stageFiles([...fileInput.files]);
   });
 
+  const stageFiles = (files) => {
+    pending = files;
+    if (files.length === 1) {
+      const base = files[0].name.replace(/\.[^.]+$/, '');
+      nameInput.value = base;
+      status.textContent = files[0].name;
+    } else {
+      nameInput.value = '';
+      status.textContent = `${files.length} files selected. Each keeps its file name.`;
+    }
+  };
+
   const handleFiles = async (files) => {
+    const custom = nameInput.value.trim();
+    if (files.length > 1 && custom) {
+      showToast('A custom name applies to one file at a time. These files keep their own names.', 'danger');
+    }
+    const displayName = files.length === 1 ? custom : '';
     for (const file of files) {
       status.textContent = `Uploading ${file.name}…`;
       try {
         const job = await submitUpload(file, (percent) => {
           status.textContent = `Uploading ${file.name}: ${percent}%`;
-        });
+        }, undefined, displayName);
         store.dispatch({ type: 'jobs/upsert', job });
         // 202 response replaces upload progress with backend job state.
         status.textContent = `Processing ${file.name}…`;
@@ -190,7 +223,17 @@ function renderUploadPanel(panel, store, slot, disposers, onImported) {
         showToast(err.message, 'danger');
       }
     }
+    pending = [];
   };
+
+  importBtn.addEventListener('click', () => {
+    if (!pending.length) {
+      showToast('Choose an audio file first.', 'danger');
+      return;
+    }
+    const files = pending;
+    handleFiles(files);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +245,10 @@ function renderYouTubePanel(panel, store, slot, disposers, onImported) {
     class: 'input', type: 'url', inputmode: 'url', autocomplete: 'url',
     placeholder: 'https://youtu.be/…', 'aria-label': 'YouTube URL',
   });
+  const nameInput = createElement('input', {
+    class: 'input', type: 'text', maxlength: '200', autocomplete: 'off',
+    placeholder: 'Name this track', 'aria-label': 'Track Name',
+  });
   const submitBtn = createElement('button', { class: 'button button--primary', type: 'button', text: 'Import' });
   const status = createElement('div', { class: 'picker__hint' });
   const rights = createElement('p', {
@@ -209,12 +256,20 @@ function renderYouTubePanel(panel, store, slot, disposers, onImported) {
     text: 'One video only. Only import audio you have the right to use.',
   });
 
+  const nameField = createElement('div', { class: 'field' }, [
+    createElement('label', { text: 'Track Name' }),
+    nameInput,
+    createElement('p', {
+      class: 'picker__hint',
+      text: 'Leave blank to use the video title. The address and the downloaded file stay as they are.',
+    }),
+  ]);
   const form = createElement('div', { class: 'field' }, [
     createElement('label', { text: 'YouTube URL' }),
     createElement('div', { class: 'library-toolbar' }, [urlInput, submitBtn]),
   ]);
 
-  panel.replaceChildren(form, status, rights);
+  panel.replaceChildren(nameField, form, status, rights);
 
   const submit = async () => {
     const url = urlInput.value.trim();
@@ -225,7 +280,7 @@ function renderYouTubePanel(panel, store, slot, disposers, onImported) {
     submitBtn.disabled = true;
     status.textContent = 'Submitting…';
     try {
-      const job = await submitYouTube(url);
+      const job = await submitYouTube(url, nameInput.value);
       store.dispatch({ type: 'jobs/upsert', job });
       status.textContent = 'Downloading…';
       await followImport(job, store, slot, status, onImported);

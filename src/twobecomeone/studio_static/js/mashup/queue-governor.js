@@ -47,6 +47,19 @@ function replaceItem(items, itemId, next) {
   return items.map((item) => (item.id === itemId ? next : item));
 }
 
+export function renameQueuedTracks(state, trackId, name) {
+  if (!state || !Array.isArray(state.items) || typeof trackId !== 'string') return state;
+  const nextName = typeof name === 'string' ? name : '';
+  let changed = false;
+  const items = state.items.map((item) => {
+    if (item.trackId !== trackId || item.name === nextName) return item;
+    changed = true;
+    return { ...item, name: nextName };
+  });
+  if (!changed) return state;
+  return copyState(state, { items });
+}
+
 export function enqueueTrack(state, track) {
   const sequence = nextItemId(state);
   const trackId = typeof track?.id === 'string' ? track.id.trim() : '';

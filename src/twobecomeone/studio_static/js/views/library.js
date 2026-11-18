@@ -16,6 +16,9 @@ import {
   listTracks, renameTrack, trashTrack, restoreTrack,
 } from '../api.js';
 import { projectManager } from '../app-context.js';
+import { renameQueuedTracks } from '../mashup/queue-governor.js';
+
+const TRACK_NAME_LIMIT = 200;
 
 const PAGE_SIZE = 50;
 
@@ -217,13 +220,28 @@ export function mountLibrary({ store, container }) {
         { label: 'Save', value: 'save', kind: 'primary' },
       ],
     });
-    if (value === 'save' && input.value.trim()) {
-      try {
-        const updated = await renameTrack(track.id, input.value.trim());
-        store.dispatch({ type: 'library/upsert-track', track: updated });
-      } catch (err) {
-        showToast(err.message, 'danger');
+    if (value !== 'save') return;
+    const nextName = input.value.trim();
+    if (!nextName) {
+      showToast('Enter a track name.', 'danger');
+      return;
+    }
+    if ([...nextName].length > TRACK_NAME_LIMIT) {
+      showToast(`A track name must be ${TRACK_NAME_LIMIT} characters or fewer.`, 'danger');
+      return;
+    }
+    try {
+      const updated = await renameTrack(track.id, nextName);
+      store.dispatch({ type: 'library/upsert-track', track: updated });
+      const queue = store.getState().urlQueue;
+      if (queue) {
+        const nextQueue = renameQueuedTracks(queue, track.id, updated.name);
+        if (nextQueue !== queue) {
+          store.dispatch({ type: 'mashup/queue', urlQueue: nextQueue });
+        }
       }
+    } catch (err) {
+      showToast(err.message, 'danger');
     }
   };
 

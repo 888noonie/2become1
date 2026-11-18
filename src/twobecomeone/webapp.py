@@ -15,9 +15,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, File, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
@@ -26,6 +26,15 @@ from .common import UserError
 from .contracts import TERMINAL_JOB_STATES
 from .http_safety import RequestSafetyMiddleware
 from .studio import RenderOptions, StudioService
+
+
+def _optional_display_name(value: str | None) -> str | None:
+    """Blank import text means 'use the source default', not an empty label."""
+    if value is None:
+        return None
+    if not str(value).strip():
+        return None
+    return value
 
 
 class ActionBody(RootModel):
@@ -120,6 +129,7 @@ class RenderBody(BaseModel):
 
 class TrackImportBody(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
+    display_name: str | None = Field(default=None, max_length=400)
 
 
 class MashupCommandBody(BaseModel):
@@ -362,7 +372,9 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
 
     @app.post("/api/imports/youtube", status_code=202)
     def import_youtube(body: TrackImportBody):
-        return service.submit_youtube_import(body.url)
+        return service.submit_youtube_import(
+            body.url, display_name=_optional_display_name(body.display_name),
+        )
 
     @app.post("/api/mashup/interpret")
     def interpret_mashup(body: MashupCommandBody):
@@ -389,13 +401,20 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
         return directive_from_model_json(raw, tier=plan["tier"])
 
     @app.post("/api/imports/upload", status_code=202)
-    def import_upload(file: UploadFile = File(...)):
+    def import_upload(
+        file: UploadFile = File(...),
+        display_name: str | None = Form(default=None),
+    ):
         if not file.filename:
             raise UserError("file name is required")
         try:
             staging_key = service.stage_upload(file.file, file.filename)
             try:
-                return service.submit_upload_import(staging_key, original_name=file.filename)
+                return service.submit_upload_import(
+                    staging_key,
+                    original_name=file.filename,
+                    display_name=_optional_display_name(display_name),
+                )
             except Exception:
                 # This route owns this newly staged upload until admission.
                 service._resolve_staging_key(staging_key).unlink(missing_ok=True)
@@ -457,13 +476,26 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
             raise
 
     @app.get("/api/stems/{stem_set_id}/audio")
-    def stem_audio(stem_set_id: str, name: str = Query(...), download: bool = Query(default=False)):
-        path = service.stem_audio_path(stem_set_id, name)
-        media_type = mimetypes.guess_type(path.name)[0] or "audio/wav"
-        return FileResponse(
-            path, media_type=media_type, filename=path.name,
-            content_disposition_type="attachment" if download else "inline",
+    def stem_audio(
+        stem_set_id: str,
+        name: str = Query(...),
+        download: bool = Query(default=False),
+        start: float | None = Query(default=None),
+        duration: int | None = Query(default=None),
+    ):
+        if start is None and duration is None:
+            path = service.stem_audio_path(stem_set_id, name)
+            media_type = mimetypes.guess_type(path.name)[0] or "audio/wav"
+            return FileResponse(
+                path, media_type=media_type, filename=path.name,
+                content_disposition_type="attachment" if download else "inline",
+            )
+        if start is None or duration is None:
+            raise UserError("a section needs both a start and a length")
+        data = service.stem_audio_window(
+            stem_set_id, name, start=start, duration=duration,
         )
+        return Response(content=data, media_type="audio/wav")
 
     # ------------------------------------------------------------------
     # Stem crate (Phase 14B.1)

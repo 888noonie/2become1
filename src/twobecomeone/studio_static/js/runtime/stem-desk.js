@@ -61,6 +61,25 @@ export const STEM_DESK_LIMITS = Object.freeze({
   softClipKnee: 0.8,
 });
 
+/**
+ * Explicit full-length allowance. The ordinary ceilings stay the default.
+ * A five-minute 48 kHz stereo stem is about 110 MiB, so 128 MiB per stem
+ * covers the reported 65 MiB stem with headroom. Four of those fit in
+ * 512 MiB, and eight fit in 1024 MiB. A longer recording still refuses.
+ * Machine RAM is not this number.
+ */
+export const STEM_DESK_FULL_LIMITS = Object.freeze({
+  ...STEM_DESK_LIMITS,
+  maxStemBytes: 128 * 1024 * 1024,
+  maxStemDecodedBytes: 128 * 1024 * 1024,
+  maxTrackDecodedBytes: 512 * 1024 * 1024,
+  maxDecodedBytes: 1024 * 1024 * 1024,
+});
+
+function activeByteLimits(limits) {
+  return limits === STEM_DESK_FULL_LIMITS ? STEM_DESK_FULL_LIMITS : STEM_DESK_LIMITS;
+}
+
 /** Peak and RMS of a decoded buffer, used only to describe the lane honestly. */
 function measureBuffer(buffer) {
   let sumSquares = 0;
@@ -207,7 +226,7 @@ export class StemDesk {
    * that would exceed the lane or decoded-PCM budget is refused with
    * S_DESK_FULL and the groups already loaded stay intact.
    */
-  async loadGroups(groups, { signal } = {}) {
+  async loadGroups(groups, { signal, limits } = {}) {
     // A disposed desk holds no audio; a load arriving afterwards is refused
     // without downloading anything.
     if (this._disposed) return this.state();
@@ -226,9 +245,10 @@ export class StemDesk {
 
     const failures = [];
     let changed = false;
+    const byteLimits = activeByteLimits(limits);
 
     for (const spec of specs) {
-      const outcome = await this._loadGroup(spec, signal);
+      const outcome = await this._loadGroup(spec, signal, byteLimits);
       failures.push(...outcome.failures);
       if (outcome.committed) changed = true;
     }
@@ -274,7 +294,7 @@ export class StemDesk {
     return this.state();
   }
 
-  async _loadGroup(spec, signal) {
+  async _loadGroup(spec, signal, limits = STEM_DESK_LIMITS) {
     const existing = this._group(spec.trackId);
     const otherGroups = this._groups.filter((group) => group.trackId !== spec.trackId);
     const existingBytes = existing
@@ -303,23 +323,23 @@ export class StemDesk {
 
     for (const lane of spec.lanes) {
       try {
-        const decoded = await this._decodeLane(lane, spec.trackId, signal);
+        const decoded = await this._decodeLane(lane, spec.trackId, signal, limits);
         const nextGroupBytes = groupBytes + decoded.decodedBytes;
-        if (nextGroupBytes > STEM_DESK_LIMITS.maxTrackDecodedBytes) {
+        if (nextGroupBytes > limits.maxTrackDecodedBytes) {
           return {
             committed: false,
             failures: [
               ...failures,
-              budgetFailure(spec, `at most ${STEM_DESK_LIMITS.maxTrackDecodedBytes} decoded bytes per track`),
+              budgetFailure(spec, `at most ${limits.maxTrackDecodedBytes} decoded bytes per track`),
             ],
           };
         }
-        if (candidateBytes + nextGroupBytes > STEM_DESK_LIMITS.maxDecodedBytes) {
+        if (candidateBytes + nextGroupBytes > limits.maxDecodedBytes) {
           return {
             committed: false,
             failures: [
               ...failures,
-              budgetFailure(spec, `at most ${STEM_DESK_LIMITS.maxDecodedBytes} decoded bytes for the desk`),
+              budgetFailure(spec, `at most ${limits.maxDecodedBytes} decoded bytes for the desk`),
             ],
           };
         }
@@ -366,11 +386,11 @@ export class StemDesk {
         failures: [budgetFailure(spec, `the desk holds at most ${STEM_DESK_LIMITS.maxLanes} lanes`)],
       };
     }
-    if (currentOtherBytes + groupBytes > STEM_DESK_LIMITS.maxDecodedBytes) {
+    if (currentOtherBytes + groupBytes > limits.maxDecodedBytes) {
       return {
         committed: false,
         failures: [
-          budgetFailure(spec, `at most ${STEM_DESK_LIMITS.maxDecodedBytes} decoded bytes for the desk`),
+          budgetFailure(spec, `at most ${limits.maxDecodedBytes} decoded bytes for the desk`),
         ],
       };
     }
@@ -389,7 +409,7 @@ export class StemDesk {
     return { committed: true, failures };
   }
 
-  async _decodeLane(lane, trackId, signal) {
+  async _decodeLane(lane, trackId, signal, limits = STEM_DESK_LIMITS) {
     const fetchImpl = this._fetch || (typeof fetch === 'function' ? fetch : null);
     if (!fetchImpl) throw new StemDeskError('S_NO_FETCH', 'no fetch implementation is available');
 
@@ -398,20 +418,20 @@ export class StemDesk {
       throw new StemDeskError('S_STEM_UNAVAILABLE', `stem ${lane.name} could not be fetched`);
     }
     const declared = Number(response.headers?.get?.('content-length'));
-    if (Number.isFinite(declared) && declared > STEM_DESK_LIMITS.maxStemBytes) {
+    if (Number.isFinite(declared) && declared > limits.maxStemBytes) {
       throw new StemDeskError(
         'S_STEM_TOO_LARGE',
-        `stem ${lane.name} declares ${declared} bytes; the desk fetches at most ${STEM_DESK_LIMITS.maxStemBytes}`,
+        `stem ${lane.name} declares ${declared} bytes; the desk fetches at most ${limits.maxStemBytes}`,
       );
     }
     const bytes = await response.arrayBuffer();
     if (!bytes || bytes.byteLength === 0) {
       throw new StemDeskError('S_STEM_UNAVAILABLE', `stem ${lane.name} is empty`);
     }
-    if (bytes.byteLength > STEM_DESK_LIMITS.maxStemBytes) {
+    if (bytes.byteLength > limits.maxStemBytes) {
       throw new StemDeskError(
         'S_STEM_TOO_LARGE',
-        `stem ${lane.name} is ${bytes.byteLength} bytes; the desk fetches at most ${STEM_DESK_LIMITS.maxStemBytes}`,
+        `stem ${lane.name} is ${bytes.byteLength} bytes; the desk fetches at most ${limits.maxStemBytes}`,
       );
     }
 
@@ -422,10 +442,10 @@ export class StemDesk {
       throw new StemDeskError('S_STEM_DECODE', `stem ${lane.name} could not be decoded`);
     }
     const decodedBytes = buffer.length * buffer.numberOfChannels * 4;
-    if (decodedBytes > STEM_DESK_LIMITS.maxStemDecodedBytes) {
+    if (decodedBytes > limits.maxStemDecodedBytes) {
       throw new StemDeskError(
         'S_STEM_TOO_LONG',
-        `stem ${lane.name} decodes to ${decodedBytes} bytes; the desk holds at most ${STEM_DESK_LIMITS.maxStemDecodedBytes} per stem`,
+        `stem ${lane.name} decodes to ${decodedBytes} bytes; the desk holds at most ${limits.maxStemDecodedBytes} per stem`,
       );
     }
     // The output ceiling is per destination channel; a >2-channel stem would be

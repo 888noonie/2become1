@@ -15,7 +15,7 @@ import {
   discardStagedStems, importStemSet, listJobs, listStems, listTracks,
   stageStemFile, submitSeparation, watchJob,
 } from '../api.js';
-import { StemDesk, STEM_DESK_LIMITS } from '../runtime/stem-desk.js';
+import { StemDesk, STEM_DESK_FULL_LIMITS, STEM_DESK_LIMITS } from '../runtime/stem-desk.js';
 import {
   approveStemDeskProposal,
   suggestStemDeskProposal,
@@ -26,6 +26,15 @@ const STEM_ORDER = ['vocals', 'drums', 'bass', 'other', 'center', 'sides'];
 const QUAD_NAMES = ['vocals', 'drums', 'bass', 'other'];
 const GROUP_IDS = ['A', 'B'];
 const FALLBACK_NOTE = 'Fallback split: center and sides are channel separations, not isolated vocals or instruments.';
+const SECTION_SECONDS = new Set(['30', '60', '90']);
+
+function withSection(url, start, seconds) {
+  const [path, query = ''] = String(url).split('?');
+  const params = new URLSearchParams(query);
+  params.set('start', String(start));
+  params.set('duration', String(seconds));
+  return `${path}?${params.toString()}`;
+}
 
 function sortLanes(variants) {
   return [...variants].sort((a, b) => {
@@ -191,12 +200,18 @@ export function mountStemDeskPanel({
   });
   const title = createElement('h2', { class: 'stem-desk__title', text: 'Stem Performance Desk' });
   const status = createElement('p', { class: 'stem-desk__status', role: 'status', text: 'Choose separated tracks for group A and group B.' });
+  const memoryNote = createElement('p', {
+    class: 'stem-desk__meta',
+    text: 'A section is cut before the browser decodes it, at the recording’s own sample rate and channel count. Full length allows 128 MiB per stem, 512 MiB for one group, and 1024 MiB for eight stems. Available machine memory is not memory the browser can allocate.',
+  });
   const groupControls = createElement('div', { class: 'stem-desk__groups' });
   const groupSelects = {};
   const groupButtons = {};
   const groupChoose = {};
   const groupImport = {};
   const groupProcess = {};
+  const groupSection = {};
+  const groupStart = {};
   for (const groupId of GROUP_IDS) {
     const select = createElement('select', {
       class: 'stem-desk__select',
@@ -227,12 +242,32 @@ export function mountStemDeskPanel({
       text: 'Import My Stems',
       'aria-label': `Import My Stems for group ${groupId}`,
     });
+    const section = createElement('select', {
+      class: 'stem-desk__select',
+      'aria-label': `Section for group ${groupId}`,
+    }, [
+      createElement('option', { value: '90', text: '90 seconds' }),
+      createElement('option', { value: '60', text: '60 seconds' }),
+      createElement('option', { value: '30', text: '30 seconds' }),
+      createElement('option', { value: 'full', text: 'Full length (higher memory)' }),
+    ]);
+    const start = createElement('input', {
+      class: 'input',
+      type: 'number',
+      min: '0',
+      max: '3600',
+      step: '1',
+      value: '0',
+      'aria-label': `Section start in seconds for group ${groupId}`,
+    });
     const row = createElement('div', { class: 'stem-desk__group-controls', dataset: { group: groupId } }, [
       createElement('span', { class: 'stem-desk__group-label', text: `Group ${groupId}` }),
       select,
       chooseLibrary,
       addOrProcess,
       importStemsButton,
+      section,
+      start,
       loadButton,
     ]);
     groupSelects[groupId] = select;
@@ -240,6 +275,8 @@ export function mountStemDeskPanel({
     groupChoose[groupId] = chooseLibrary;
     groupProcess[groupId] = addOrProcess;
     groupImport[groupId] = importStemsButton;
+    groupSection[groupId] = section;
+    groupStart[groupId] = start;
     groupControls.appendChild(row);
   }
   const playButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Play', disabled: 'true' });
@@ -294,6 +331,7 @@ export function mountStemDeskPanel({
     title,
     groupControls,
     status,
+    memoryNote,
     proposalRow,
     proposalStatus,
     transport,
@@ -689,6 +727,29 @@ export function mountStemDeskPanel({
     }
     const option = [...groupSelects.A.options].find((entry) => entry.value === trackId);
     return option ? option.textContent : trackId;
+  }
+
+  function refreshDisplayedNames() {
+    const items = store?.getState?.().library?.items || [];
+    const names = new Map(items.filter((track) => track && track.id).map((track) => [track.id, track.name]));
+    for (const groupId of GROUP_IDS) {
+      const select = groupSelects[groupId];
+      for (const option of select.options) {
+        if (names.has(option.value)) option.textContent = names.get(option.value);
+      }
+      const view = groupViews.get(groupId);
+      const selected = [...select.options].find((option) => option.value === select.value);
+      if (view && selected && selected.value) {
+        view.heading.textContent = `Group ${groupId} · ${selected.textContent}`;
+      }
+    }
+  }
+
+  let unsubscribeNames = () => {};
+  if (store && typeof store.subscribeSlice === 'function') {
+    unsubscribeNames = store.subscribeSlice('library', () => {
+      if (!disposed) refreshDisplayedNames();
+    });
   }
 
   function createRowView(key) {
@@ -1207,6 +1268,14 @@ export function mountStemDeskPanel({
         controller = typeof AbortController === 'function' ? new AbortController() : null;
         if (controller) aborts.set(groupId, controller);
 
+        const sectionChoice = groupSection[groupId].value;
+        const fullLength = sectionChoice === 'full';
+        const startSeconds = Number(groupStart[groupId].value);
+        if (!fullLength && (!SECTION_SECONDS.has(sectionChoice)
+          || !Number.isFinite(startSeconds) || startSeconds < 0 || startSeconds > 3600)) {
+          say(`Group ${groupId}: choose 30, 60, or 90 seconds, starting between 0 and 3600.`);
+          return;
+        }
         say(`Loading separated stems for group ${groupId}...`);
         const stems = await listStemsImpl(trackId, controller?.signal);
         if (disposed) return;
@@ -1218,19 +1287,27 @@ export function mountStemDeskPanel({
           say(`Group ${groupId}: this track has no separated stems yet. Use Add / Process Track to separate it.`);
           return;
         }
+        const sectionNote = fullLength
+          ? 'Full length, original sample rate and channels. Higher memory limit.'
+          : `Section ${startSeconds}–${startSeconds + Number(sectionChoice)} s of the source, or the remainder if the recording is shorter. Original sample rate and channels.`;
         const state = await ensureDesk().loadGroups([{
           trackId: groupId,
           title: trackTitle(trackId),
           lanes: lanes.map((variant) => ({
             name: variant.name,
             label: stemLabel(variant.name),
-            audioUrl: variant.audio_url,
+            audioUrl: fullLength
+              ? variant.audio_url
+              : withSection(variant.audio_url, startSeconds, sectionChoice),
             method: variant.method,
             modelName: variant.model_name,
             device: variant.device,
             stemSetId: variant.stem_set_id,
           })),
-        }], { signal: controller?.signal });
+        }], {
+          signal: controller?.signal,
+          limits: fullLength ? STEM_DESK_FULL_LIMITS : STEM_DESK_LIMITS,
+        });
         if (disposed) return;
         renderLanes(state);
         refreshTransport(state);
@@ -1248,7 +1325,7 @@ export function mountStemDeskPanel({
         } else if (detail) {
           say(
             `Loaded ${groupLanes.length} stems into group ${groupId}. ` +
-            `${detail.code || 'Unavailable'} — ${detail.message || detail.name}.`,
+            `${detail.code || 'Unavailable'} — ${detail.message || detail.name}. ${sectionNote}`,
           );
         } else {
           const silent = groupLanes
@@ -1257,8 +1334,8 @@ export function mountStemDeskPanel({
           say(
             silent.length
               ? `Loaded ${groupLanes.length} stems into group ${groupId}. ${silent.join(', ')} ` +
-                `${silent.length === 1 ? 'is' : 'are'} effectively silent in this set.`
-              : `Loaded ${groupLanes.length} stems into group ${groupId} on one transport.`,
+                `${silent.length === 1 ? 'is' : 'are'} effectively silent in this set. ${sectionNote}`
+              : `Loaded ${groupLanes.length} stems into group ${groupId} on one transport. ${sectionNote}`,
           );
         }
       } catch (err) {
@@ -1274,6 +1351,7 @@ export function mountStemDeskPanel({
   return function dispose() {
     if (disposed) return;
     disposed = true;
+    unsubscribeNames();
     for (const groupId of GROUP_IDS) stopSeparationWatch(groupId);
     for (const controller of aborts.values()) controller.abort();
     aborts.clear();

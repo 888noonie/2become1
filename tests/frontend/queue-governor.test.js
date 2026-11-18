@@ -8,6 +8,7 @@ import {
   createQueueState,
   decide,
   enqueueTrack,
+  renameQueuedTracks,
   enqueueUrl,
   noteAsset,
   noteJob,
@@ -234,4 +235,14 @@ test('events validate', () => {
   assertValid(loaded.events);
   const blocked = decide(setArmed(createQueueState(), true), { A: ended() });
   assertValid(blocked.events);
+});
+
+test('renaming a queued track keeps the queue item and the track id', () => {
+  const state = enqueueTrack(createQueueState(), { id: 'track-1', name: 'Old name' }).state;
+  const next = renameQueuedTracks(state, 'track-1', 'Café — 夜');
+  assert.equal(next.items[0].id, state.items[0].id);
+  assert.equal(next.items[0].trackId, 'track-1');
+  assert.equal(next.items[0].url, null);
+  assert.equal(next.items[0].name, 'Café — 夜');
+  assert.equal(renameQueuedTracks(next, 'someone-else', 'Nope'), next);
 });

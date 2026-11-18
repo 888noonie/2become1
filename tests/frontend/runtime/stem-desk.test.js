@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  STEM_DESK_FULL_LIMITS,
   STEM_DESK_LIMITS,
   StemDesk,
   StemDeskError,
@@ -1017,4 +1018,73 @@ test('mute, solo and crossfade still apply while a group entry is offset', async
   const faded = desk.setCrossfader(0);
   assert.equal(faded.crossfader.gainB, 0);
   assert.ok(faded.groups.find((group) => group.trackId === 'B').gain === 0);
+});
+
+const REPORTED_STEM_BYTES = 68327416;
+
+function reportedContext() {
+  const ctx = new FakeContext();
+  ctx.decodeAudioData = async () => ({
+    duration: REPORTED_STEM_BYTES / (2 * 4 * 48000),
+    length: REPORTED_STEM_BYTES / (2 * 4),
+    numberOfChannels: 2,
+    sampleRate: 48000,
+    getChannelData: () => new Float32Array(8),
+  });
+  return ctx;
+}
+
+test('the reported stem size is refused by the default ceiling and accepted at full length', async () => {
+  const refused = new StemDesk({ audioContext: reportedContext(), fetchImpl: fakeFetch() });
+  const blocked = await refused.load([lane('vocals')]);
+  assert.equal(blocked.lanes.length, 0);
+  assert.equal(blocked.error.code, 'S_STEM_TOO_LONG');
+  assert.match(blocked.error.message, /68327416 bytes/);
+  assert.match(blocked.error.message, /41943040 per stem/);
+
+  const allowed = new StemDesk({ audioContext: reportedContext(), fetchImpl: fakeFetch() });
+  const loaded = await allowed.load(
+    [lane('vocals'), lane('drums'), lane('bass'), lane('other')],
+    { limits: STEM_DESK_FULL_LIMITS },
+  );
+  assert.equal(loaded.lanes.length, 4);
+  assert.equal(loaded.error, null);
+  const again = await allowed.loadGroups(
+    [{ trackId: 'B', lanes: [lane('vocals'), lane('drums'), lane('bass'), lane('other')] }],
+    { limits: STEM_DESK_FULL_LIMITS },
+  );
+  assert.equal(again.lanes.length, 8);
+  assert.equal(again.groups.length, 2);
+});
+
+test('a cancelled fetch leaves the desk without that stem', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const desk = new StemDesk({
+    audioContext: new FakeContext(),
+    fetchImpl: async (_url, options) => {
+      if (options?.signal?.aborted) {
+        const error = new Error('The operation was aborted');
+        error.name = 'AbortError';
+        throw error;
+      }
+      return { ok: true, arrayBuffer: async () => new Uint8Array(8).buffer };
+    },
+  });
+  const state = await desk.load([lane('vocals')], { signal: controller.signal });
+  assert.equal(state.lanes.length, 0);
+  assert.equal(state.status, 'unavailable');
+});
+
+test('unloading drops the decoded lanes before the next load', async () => {
+  const ctx = new FakeContext();
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl: fakeFetch() });
+  await desk.load([lane('vocals'), lane('drums'), lane('bass'), lane('other')]);
+  assert.equal(desk.state().lanes.length, 4);
+  desk.unload();
+  assert.equal(desk.state().lanes.length, 0);
+  assert.equal(desk.state().status, 'idle');
+  await desk.load([lane('vocals'), lane('drums'), lane('bass'), lane('other')]);
+  assert.equal(desk.state().lanes.length, 4);
+  assert.equal(ctx.decodeCalls, 8);
 });

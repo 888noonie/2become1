@@ -117,12 +117,22 @@ replacement refusal cannot read as a success.
 
 ## 4. Memory and resources
 
-- Budgets: 40 MiB fetch and 40 MiB decoded per stem, 160 MiB per track, 320 MiB
-  per desk, mono or stereo only (`S_STEM_LAYOUT`).
+- Default budgets: 40 MiB fetch and 40 MiB decoded per stem, 160 MiB per track,
+  320 MiB per desk, mono or stereo only (`S_STEM_LAYOUT`).
+- A 30, 60, or 90 second section is prepared with ffmpeg before
+  `decodeAudioData`. The cut keeps the file rate and channel count. Every stem
+  in the group is given the same start and length. The estimate uses the
+  higher of the file rate and the 48 kHz playback context, and a section that
+  would still pass 40 MiB is refused before the cut. Full length is a separate
+  choice: 128 MiB per stem, 512 MiB per group, 1024 MiB for eight lanes.
+  Raising only one of those three still refuses a group. Available RAM is not
+  the allowance.
 - Decoded size follows the **context** sample rate, not the file header: 40 MiB
-  is ≈118.9 s at 44.1 kHz and ≈109.2 s at 48 kHz.
-- Rejections happen after decode for byte ceilings (peak-memory gap is real),
-  and on declared `Content-Length` before the body where possible.
+  is ≈118.9 s at 44.1 kHz and ≈109.2 s at 48 kHz. The playback context remains
+  48 kHz. The section file is not resampled in order to fit.
+- Rejections happen after decode for a full-length byte ceiling (the temporary
+  compressed buffer and the float buffer can both be live). A section refuses
+  on the estimate before ffmpeg writes the slice.
 - `unloadGroup()` frees one group and its bytes; `unload()`/`dispose()` clear
   both. The browser reclaims lazily: measure with a forced GC and with repeated
   cycles, and report "no per-cycle growth" rather than "immediate reclamation".

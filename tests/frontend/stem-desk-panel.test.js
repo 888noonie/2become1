@@ -63,7 +63,9 @@ class FakeDesk {
     return this.loadGroups([{ trackId: 'A', title: 'Load', lanes }]);
   }
 
-  async loadGroups(groups) {
+  async loadGroups(groups, options) {
+    this.lastOptions = options || null;
+    this.lastUrls = groups.flatMap((group) => group.lanes.map((lane) => lane.audioUrl));
     for (const group of groups) {
       const trackId = group.trackId || 'A';
       const title = group.title || trackId;
@@ -226,6 +228,7 @@ function mount({
   listJobsImpl = async () => ({ items: [] }),
   watchJobImpl = () => () => {},
   listStemsImpl = null,
+  store = null,
 } = {}) {
   const container = document.createElement('div');
   const desk = new FakeDesk();
@@ -233,6 +236,7 @@ function mount({
   const calls = [];
   const dispose = mountStemDeskPanel({
     container,
+    store,
     onAnnounce: () => {},
     audioContextFactory: () => ({ name: 'fake-context' }),
     createDesk: (options) => {
@@ -1443,4 +1447,57 @@ test('a proposal arranges imported and Demucs groups without swapping their meth
     if (methodB === 'imported') assert.ok(metas.some((text) => text.startsWith('imported · set ')));
     assert.equal(desk.calls.some(([name]) => name === 'play'), false);
   }
+});
+
+test('a group section uses one window for every stem, and full length is explicit', async () => {
+  const { container, desk } = mount({ variants: DEMUCS_QUAD });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  await loadGroup(container, 'A');
+
+  assert.equal(desk.lastUrls.length, 4);
+  const windows = desk.lastUrls.map((url) => new URL(url, 'http://127.0.0.1'));
+  const starts = windows.map((url) => url.searchParams.get('start'));
+  const lengths = windows.map((url) => url.searchParams.get('duration'));
+  assert.deepEqual(starts, ['0', '0', '0', '0']);
+  assert.deepEqual(lengths, ['90', '90', '90', '90']);
+  assert.equal(desk.lastOptions.limits.maxStemDecodedBytes, 40 * 1024 * 1024);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Section 0–90 s/);
+  assert.equal(desk.calls.filter(([name]) => name === 'loadGroups').length, 1);
+
+  container.querySelector('select[aria-label="Section for group A"]').value = 'full';
+  await loadGroup(container, 'A');
+  assert.ok(desk.lastUrls.every((url) => !url.includes('duration=')));
+  assert.equal(desk.lastOptions.limits.maxStemDecodedBytes, 128 * 1024 * 1024);
+  assert.equal(desk.lastOptions.limits.maxTrackDecodedBytes, 512 * 1024 * 1024);
+  assert.equal(desk.lastOptions.limits.maxDecodedBytes, 1024 * 1024 * 1024);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Full length/);
+});
+
+test('renaming a library track updates the desk heading without loading again', async () => {
+  const items = [{ id: 'track-1', name: 'night-drive.wav' }];
+  let listener = () => {};
+  const store = {
+    getState: () => ({ library: { items } }),
+    subscribeSlice: (_slice, fn) => {
+      listener = fn;
+      return () => {};
+    },
+  };
+  const { container, desk } = mount({ variants: DEMUCS_QUAD, store });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  await loadGroup(container, 'A');
+  const loads = desk.calls.filter(([name]) => name === 'loadGroups').length;
+
+  items[0] = { id: 'track-1', name: 'Café — 夜 <script>' };
+  listener();
+
+  const heading = container.querySelector('.stem-desk__group-title').textContent;
+  assert.match(heading, /Café — 夜 <script>/);
+  assert.equal(container.querySelectorAll('script').length, 0);
+  assert.equal(selectFor(container, 'A').selectedOptions[0].textContent, 'Café — 夜 <script>');
+  assert.equal(desk.calls.filter(([name]) => name === 'loadGroups').length, loads);
 });

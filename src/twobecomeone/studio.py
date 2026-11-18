@@ -38,6 +38,41 @@ from .common import (
     log,
 )
 from .contracts import TERMINAL_JOB_STATES, JobKind
+
+# A display name is the label the PM sees. It is not the file name, the
+# content hash, or the track id. Longer text is rejected rather than cut,
+# so a saved name is the name that was submitted.
+_TRACK_DISPLAY_NAME_LIMIT = 200
+# The Stem Desk plays through one 48 kHz context. A window is estimated at
+# the higher of the file rate and that context rate, so a section is refused
+# before ffmpeg runs when the decoded float buffer would not fit.
+_DESK_PLAYBACK_RATE = 48000
+_SECTION_SECONDS = frozenset({30, 60, 90})
+_SECTION_START_MAX = 60 * 60
+_DEFAULT_STEM_DECODED_BYTES = 40 * 1024 * 1024
+# Storage may hold a stem the explicit full-length desk can play. The default
+# load still cuts a section instead of decoding the whole file.
+_STORED_STEM_BYTES = 128 * 1024 * 1024
+_STORED_STEM_DECODED_BYTES = 128 * 1024 * 1024
+_STORED_TRACK_DECODED_BYTES = 512 * 1024 * 1024
+
+
+def clean_track_display_name(value: object) -> str:
+    """Return a stored track label, or reject a blank or over-long one.
+
+    Unicode is normalized to NFC and control characters are removed. The
+    result is never sliced: a name that is still too long is an error.
+    """
+    if not isinstance(value, str):
+        raise UserError("track name cannot be empty")
+    cleaned = media.sanitize_text(value, 10_000)
+    if not cleaned:
+        raise UserError("track name cannot be empty")
+    if len(cleaned) > _TRACK_DISPLAY_NAME_LIMIT:
+        raise UserError(
+            f"track name must be {_TRACK_DISPLAY_NAME_LIMIT} characters or fewer"
+        )
+    return cleaned
 from .jobs import CancellationToken, JobEngine, JobStore
 
 
@@ -753,7 +788,7 @@ class StudioService:
                     assignments.append("display_name = NULL")
                 else:
                     assignments.append("display_name = ?")
-                    values.append(media.sanitize_text(str(value), 300))
+                    values.append(clean_track_display_name(value))
             elif key == "bpm":
                 column = "bpm_override"
                 if value is None:
@@ -1787,6 +1822,7 @@ class StudioService:
                 downloaded, source_kind="youtube", source_ref=url,
                 metadata=metadata, artwork_source=thumbnail,
             )
+            track = self._apply_import_display_name(track, request, metadata)
             # Clean staging only after successful managed ingestion.
             shutil.rmtree(work_dir, ignore_errors=True)
             return self._finish_import(track)
@@ -1808,6 +1844,7 @@ class StudioService:
                 track = self.ingest(
                     source, original_name, source_kind="upload",
                 )
+            track = self._apply_import_display_name(track, request, None)
             staged_path.unlink(missing_ok=True)
             return self._finish_import(track)
 
@@ -1824,6 +1861,32 @@ class StudioService:
             "result": {"track_id": track["id"], "name": track["name"]},
             "message": "Import complete",
         }
+
+    def _apply_import_display_name(self, track: dict, request: dict, metadata: dict | None) -> dict:
+        """Set the label once, when the track is first stored.
+
+        A name the PM already saved is left alone. Separation finishes later
+        and must not replace it. The file name stays in ``original_name``.
+        """
+        if self._display_name_is_set(track["id"]):
+            return self.get_track(track["id"])
+        chosen = request.get("display_name")
+        if isinstance(chosen, str) and chosen:
+            return self.update_track(track["id"], display_name=chosen)
+        title = metadata.get("title") if isinstance(metadata, dict) else None
+        if isinstance(title, str):
+            try:
+                return self.update_track(track["id"], display_name=title)
+            except UserError:
+                return track
+        return track
+
+    def _display_name_is_set(self, track_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT display_name FROM tracks WHERE id = ?", (track_id,)
+            ).fetchone()
+        return bool(row and row["display_name"])
 
     def _queue_auto_separation(self, track_id: str) -> None:
         try:
@@ -1892,8 +1955,12 @@ class StudioService:
             raise UserError("invalid staging key")
         return media.validate_managed_path(self.incoming_dir / staging_key, self.incoming_dir)
 
-    def submit_youtube_import(self, url: str) -> dict:
-        """Queue an asynchronous YouTube import and return the job snapshot."""
+    def submit_youtube_import(self, url: str, display_name: str | None = None) -> dict:
+        """Queue an asynchronous YouTube import and return the job snapshot.
+
+        ``display_name`` is optional. A blank value is the caller's problem
+        to omit; a present value is validated before any download starts.
+        """
         if self._closed:
             raise UserError("studio service is closed")
         canonical = sources.canonicalize_youtube_url(url)
@@ -1902,16 +1969,24 @@ class StudioService:
             "canonical_url": canonical,
             "work_key": self._work_key(canonical),
         }
+        if display_name is not None:
+            request["display_name"] = clean_track_display_name(display_name)
         job = self._engine.submit(
             JobKind.IMPORT, request, self._import_run_fn(request), executor="acquisition",
         )
         return self.get_job(job["id"])
 
-    def submit_upload_import(self, staging_key: str, original_name: str | None = None) -> dict:
+    def submit_upload_import(
+        self,
+        staging_key: str,
+        original_name: str | None = None,
+        display_name: str | None = None,
+    ) -> dict:
         """Queue an asynchronous upload import for an already-staged file.
 
-        ``staging_key`` is an opaque bare filename (never a path); the original
-        upload name is preserved (sanitized) for the track's display name.
+        ``staging_key`` is an opaque bare filename (never a path). The upload
+        file name stays the stored original name. ``display_name``, when
+        present, is the label and is validated before the job is queued.
         """
         if self._closed:
             raise UserError("studio service is closed")
@@ -1921,6 +1996,8 @@ class StudioService:
             "staging_key": staging_key,
             "original_name": original_name,
         }
+        if display_name is not None:
+            request["display_name"] = clean_track_display_name(display_name)
         job = self._engine.submit(
             JobKind.IMPORT, request, self._import_run_fn(request), executor="acquisition",
         )
@@ -2395,6 +2472,95 @@ class StudioService:
             raise UserError(f"stem media is unavailable or corrupt: {name}")
         return resolved
 
+    def stem_audio_window(self, stem_set_id: str, name: str, *, start: float, duration: int) -> bytes:
+        """Cut one stem to a shared musical section before the browser sees it.
+
+        The cut keeps the file's sample rate and channel count. It does not
+        resample, downmix, or replace the stored stem. A section that would
+        still decode past the desk's ordinary per-stem ceiling is refused
+        with the estimated byte count.
+        """
+        if isinstance(duration, bool) or not isinstance(duration, int) or duration not in _SECTION_SECONDS:
+            raise UserError("a section must be 30, 60, or 90 seconds")
+        if isinstance(start, bool) or not isinstance(start, (int, float)) or not math.isfinite(float(start)):
+            raise UserError("section start must be a finite number of seconds")
+        start_seconds = float(start)
+        if start_seconds < 0 or start_seconds > _SECTION_START_MAX:
+            raise UserError("section start must be between 0 and 3600 seconds")
+
+        source = self.stem_audio_path(stem_set_id, name)
+        layout = self._probe_audio_layout(source)
+        if start_seconds >= layout["duration"]:
+            raise UserError("the section starts past the end of the recording")
+        playback_rate = max(layout["sample_rate"], _DESK_PLAYBACK_RATE)
+        decoded = int(duration * playback_rate * layout["channels"] * 4)
+        if decoded > _DEFAULT_STEM_DECODED_BYTES:
+            raise UserError(
+                f"a {duration} second section decodes to {decoded} bytes at "
+                f"{playback_rate} Hz; the desk holds at most "
+                f"{_DEFAULT_STEM_DECODED_BYTES} per stem"
+            )
+
+        command = [
+            "ffmpeg", "-hide_banner", "-nostdin",
+            "-protocol_whitelist", "file,pipe",
+            "-i", str(source),
+            "-ss", f"{start_seconds:.3f}",
+            "-t", str(int(duration)),
+            "-map", "0:a:0",
+            "-vn",
+            "-c:a", "pcm_s16le",
+            "-f", "wav",
+            "pipe:1",
+        ]
+        try:
+            proc = subprocess.run(
+                command, capture_output=True, timeout=60, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise UserError("the section could not be prepared") from exc
+        if proc.returncode != 0 or not proc.stdout or len(proc.stdout) < 44:
+            raise UserError("the section could not be prepared")
+        if len(proc.stdout) > _DEFAULT_STEM_DECODED_BYTES:
+            raise UserError("the section is larger than the desk can fetch")
+        return proc.stdout
+
+    def _probe_audio_layout(self, path: Path) -> dict:
+        """Read sample rate and channel count without decoding the whole file."""
+        try:
+            proc = subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-select_streams", "a:0",
+                    "-show_entries", "stream=sample_rate,channels:format=duration",
+                    "-of", "json",
+                    str(path),
+                ],
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise UserError("the recording's sample rate could not be read") from exc
+        if proc.returncode != 0:
+            raise UserError("the recording's sample rate could not be read")
+        try:
+            payload = json.loads(proc.stdout)
+            stream = payload["streams"][0]
+            rate = int(stream["sample_rate"])
+            channels = int(stream["channels"])
+            raw_duration = stream.get("duration")
+            if raw_duration is None:
+                raw_duration = payload.get("format", {}).get("duration")
+            duration = float(raw_duration)
+        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise UserError("the recording's sample rate could not be read") from exc
+        if rate <= 0 or channels < 1 or not math.isfinite(duration) or duration < 0:
+            raise UserError("the recording's sample rate could not be read")
+        if channels > 2:
+            raise UserError(
+                f"the recording has {channels} channels; the desk accepts mono or stereo"
+            )
+        return {"sample_rate": rate, "channels": channels, "duration": duration}
+
     # ------------------------------------------------------------------
     # Owner-supplied (already separated) stems
     # ------------------------------------------------------------------
@@ -2513,10 +2679,10 @@ class StudioService:
                 )
             if path.is_symlink() or not path.is_file():
                 raise UserError(f"stem role '{role}' is not a readable staged file")
-            if path.stat().st_size > 40 * 1024 * 1024:
+            if path.stat().st_size > _STORED_STEM_BYTES:
                 raise UserError(
-                    f"stem role '{role}' is {path.stat().st_size} bytes; the desk fetches "
-                    "at most 41943040 per stem"
+                    f"stem role '{role}' is {path.stat().st_size} bytes; a stored stem "
+                    f"can be at most {_STORED_STEM_BYTES}"
                 )
             original = media.sanitize_text(str(entry.get("original_name") or role), 200)
             staged.append(path)
@@ -2542,10 +2708,11 @@ class StudioService:
             decoded_bytes = int(round(
                 probed["duration"] * playback_rate * probed["channels"] * 4
             ))
-            if decoded_bytes > 40 * 1024 * 1024:
+            if decoded_bytes > _STORED_STEM_DECODED_BYTES:
                 raise UserError(
-                    f"stem role '{role}' decodes to {decoded_bytes} bytes; the desk plays "
-                    "at most 41943040 per stem"
+                    f"stem role '{role}' decodes to {decoded_bytes} bytes; a stored stem "
+                    f"can be at most {_STORED_STEM_DECODED_BYTES}. The desk loads a "
+                    "30, 60, or 90 second section unless full length is selected."
                 )
             facts[role] = {
                 **probed,
@@ -2582,10 +2749,10 @@ class StudioService:
             )
 
         total_decoded = sum(f["decoded_bytes"] for f in facts.values())
-        if total_decoded > 160 * 1024 * 1024:
+        if total_decoded > _STORED_TRACK_DECODED_BYTES:
             raise UserError(
-                f"the imported set decodes to {total_decoded} bytes; the desk holds "
-                "at most 167772160 per track"
+                f"the imported set decodes to {total_decoded} bytes; a stored group "
+                f"can be at most {_STORED_TRACK_DECODED_BYTES}"
             )
 
         set_hash = hashlib.sha256(

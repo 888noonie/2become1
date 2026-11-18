@@ -652,9 +652,11 @@ class TestSetIntegrity:
         import wave
         from twobecomeone.studio import UserError
 
-        # 115 s stereo at 44.1 kHz: 40.6 MB decoded at 44.1 kHz (under the old
-        # check) but 44.2 MB at the 48 kHz playback context (over the ceiling).
-        def long_silence(path: Path, seconds: float = 115.0) -> Path:
+        # 360 s stereo at 44.1 kHz fits a 128 MiB check at the file rate and
+        # exceeds it at the 48 kHz playback context. Storage uses the context
+        # rate, so the set is refused. A shorter recording is stored and the
+        # desk plays a section of it.
+        def long_silence(path: Path, seconds: float = 360.0) -> Path:
             frames = int(round(seconds * 44100))
             path.parent.mkdir(parents=True, exist_ok=True)
             with wave.open(str(path), "wb") as out:

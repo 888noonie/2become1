@@ -68,6 +68,23 @@ real view functions with `node --test tests/frontend/*.js`.
   URL is not authorisation: `authorised` must be the caller's own True, or
   the result is `NOT_AUTHORISED`. The handoff names `submit_youtube_import`,
   `submit_upload_import`, or `assign_deck`. It does not start that call.
+- A track label is `display_name`. Import may set it from the Track Name
+  field, or from the video title when that field is blank. The upload file
+  name and the YouTube address stay in `original_name` and `source_ref`.
+  Renaming updates the label only: the track id, content hash, stem-set id,
+  source URL, and media paths stay. A blank or whitespace-only name is
+  rejected. A name longer than 200 characters is rejected rather than cut.
+  Separation finishing later does not replace a name already stored.
+- The Stem Desk still defaults to 40 MiB fetched and 40 MiB decoded per stem,
+  160 MiB per group, and 320 MiB for eight lanes. A 30, 60, or 90 second
+  section is cut with ffmpeg before the browser decodes, at the file's own
+  sample rate and channel count, and the same start and length are sent for
+  every stem in that group. A section that would still decode past 40 MiB is
+  refused with the estimate. Full length is explicit: 128 MiB per stem,
+  512 MiB per group, and 1024 MiB for the desk. Those three move together.
+  Machine RAM is not that allowance. A stored stem may be as large as that
+  full-length ceiling; the default load still cuts a section. The desk's
+  playback context stays 48 kHz; the section file is not resampled to make it fit.
 - A stem-desk proposal is `stem-desk-proposal/v1`.
   `suggestStemDeskProposal` only returns data: A keeps drums and bass, B keeps
   vocals and other, silent lanes stay muted, and both entry offsets stay 0.
@@ -126,8 +143,10 @@ Earlier audio history: `docs/stem-desk-audio-diagnosis.md`.
   center/sides or user material as vocals or Demucs.
 - Never claim beat matching. A shared start on one clock is not tempo or phrase
   alignment; the UI must say so before playback.
-- Keep the decoded-PCM limits (40 MiB/stem, 160 MiB/track, 320 MiB/desk, mono or
-  stereo only). Decoded size follows the context sample rate, not the file.
+- Keep the default decoded-PCM limits (40 MiB/stem, 160 MiB/track, 320 MiB/desk,
+  mono or stereo only). A section is cut before decode; full length raises all
+  three byte ceilings together (128 / 512 / 1024 MiB) and only when the PM
+  chooses it. Decoded size follows the context sample rate, not the file.
 - Prove audio with real separated stems and a negative control that fails on the
   previous code, not with tone probes alone. Headless PCM never replaces the
   PM's listening acceptance.

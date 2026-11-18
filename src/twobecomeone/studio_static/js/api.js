@@ -79,7 +79,7 @@ export function del(path, signal) {
  * @param {AbortSignal} [signal]
  * @returns {Promise<any>}
  */
-export function upload(path, file, onProgress, signal) {
+export function upload(path, file, onProgress, signal, fields) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', path);
@@ -109,6 +109,11 @@ export function upload(path, file, onProgress, signal) {
 
     const form = new FormData();
     form.append('file', file, file.name);
+    if (fields && typeof fields === 'object') {
+      for (const [key, value] of Object.entries(fields)) {
+        if (value) form.append(key, value);
+      }
+    }
     xhr.send(form);
   });
 }
@@ -276,16 +281,26 @@ export function closeAllMonitors() {
 // Domain helpers
 // ---------------------------------------------------------------------------
 
-export function submitYouTube(url) {
-  return post('/api/imports/youtube', { url });
+export function submitYouTube(url, displayName) {
+  const body = { url };
+  const name = typeof displayName === 'string' ? displayName.trim() : '';
+  if (name) body.display_name = name;
+  return post('/api/imports/youtube', body);
 }
 
 export function interpretCommand(text) {
   return post('/api/mashup/interpret', { text });
 }
 
-export function submitUpload(file, onProgress, signal) {
-  return upload('/api/imports/upload', file, onProgress, signal);
+export function submitUpload(file, onProgress, signal, displayName) {
+  const name = typeof displayName === 'string' ? displayName.trim() : '';
+  return upload(
+    '/api/imports/upload',
+    file,
+    onProgress,
+    signal,
+    name ? { display_name: name } : undefined,
+  );
 }
 
 export function cancelJob(jobId) {
