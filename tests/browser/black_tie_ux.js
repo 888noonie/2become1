@@ -119,6 +119,11 @@ try {
     await save('console', false);
     await desk.screenshot({path:out+'/'+width+'-eight-stems.png'});
     if (!baseline) {
+      if (width === 768) {
+        const targets = desk.locator('.stem-desk__lane-controls button');
+        assert.ok(await targets.evaluateAll(buttons => buttons.every(button =>
+          button.offsetWidth >= 44 && button.offsetHeight >= 44)), 'tablet lane buttons meet the touch target');
+      }
       const minimumWidth = async (selector) => desk.locator(selector).evaluateAll(
         (elements) => Math.min(...elements.map((el) => el.getBoundingClientRect().width)),
       );

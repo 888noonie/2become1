@@ -60,3 +60,8 @@ dialog[open] { box-shadow:0 24px 100px var(--console-shadow-deep); }
 }
 @media(max-width:700px){.standby-bank { flex-direction:column; text-align:center; gap:5px; padding:10px; }}
 @media(forced-colors:active){.stem-desk__lane-controls input { appearance:auto; }}
+@media (min-width:701px) {
+  @container (max-width:405px) {
+    .stem-desk__lane-controls { grid-template-columns:minmax(0,1fr); }
+  }
+}

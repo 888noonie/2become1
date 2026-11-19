@@ -10,4 +10,4 @@ The isolated owner demo uses the prepared Midnight Circuit and Paper Lanterns fi
 
 The first render exposed a collapsed desktop desk caused by flex cross-axis sizing. The refinement stretched the desk across the workspace, added engraved empty banks and replaced round desktop gain thumbs with calibrated fader caps. Mobile keeps horizontal gain travel.
 
-Static payload totals 783,551 bytes in 72 files, up 21,801 bytes from the musical base. The added files are the shared stem desk and console styles. The largest files are stem-desk-panel.js, ghost-controller.js, live-mixer.js, stem-desk.js and styles/studio.css. No runtime dependencies or external font requests were added.
+Static payload totals 783,688 bytes in 72 files, up 21,938 bytes from the musical base. The added files are the shared stem desk and console styles. The largest files are stem-desk-panel.js, ghost-controller.js, live-mixer.js, stem-desk.js and styles/studio.css. No runtime dependencies or external font requests were added.
