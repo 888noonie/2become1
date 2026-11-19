@@ -2592,13 +2592,18 @@ class StudioService:
         # A seekable temp file gets a correct header (sizes and pad) written by
         # ffmpeg itself, so the section is a normal WAV to every decoder.
         temp_root = getattr(self, "temp_dir", None)
+        output_path: Path | None = None
         try:
             handle = tempfile.NamedTemporaryFile(
                 dir=temp_root, suffix=".wav", delete=False,
             )
-            handle.close()
             output_path = Path(handle.name)
+            handle.close()
         except OSError as exc:
+            # The name is created before close(), so remove it even when close
+            # itself is what failed.
+            if output_path is not None:
+                output_path.unlink(missing_ok=True)
             raise UserError("the section could not be prepared") from exc
         command = [
             "ffmpeg", "-hide_banner", "-nostdin", "-y",

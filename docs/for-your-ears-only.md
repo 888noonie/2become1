@@ -115,10 +115,13 @@ boundary.
 ## Fixes made during the mission
 
 1. **Section WAV header.** `stem_audio_window` wrote ffmpeg's piped output
-   unchanged, so the RIFF/data sizes were `0xFFFFFFFF`. Chrome tolerated it, but
-   the declared duration was nonsense to `wave` and other tools. The two sizes
-   are now filled in; the payload is untouched. Regression test in
-   `tests/test_track_names_and_sections.py`.
+   unchanged, so the RIFF/data sizes were `0xFFFFFFFF`, and an odd-length data
+   chunk lacked the word-alignment pad. Chrome tolerated both, but the declared
+   duration was nonsense to `wave` and other tools, and an odd 24-bit mono cut
+   ended one byte before the chunk boundary. The cut is now written to a unique
+   seekable temp file, so ffmpeg emits the real sizes and the pad; the payload is
+   untouched. Regression tests in `tests/test_track_names_and_sections.py`
+   cover both the size declaration and the odd-length pad.
 2. **Failed reload wording.** A reload whose every lane failed kept the previous
    group but said “Loaded N stems”, and the desk flattened the server's reason
    into “could not be fetched”. The desk now carries the server message, and the
