@@ -5,6 +5,7 @@
 // decks play. Class C capture is unmeasured in this harness — a receipt is
 // never treated as speaker output.
 
+import { openArrangement } from './arrangement.js';
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -141,6 +142,7 @@ try {
   const errors = [];
   page.on('pageerror', (err) => errors.push(String(err)));
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await waitFor(async () => (
     (await page.locator('.deck-slot--anchor .deck__empty button').count()) >= 1
     || (await page.locator('.deck-slot--anchor .deck__title').count()) === 1

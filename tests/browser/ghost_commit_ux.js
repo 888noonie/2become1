@@ -1,5 +1,6 @@
 // Phase 11 browser acceptance: Commit -> reload -> real preview -> Undo.
 
+import { openArrangement } from './arrangement.js';
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -143,6 +144,7 @@ async function main() {
     });
 
     await page.goto(`${BASE}/#/studio`);
+    await openArrangement(page);
     await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, 'Studio');
     await createAudition(page);
     record('Commit is available only after auditioning', true);
@@ -177,6 +179,7 @@ async function main() {
     record('Render window is positioned over the accepted launch', cueResponse.ok);
 
     await page.reload();
+    await openArrangement(page);
     await waitFor(async () => (await page.locator('.committed-layer').count()) === 1, 'committed layer after reload');
     record('Committed layer survives reload', true);
     await page.addScriptTag({ content: A11Y_SOURCE });
@@ -226,6 +229,7 @@ async function main() {
       `committed=${durable.state.session.committedLayers.length} reverted=${durable.state.session.revertedLayers.length}`);
 
     await page.reload();
+    await openArrangement(page);
     await waitFor(async () => (await page.locator('.committed-layers__history').count()) === 1, 'Undo history after reload');
     record('Undo survives reload', (await page.locator('.committed-layer').count()) === 0);
 

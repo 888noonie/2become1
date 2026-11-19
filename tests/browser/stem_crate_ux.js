@@ -1,5 +1,6 @@
 // Phase 14B.3 browser acceptance: FUN crate panel at both viewports.
 
+import { openArrangement } from './arrangement.js';
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -129,6 +130,7 @@ try {
   const errors = [];
   page.on('pageerror', (err) => errors.push(String(err)));
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.deck-mode__button', { hasText: 'FUN' }).count()) === 1, 'FUN toggle');
   record('crate panel is hidden in DJ mode', await page.locator('.studio__stem-crate').isHidden());
   await page.locator('.deck-mode__button', { hasText: 'FUN' }).click();

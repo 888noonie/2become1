@@ -14,6 +14,7 @@
 //     autoplay policy (a separate context without the autoplay override).
 // Real Web Audio scheduling in the harness; both viewports.
 
+import { openArrangement } from './arrangement.js';
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -161,6 +162,7 @@ async function main() {
     });
 
     await page.goto(`${BASE}/#/studio`);
+    await openArrangement(page);
     await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, 'Studio');
     await createAudition(page);
     await commitAudition(page);
@@ -232,6 +234,7 @@ async function main() {
 
     // Reload hydrates idle with no autoplay.
     await page.reload();
+    await openArrangement(page);
     await waitFor(async () => (await page.locator('.committed-layer').count()) === 1, 'committed layer after reload');
     const reloadState = await liveBadgeState(page);
     record('Reload hydrates idle with no autoplay', reloadState === 'idle', `state=${reloadState}`);
@@ -271,6 +274,7 @@ async function main() {
 
     // A real user-gesture Play Lead resumes idle -> scheduled/live under
     // normal autoplay policy (no override masking policy-sensitive behavior).
+    await openArrangement(pageB);
     await startLead(pageB);
     const resumedB = await waitFor(async () => {
       const state = await liveBadgeState(pageB);

@@ -19,6 +19,7 @@
 // Environment:
 //   CHROMIUM_PATH  override the system Chromium executable
 
+import { openArrangement } from './arrangement.js';
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs';
@@ -166,6 +167,7 @@ async function stopChild(child) {
 
 async function journeySelectPhraseButton(page) {
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'anchor present' });
 
   // The "Select phrase" button appears on the Foundation deck only.
@@ -209,6 +211,7 @@ async function journeyPreconditionLeadNotPlaying(page) {
   // With Lead NOT playing, the honest precondition gate (A7) blocks the
   // dialog and surfaces a toast instead.
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'anchor present' });
 
   // Ensure nothing is playing. The audio element persists across hash
@@ -235,6 +238,7 @@ async function journeyFullPreviewFlow(page) {
   // Hard reload for a clean audio/state baseline (prior journeys ran in the
   // same document via hash navigation).
   await page.reload();
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'anchor present' });
 
   // Start Lead playback (A7 ownership gate). Use the deck's Play button.
@@ -301,6 +305,7 @@ async function journeyFullPreviewFlow(page) {
 async function journeyWaveformDrag(page) {
   // Hard reload for a clean baseline (prior journey left Lead playing).
   await page.reload();
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'anchor present' });
   // Start Lead playback.
   await page.locator('.deck-slot--lead button[aria-label="Play Lead"]').click();
@@ -397,6 +402,7 @@ async function main() {
 
     // Accessibility audit on the populated studio.
     await page.goto(`${BASE}/#/studio`);
+    await openArrangement(page);
     await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'studio populated' });
     await sleep(300);
     await auditCurrentPage(page, 'ghost studio');

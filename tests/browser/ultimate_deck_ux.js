@@ -1,5 +1,6 @@
 // Ultimate Deck focused browser proof at desktop and mobile viewports.
 
+import { openArrangement } from './arrangement.js';
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -43,6 +44,7 @@ async function stop(child) {
 
 async function assignTracks(page, base) {
   await page.goto(`${base}/#/studio`);
+  await openArrangement(page);
   await waitFor(() => page.locator('.deck__empty button').count().then((count) => count === 2), 'empty decks');
   for (const role of ['anchor', 'lead']) {
     await page.locator(`.deck-slot--${role} .deck__empty button`).click();
@@ -84,6 +86,7 @@ async function main() {
       page.on('pageerror', (error) => errors.push(error.message));
       page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
       await page.goto(`${base}/#/studio`);
+      await openArrangement(page);
       await waitFor(() => page.locator('.deck-mode__button').count().then((count) => count === 2), 'mode switch');
       await page.locator('.deck-mode__button', { hasText: 'FUN' }).click();
       await waitFor(() => page.locator('.performance-pad').count().then((count) => count === 7), 'seven pads');

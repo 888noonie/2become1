@@ -12,6 +12,7 @@
 // Environment:
 //   CHROMIUM_PATH  override the system Chromium executable (default /usr/bin/chromium)
 
+import { openArrangement } from './arrangement.js';
 import { chromium } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs';
@@ -186,11 +187,6 @@ async function journeyFirstRun(page) {
   // Both decks show the empty "Choose Track" state.
   const chooseButtons = await page.locator('.deck__empty button', { hasText: 'Choose Track' }).count();
   record('first-run shows two empty decks', chooseButtons === 2, `${chooseButtons} choose buttons`);
-}
-
-async function openArrangement(page) {
-  const summary = page.getByText('Arrangement & rendering', {exact:true});
-  if (!await summary.evaluate(el => el.parentElement.open)) await summary.click();
 }
 
 async function journeyAssignAndSwap(page) {
