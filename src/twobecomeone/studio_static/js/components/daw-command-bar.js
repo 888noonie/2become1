@@ -45,8 +45,8 @@ function declinedMessages(lastDirective) {
   }).filter(Boolean);
 }
 
-function deckGroup(deck, eq, onDirective) {
-  const inputs = {};
+function deckGroup(deck, onDirective) {
+  const updateBand = [];
   const bands = BANDS.map(([band, label]) => {
     const input = createElement('input', {
       type: 'range',
@@ -55,29 +55,39 @@ function deckGroup(deck, eq, onDirective) {
       step: '1',
       'aria-label': label,
     });
-    input.value = String(bandValue(eq, deck, band));
-    inputs[band] = input;
+    const readout = createElement('span', { class: 'mashup-daw__readout', 'aria-hidden': 'true' });
+    const showValue = (db) => {
+      readout.textContent = `${db} dB`;
+      input.setAttribute('aria-valuetext', `${db} decibels`);
+    };
     let sent = null;
     const emit = () => {
-      const levels = {
-        low: Number(inputs.low.value),
-        mid: Number(inputs.mid.value),
-        high: Number(inputs.high.value),
-      };
-      const db = levels[band];
+      const db = Number(input.value);
       if (sent === db) return;
       sent = db;
+      showValue(db);
       onDirective?.(directive({ op: 'eq', deck, band, db }));
     };
     input.addEventListener('input', emit);
     input.addEventListener('change', emit);
-    return createElement('label', { class: 'mashup-daw__band' }, [label, input]);
+    updateBand.push((eq) => {
+      const db = bandValue(eq, deck, band);
+      if (Number(input.value) !== db) {
+        input.value = String(db);
+        sent = null;
+      }
+      showValue(db);
+    });
+    return createElement('label', { class: 'mashup-daw__band' }, [
+      createElement('span', { class: 'mashup-daw__band-label' }, [label, readout]),
+      input,
+    ]);
   });
 
   const loops = LOOP_BARS.map((bars) => {
     const button = createElement('button', {
       type: 'button',
-      class: 'mashup-daw__loop',
+      class: 'button button--sm mashup-daw__loop',
       text: String(bars),
     });
     button.addEventListener('click', () => {
@@ -87,14 +97,14 @@ function deckGroup(deck, eq, onDirective) {
   });
   const loopOff = createElement('button', {
     type: 'button',
-    class: 'mashup-daw__loop-off',
+    class: 'button button--sm mashup-daw__loop-off',
     text: 'Loop off',
   });
   loopOff.addEventListener('click', () => {
     onDirective?.(directive({ op: 'loop', deck, bars: 4, enabled: false }));
   });
 
-  return createElement('fieldset', {
+  const element = createElement('fieldset', {
     class: 'mashup-daw__deck',
     'aria-label': `Deck ${deck}`,
   }, [
@@ -106,26 +116,15 @@ function deckGroup(deck, eq, onDirective) {
       'aria-label': `Deck ${deck} loop`,
     }, [...loops, loopOff]),
   ]);
+  return { element, update: (eq) => updateBand.forEach((apply) => apply(eq)) };
 }
 
-/**
- * Paint the command bar into `container`. A typed command is kept across calls.
- * @param {{container: HTMLElement, state?: object, onCommand?: Function, onDirective?: Function}} options
- */
-export function renderDawCommandBar({
-  container,
-  state = {},
-  onCommand,
-  onDirective,
-} = {}) {
+function createCommandBar(container, onCommand, onDirective) {
   if (!container) throw new Error('renderDawCommandBar requires a container');
-  const daw = state?.daw ?? {};
-  const previous = container.querySelector('input[aria-label="Mix command"]');
-  const draft = previous ? previous.value : '';
-
+  const draft = container.querySelector('input[aria-label="Mix command"]')?.value || '';
   const command = createElement('input', {
     type: 'text',
-    class: 'mashup-daw__command',
+    class: 'input mashup-daw__command',
     'aria-label': 'Mix command',
     placeholder: 'drop the bass on deck A',
   });
@@ -133,31 +132,21 @@ export function renderDawCommandBar({
 
   const apply = createElement('button', {
     type: 'submit',
-    class: 'mashup-daw__apply',
+    class: 'button button--primary mashup-daw__apply',
     text: 'Apply',
   });
 
-  const message = errorMessage(daw.lastError);
-  const declined = declinedMessages(daw.lastDirective);
-  const agentReply = typeof daw.agentReply === 'string' ? daw.agentReply : '';
+  const error = createElement('p', { class: 'mashup-daw__error', role: 'status' });
+  const declined = createElement('ul', { class: 'mashup-daw__declined' });
+  const reply = createElement('p', { class: 'mashup-daw__agent', 'aria-label': 'Agent output', role: 'status' });
+  const decks = DECKS.map((deck) => deckGroup(deck, onDirective));
   const form = createElement('form', {
     class: 'mashup-daw',
     'aria-label': 'Mix commands',
   }, [
     createElement('label', { class: 'mashup-daw__instructions' }, ['Instructions', command]),
-    apply,
-    message ? createElement('p', { class: 'mashup-daw__error', text: message }) : null,
-    declined.length
-      ? createElement('ul', { class: 'mashup-daw__declined' }, declined.map((text) => (
-        createElement('li', { text })
-      )))
-      : null,
-    createElement('p', {
-      class: 'mashup-daw__agent',
-      'aria-label': 'Agent output',
-      text: agentReply,
-    }),
-    ...DECKS.map((deck) => deckGroup(deck, daw.eq, onDirective)),
+    apply, declined, reply,
+    ...decks.map((deck) => deck.element),
   ]);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -166,6 +155,29 @@ export function renderDawCommandBar({
     onCommand?.(value);
   });
   container.replaceChildren(form);
+  const update = (daw = {}) => {
+    const message = errorMessage(daw.lastError);
+    const notices = declinedMessages(daw.lastDirective);
+    const agentReply = typeof daw.agentReply === 'string' ? daw.agentReply : '';
+    if (error.textContent !== message) {
+      error.textContent = message;
+      if (message && !error.isConnected) apply.after(error);
+      if (!message) error.remove();
+    }
+    if (reply.textContent !== agentReply) reply.textContent = agentReply;
+    if (notices.length !== declined.childElementCount
+        || notices.some((text, index) => declined.children[index].textContent !== text)) {
+      declined.replaceChildren(...notices.map((text) => createElement('li', { text })));
+    }
+    decks.forEach((deck) => deck.update(daw.eq));
+  };
+  return { form, update };
+}
+
+/** Paint the command bar into a container and preserve any typed command. */
+export function renderDawCommandBar({ container, state = {}, onCommand, onDirective } = {}) {
+  const { form, update } = createCommandBar(container, onCommand, onDirective);
+  update(state?.daw);
   return form;
 }
 
@@ -175,12 +187,8 @@ export function renderDawCommandBar({
  */
 export function mountDawCommandBar({ container, store, onCommand, onDirective } = {}) {
   if (!container) throw new Error('mountDawCommandBar requires a container');
-  const draw = () => renderDawCommandBar({
-    container,
-    state: typeof store?.getState === 'function' ? store.getState() : {},
-    onCommand,
-    onDirective,
-  });
+  const { update } = createCommandBar(container, onCommand, onDirective);
+  const draw = () => update(store?.getState?.()?.daw);
   draw();
   const listen = typeof store?.subscribeSlice === 'function'
     ? (fn) => store.subscribeSlice('daw', fn)

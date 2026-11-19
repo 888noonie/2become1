@@ -7,6 +7,7 @@
 import { createElement } from '../dom.js';
 
 let activeDialog = null;
+let dialogSequence = 0;
 
 /** Close the open dialog, if any. Native cancel and the action buttons use the same path. */
 export function closeDialog(value = '') {
@@ -32,12 +33,16 @@ export function openDialog({ title, description, body = [], actions = [], trigge
     activeDialog.close();
   }
 
-  const dialog = createElement('dialog', {});
+  const id = `studio-dialog-${++dialogSequence}`;
+  const dialog = createElement('dialog', {
+    'aria-labelledby': `${id}-title`,
+    ...(description ? { 'aria-describedby': `${id}-description` } : {}),
+  });
   const bodyEl = createElement('div', { class: 'dialog__body' });
 
-  bodyEl.appendChild(createElement('h2', { class: 'dialog__title', text: title }));
+  bodyEl.appendChild(createElement('h2', { class: 'dialog__title', id: `${id}-title`, text: title }));
   if (description) {
-    bodyEl.appendChild(createElement('p', { class: 'dialog__description', text: description }));
+    bodyEl.appendChild(createElement('p', { class: 'dialog__description', id: `${id}-description`, text: description }));
   }
   for (const node of body) {
     bodyEl.appendChild(node);
@@ -74,7 +79,7 @@ export function openDialog({ title, description, body = [], actions = [], trigge
       dialog.removeEventListener('cancel', onCancel);
       dialog.remove();
       if (activeDialog === dialog) activeDialog = null;
-      if (focusTarget && typeof focusTarget.focus === 'function' && focusTarget.isConnected) {
+      if (!activeDialog && focusTarget?.isConnected) {
         focusTarget.focus();
       }
       finish(value);

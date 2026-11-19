@@ -169,7 +169,7 @@ test('Library plus pane opens the Choose Track source dialog', async () => {
 
   const add = container.querySelector('button.library-add');
   assert.equal(add.getAttribute('aria-label'), 'Add a track');
-  assert.equal(add.textContent, '+');
+  assert.equal(add.textContent, '+ Add a track');
   assert.match(container.textContent, /No tracks yet/);
 
   add.click();

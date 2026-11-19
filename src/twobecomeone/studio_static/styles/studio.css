@@ -10,7 +10,7 @@
 .topbar {
   width: min(var(--content-max), calc(100% - var(--space-10)));
   margin: 0 auto;
-  height: 72px;
+  min-height: 64px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -24,21 +24,20 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  letter-spacing: -0.05em;
+  letter-spacing: -0.025em;
   min-height: var(--target-min);
 }
 
 .brand-mark {
   display: grid;
   place-items: center;
-  width: var(--target-min);
-  height: var(--target-min);
-  border-radius: var(--radius-pill);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
   color: var(--color-background);
   font-weight: 900;
-  font-size: 27px;
-  background: linear-gradient(135deg, var(--color-anchor), var(--color-waiting));
-  transform: rotate(-8deg);
+  font-size: var(--text-lg);
+  background: var(--color-action);
 }
 
 .brand-copy {
@@ -48,7 +47,7 @@
 }
 
 .brand-copy em {
-  color: var(--color-lead);
+  color: var(--color-muted);
   font-style: normal;
 }
 
@@ -99,7 +98,7 @@
 .view {
   width: min(var(--content-max), calc(100% - var(--space-10)));
   margin: 0 auto;
-  padding: var(--space-8) 0 var(--space-16);
+  padding: var(--space-4) 0 var(--space-10);
 }
 
 /* ---- Status footer ---- */
@@ -134,7 +133,7 @@
 /* ---- Studio view (Phase 5 dual-deck layout, waveform, plan) ---- */
 .studio {
   display: grid;
-  gap: var(--space-6);
+  gap: var(--space-4);
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -144,7 +143,7 @@
   justify-content: space-between;
   flex-wrap: wrap;
   gap: var(--space-4);
-  padding: var(--space-4) 0;
+  padding: 0 0 var(--space-3);
   border-bottom: 1px solid var(--color-border);
   min-width: 0;
 }
@@ -153,8 +152,11 @@
   background: transparent;
   border: none;
   color: var(--color-text);
-  font-size: var(--text-2xl);
-  font-weight: 800;
+  min-height: var(--target-min);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: var(--text-xl);
+  font-weight: 680;
   cursor: pointer;
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
@@ -172,6 +174,7 @@
 
 .project-header__actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
 }
@@ -280,14 +283,7 @@
   overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-xl);
-  background:
-    linear-gradient(var(--color-deck-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--color-deck-grid) 1px, transparent 1px),
-    radial-gradient(circle at 8% 0%, var(--color-anchor-bg), transparent 38%),
-    radial-gradient(circle at 92% 100%, var(--color-lead-bg), transparent 42%),
-    var(--color-deck-void);
-  background-size: 32px 32px, 32px 32px, auto, auto, auto;
-  box-shadow: var(--shadow-lg);
+  background: var(--color-surface);
 }
 
 .performance-deck::before {
@@ -421,7 +417,7 @@
 
 .performance-pad.is-playing {
   background: var(--color-surface-raised);
-  box-shadow: 0 0 28px var(--color-deck-glow);
+  border-color: var(--color-lead);
 }
 
 .performance-pad__index {
@@ -462,7 +458,7 @@
 
 .performance-pad__launch--active {
   color: var(--color-success);
-  box-shadow: inset 0 0 0 7px var(--color-success-bg), 0 0 24px var(--color-deck-glow);
+  box-shadow: inset 0 0 0 7px var(--color-success-bg);
 }
 
 .performance-pad__pulse {
@@ -947,7 +943,7 @@
 
 .plan-controls {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
   gap: var(--space-4);
   min-width: 0;
 }
@@ -1065,7 +1061,6 @@
 .input-range {
   width: 100%;
   min-height: var(--target-min);
-  accent-color: var(--color-waiting);
   display: block;
 }
 
@@ -1112,7 +1107,7 @@
 
 .seg button.seg--active,
 .seg .seg--active {
-  background: linear-gradient(100deg, var(--color-anchor), var(--color-waiting));
+  background: var(--color-action);
   color: var(--color-background);
 }
 
@@ -1511,94 +1506,3 @@
     grid-template-columns: 1fr 1fr;
   }
 }
-
-/* ---- Stem Performance Desk ---- */
-.stem-desk {
-  margin: var(--space-4) 0;
-  padding: var(--space-4);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg, 16px);
-  background: var(--color-surface);
-}
-.stem-desk__title {
-  margin: 0 0 var(--space-2);
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--color-muted);
-}
-.stem-desk__status,
-.stem-desk__note {
-  margin: 0 0 var(--space-3);
-  font-size: 13px;
-  color: var(--color-text);
-  min-height: 20px;
-}
-.stem-desk__note { color: var(--color-waiting); }
-.stem-desk__toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-}
-.stem-desk__select {
-  flex: 1 1 220px;
-  min-height: var(--target-min);
-}
-.stem-desk__group-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
-}
-.stem-desk__group-controls .button {
-  min-height: var(--target-min);
-  min-width: var(--target-min);
-}
-.stem-desk__proposal {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
-}
-.stem-desk__proposal .button {
-  min-height: var(--target-min);
-  min-width: var(--target-min);
-}
-.stem-desk__timing {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
-}
-.stem-desk__timing .button {
-  min-height: var(--target-min);
-  min-width: var(--target-min);
-}
-.stem-desk__offset {
-  min-width: 4.5rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  color: var(--color-text);
-}
-.stem-desk__actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.stem-desk__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  margin-bottom: var(--space-2);
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-}
-.stem-desk__name { font-weight: 700; font-size: var(--text-sm); }
-.stem-desk__meta { font-size: var(--text-xs); color: var(--color-muted); }

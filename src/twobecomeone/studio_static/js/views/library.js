@@ -65,10 +65,10 @@ export function mountLibrary({ store, container }) {
   ]);
 
   const addPane = createElement('button', {
-    class: 'button library-add',
+    class: 'button button--primary library-add',
     type: 'button',
     'aria-label': 'Add a track',
-    text: '+',
+    text: '+ Add a track',
   });
   addPane.addEventListener('click', () => {
     void openSourcePicker(store, null);
@@ -77,7 +77,13 @@ export function mountLibrary({ store, container }) {
   const listEl = createElement('div', { class: 'track-list track-list--grid', role: 'list' });
   const loadMoreEl = createElement('div', { class: 'load-more' });
 
-  container.replaceChildren(toolbar, addPane, listEl, loadMoreEl);
+  container.replaceChildren(
+    createElement('header', { class: 'view-heading' }, [
+      createElement('h1', { text: 'Library' }),
+      addPane,
+    ]),
+    toolbar, listEl, loadMoreEl,
+  );
 
   // ---- State sync ----
   const syncFromState = (state) => {
@@ -146,11 +152,13 @@ export function mountLibrary({ store, container }) {
     });
     // If artwork exists, use an <img> (safe: src is a backend URL, alt is empty).
     if (track.artwork_url) {
+      const fallback = createElement('span', { text: art.textContent });
       const img = createElement('img', { src: track.artwork_url, alt: '', class: 'track-card__art-img' });
-      art.replaceChildren(img);
+      img.addEventListener('error', () => img.remove(), { once: true });
+      art.replaceChildren(fallback, img);
     }
 
-    const title = createElement('div', { class: 'track-card__title', text: track.name });
+    const title = createElement('div', { class: 'track-card__title', text: track.name, title: track.name });
 
     const meta = createElement('div', { class: 'track-card__meta' }, [
       createElement('span', { text: sourceLabel(track.source?.kind) }),
@@ -179,7 +187,7 @@ export function mountLibrary({ store, container }) {
       'data-action': 'rename',
     });
     const trashBtn = createElement('button', {
-      class: 'button button--ghost', type: 'button',
+      class: `button button--ghost${track.deleted_at ? '' : ' button--danger'}`, type: 'button',
       text: track.deleted_at ? 'Restore' : 'Trash',
       'data-action': track.deleted_at ? 'restore' : 'trash',
     });
@@ -189,7 +197,7 @@ export function mountLibrary({ store, container }) {
     ]);
 
     return createElement('div', { class: 'track-card', role: 'listitem', 'data-track-id': track.id }, [
-      art, title, meta, actions,
+      art, createElement('div', { class: 'track-card__identity' }, [title, meta]), actions,
     ]);
   };
 

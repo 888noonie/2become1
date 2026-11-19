@@ -204,21 +204,20 @@ export function mountStudio({ container }) {
   studioRoot.appendChild(headerContainer);
   studioRoot.appendChild(liveAnnouncer);
   studioRoot.appendChild(retryContainer);
-  studioRoot.appendChild(performanceDeckContainer);
-  studioRoot.appendChild(crateMount);
   studioRoot.appendChild(stemDeskMount);
-  studioRoot.appendChild(swapBar);
-  studioRoot.appendChild(crossfaderContainer);
-  studioRoot.appendChild(decksContainer);
-  studioRoot.appendChild(ghostCardContainer);
-  studioRoot.appendChild(committedLayersContainer);
-  studioRoot.appendChild(planContainer);
-  studioRoot.appendChild(renderActionsContainer);
+  const arrangement = createElement('details', { class: 'workspace-drawer' }, [
+    createElement('summary', { text: 'Arrangement & rendering' }),
+    performanceDeckContainer, crateMount, swapBar, crossfaderContainer, decksContainer,
+    ghostCardContainer, committedLayersContainer, planContainer, renderActionsContainer,
+  ]);
+  studioRoot.appendChild(arrangement);
   const mashupSide = createElement('aside', { class: 'studio__mashup-side' });
   const queueMount = createElement('div', { class: 'studio__mashup-queue' });
   const dawMount = createElement('div', { class: 'studio__mashup-daw' });
   mashupSide.append(queueMount, dawMount);
-  studioRoot.appendChild(mashupSide);
+  studioRoot.appendChild(createElement('details', { class: 'workspace-drawer' }, [
+    createElement('summary', { text: 'Queue & advanced mixing' }), mashupSide,
+  ]));
 
   function updateHeader() {
     replaceChildren(headerContainer, [projectHeader()]);

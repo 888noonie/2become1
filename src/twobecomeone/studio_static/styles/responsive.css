@@ -3,7 +3,6 @@
 /* ---- Tablet (<= 820px) ---- */
 @media (max-width: 820px) {
   .topbar {
-    height: 64px;
     flex-wrap: wrap;
     height: auto;
     padding: var(--space-3) 0;
@@ -12,8 +11,7 @@
   .nav {
     order: 3;
     width: 100%;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+    flex-wrap: wrap;
   }
 
   .slot-summary {
@@ -41,16 +39,13 @@
     grid-template-columns: 1fr;
   }
 
-  .track-list--grid {
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  }
 }
 
 /* ---- Mobile (<= 560px) ---- */
 @media (max-width: 560px) {
   .view {
     width: calc(100% - var(--space-6));
-    padding: var(--space-5) 0 var(--space-10);
+    padding: var(--space-3) 0 var(--space-8);
   }
 
   .topbar {
@@ -77,12 +72,21 @@
   }
 
   .library-toolbar {
-    flex-direction: column;
-    align-items: stretch;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
   }
 
   .library-toolbar .input {
-    flex: none;
+    grid-column: 1 / -1;
+  }
+
+  .track-card__actions {
+    gap: var(--space-1);
+  }
+
+  .track-card__actions .button {
+    padding-inline: var(--space-2);
   }
 
   .engine-grid {

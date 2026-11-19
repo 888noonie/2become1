@@ -7,30 +7,52 @@
 
 :root {
   color-scheme: dark;
+  --console-ambient: #243b39;
+  --console-shadow-light: #0004;
+  --console-enamel: #203d3c;
+  --console-enamel-dark: #142e30;
+  --console-enamel-light: #28433f;
+  --console-groove: #b1cbb33a;
+  --console-ivory: #fff3d8;
+  --console-brass-edge: #786748;
+  --console-brass-warm: #3a3529;
+  --console-brass-dark: #201f1b;
+  --console-parchment: #e0d7c5;
+  --console-bridge-light: #2c4040;
+  --console-bridge-dark: #1d2e2f;
+  --console-strip-light: #ffffff05;
+  --console-sleeve: #233a38;
+  --console-shadow-deep: #0009;
 
-  /* ---- Semantic colors ---- */
-  --color-anchor: #ff4fa3;      /* pink — the foundation */
-  --color-lead: #5bd7ff;        /* cyan — the spark */
-  --color-success: #d7ff62;     /* lime */
-  --color-waiting: #ff8a3d;     /* orange */
-  --color-danger: #ff5c6a;      /* red */
-  --color-background: #0b0712;
-  --color-surface: #171022;
-  --color-surface-raised: #1f1730;
-  --color-text: #f8f3ff;
-  --color-muted: #aaa0b9;
-  --color-border: rgba(255, 255, 255, 0.13);
-  --color-focus: #ffd166;
-  --color-backdrop: rgba(0, 0, 0, 0.6);
-  --color-anchor-bg: rgba(255, 79, 163, 0.15);
-  --color-lead-bg: rgba(91, 215, 255, 0.15);
-  --color-waiting-bg: rgba(255, 138, 61, 0.2);
-  --color-success-bg: rgba(215, 255, 98, 0.2);
-  --color-deck-glow: rgba(91, 215, 255, 0.24);
-  --color-deck-void: rgba(11, 7, 18, 0.72);
-  --color-deck-grid: rgba(255, 255, 255, 0.045);
-  --color-ghost: #a982ff;
-  --color-ghost-bg: rgba(169, 130, 255, 0.16);
+
+  /* Track identity and semantic feedback */
+  --color-anchor: #ffaf86;
+  --color-lead: #78ddd2;
+  --color-success: #9ad6a3;
+  --color-waiting: #efc284;
+  --color-danger: #ffa0a5;
+  --color-ghost: #e8c887;
+  --color-action: #f3d299;
+  --color-action-hover: #fff;
+  --color-background: #0a1314;
+  --color-surface: #152325;
+  --color-surface-raised: #213235;
+  --color-surface-hover: #304547;
+  --color-well: #0d191b;
+  --color-text: #faf4e9;
+  --color-muted: #b9c9c6;
+  --color-border: #394e50;
+  --color-control-border: #738584;
+  --color-focus: #f9d798;
+  --color-backdrop: rgb(7 9 12 / 76%);
+  --color-anchor-bg: rgb(114 214 194 / 13%);
+  --color-lead-bg: rgb(154 183 255 / 13%);
+  --color-waiting-bg: rgb(239 194 132 / 12%);
+  --color-success-bg: rgb(154 214 163 / 12%);
+  --color-danger-bg: rgb(255 160 165 / 12%);
+  --color-deck-void: var(--color-well);
+  --color-ghost-bg: rgb(196 177 243 / 12%);
+  --font-mono: ui-monospace, "Cascadia Mono", monospace;
 
   /* ---- Spacing scale ---- */
   --space-1: 4px;
@@ -45,10 +67,10 @@
   --space-16: 64px;
 
   /* ---- Radii ---- */
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 24px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 9px;
+  --radius-xl: 12px;
   --radius-pill: 999px;
 
   /* ---- Shadows ---- */
@@ -59,9 +81,9 @@
   /* ---- Typography scale ---- */
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
-  --text-xs: 11px;
+  --text-xs: 12px;
   --text-sm: 13px;
-  --text-base: 15px;
+  --text-base: 14px;
   --text-md: 17px;
   --text-lg: 21px;
   --text-xl: 28px;
@@ -69,7 +91,7 @@
   --text-3xl: 48px;
 
   /* ---- Content widths ---- */
-  --content-max: 1240px;
+  --content-max: 1600px;
   --content-narrow: 900px;
 
   /* ---- Focus ring ---- */
@@ -83,6 +105,9 @@
 
   /* ---- Interactive target ---- */
   --target-min: 44px;
+  --control-padding: var(--space-3);
+  /* Layout breakpoints live with their components: 820px tablet, 560px
+   * compact, and 1120px Studio rail. */
 }
 
 /* ---- Reset ---- */
@@ -99,11 +124,7 @@ body {
   margin: 0;
   min-height: 100vh;
   color: var(--color-text);
-  background:
-    radial-gradient(circle at 15% 5%, rgba(115, 48, 168, 0.26), transparent 33rem),
-    radial-gradient(circle at 91% 25%, rgba(16, 129, 176, 0.18), transparent 32rem),
-    radial-gradient(circle at 45% 95%, rgba(115, 48, 168, 0.16), transparent 30rem),
-    var(--color-background);
+  background: var(--color-background);
   font-family: var(--font-sans);
   font-size: var(--text-base);
   line-height: 1.5;
@@ -125,7 +146,7 @@ body {
 
 h1, h2, h3, h4 {
   margin: 0;
-  font-weight: 800;
+  font-weight: 680;
   letter-spacing: -0.02em;
 }
 

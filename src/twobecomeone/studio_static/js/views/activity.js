@@ -43,7 +43,7 @@ export function mountActivity({
   let abortController = null;
 
   const listEl = createElement('div', { class: 'job-list', role: 'list' });
-  container.replaceChildren(listEl);
+  container.replaceChildren(createElement('h1', { class: 'view-heading', text: 'Activity' }), listEl);
 
   const render = (state) => {
     const jobs = state.jobs.items;
@@ -75,7 +75,7 @@ export function mountActivity({
 
     // Progress bar (per-job, never a shared global bar).
     if (ACTIVE.has(job.status)) {
-      const progress = createElement('div', { class: 'progress', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(job.progress || 0) }, [
+      const progress = createElement('div', { class: 'progress', role: 'progressbar', 'aria-label': `Progress for ${title.textContent}`, 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(job.progress || 0) }, [
         createElement('span', { class: 'progress__bar', style: { width: `${job.progress || 0}%` } }),
       ]);
       nodes.push(progress);

@@ -2,7 +2,7 @@
 
 .mashup-queue {
   width: 100%;
-  max-width: 22rem;
+  max-width: none;
   display: flex;
   flex-direction: column;
   gap: var(--space-4, 16px);
@@ -72,22 +72,20 @@
 
 .studio__mashup-daw {
   display: flex;
-  flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
 }
 
-@media (min-width: 1100px) {
+@media (min-width: 1120px) {
   .studio {
-    grid-template-columns: minmax(0, 1fr) 22rem;
+    grid-template-columns: minmax(0, 1fr) clamp(15rem, 19vw, 19rem);
     align-items: start;
   }
 
   .studio__mashup-side {
     grid-column: 2;
     grid-row: 1 / span 12;
-    position: sticky;
-    top: var(--space-4, 16px);
+    align-self: start;
   }
 }
 
@@ -109,7 +107,6 @@
 
 .mashup-daw {
   display: flex;
-  flex: 1 1 auto;
   flex-direction: column;
   gap: var(--space-4, 16px);
   width: 100%;
@@ -125,28 +122,32 @@
 }
 
 .mashup-daw__agent {
-  flex: 1 1 auto;
-  min-height: 10rem;
+  min-height: 0;
   margin: 0;
-  padding: var(--space-4, 16px);
+  padding: var(--space-3);
   border: 1px solid var(--color-border, currentColor);
   border-radius: var(--radius-lg, 12px);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
+.mashup-daw__agent:empty,
+.mashup-daw__declined:empty,
+.mashup-daw__error:empty { display: none; }
+
 .mashup-daw__deck {
   margin: 0;
-  padding: var(--space-4, 16px);
+  padding: var(--space-3);
   border: 1px solid var(--color-border, currentColor);
   min-width: 0;
+  border-radius: var(--radius-md);
 }
 
 .mashup-daw__bands,
 .mashup-daw__loops {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-4, 16px);
+  gap: var(--space-2);
 }
 
 .mashup-daw__band {
@@ -161,9 +162,23 @@
   padding-left: 1.25rem;
 }
 
-@media (max-width: 40rem) {
-  .mashup-queue {
-    width: 100%;
-    max-width: none;
-  }
+.mashup-queue,
+.mashup-daw {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
 }
+
+.mashup-daw__deck legend { color: var(--color-muted); }
+.mashup-queue__rights, .mashup-queue__empty { color: var(--color-muted); }
+.mashup-daw__error { color: var(--color-danger); }
+.mashup-queue__library-track { white-space: normal; overflow-wrap: anywhere; }
+
+.mashup-daw__band-label {
+  display: flex;
+  justify-content: space-between;
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+}
+.mashup-daw__readout { font-family: var(--font-mono); }

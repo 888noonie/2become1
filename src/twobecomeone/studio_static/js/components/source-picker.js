@@ -37,7 +37,7 @@ export async function openSourcePicker(store, slot = null, options = {}) {
 
   const body = createElement('div', { class: 'picker' });
   const tabBar = createElement('div', { class: 'picker__tabs', role: 'tablist', 'aria-label': 'Choose a source' });
-  const panel = createElement('div', { class: 'picker__panel' });
+  const panel = createElement('div', { class: 'picker__panel', id: 'source-picker-panel', role: 'tabpanel', tabindex: '0' });
 
   body.appendChild(tabBar);
   body.appendChild(panel);
@@ -47,7 +47,9 @@ export async function openSourcePicker(store, slot = null, options = {}) {
   const setTab = (tab) => {
     store.dispatch({ type: 'sourcePicker/tab', tab });
     for (const btn of tabBar.querySelectorAll('.picker__tab')) {
-      btn.setAttribute('aria-selected', btn.dataset.tab === tab ? 'true' : 'false');
+      const selected = btn.dataset.tab === tab;
+      btn.setAttribute('aria-selected', String(selected));
+      btn.tabIndex = selected ? 0 : -1;
     }
     renderPanel(tab);
   };
@@ -55,14 +57,28 @@ export async function openSourcePicker(store, slot = null, options = {}) {
   for (const tab of TABS) {
     const label = tab === 'library' ? 'Library' : tab === 'upload' ? 'Upload' : 'YouTube';
     tabBar.appendChild(createElement('button', {
-      class: 'picker__tab', type: 'button', role: 'tab',
+      class: 'button button--ghost picker__tab', type: 'button', role: 'tab',
+      id: `source-picker-tab-${tab}`, 'aria-controls': panel.id,
+      tabindex: tab === initialTab ? '0' : '-1',
       'data-tab': tab, 'aria-selected': tab === initialTab ? 'true' : 'false',
       text: label,
       onclick: () => setTab(tab),
+      onkeydown: (event) => {
+        const offset = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+        const index = event.key === 'Home' ? 0
+          : event.key === 'End' ? TABS.length - 1
+          : offset ? (TABS.indexOf(tab) + offset + TABS.length) % TABS.length : -1;
+        if (index < 0) return;
+        event.preventDefault();
+        const next = TABS[index];
+        setTab(next);
+        tabBar.querySelector(`[data-tab="${next}"]`).focus();
+      },
     }));
   }
 
   const renderPanel = (tab) => {
+    panel.setAttribute('aria-labelledby', `source-picker-tab-${tab}`);
     // Dispose any per-tab listeners.
     for (const dispose of disposers) dispose();
     disposers = [];
@@ -112,15 +128,18 @@ function renderLibraryPanel(panel, store, slot, disposers, onPick) {
     const cards = tracks.map((track) => {
       const btn = createElement('button', {
         class: 'button', type: 'button', text: 'Select',
+        'aria-label': `Select ${track.name}`,
         onclick: () => assign(store, slot, track, onPick),
       });
-      return createElement('div', { class: 'track-card', role: 'listitem' }, [
-        createElement('div', { class: 'track-card__title', text: track.name }),
-        createElement('div', { class: 'track-card__meta' }, [
-          createElement('span', { text: sourceLabel(track.source?.kind) }),
-          createElement('span', { text: `${formatBpm(track)} BPM` }),
-          createElement('span', { text: formatKey(track) }),
-          createElement('span', { text: formatTime(track.duration) }),
+      return createElement('div', { class: 'track-card picker__track', role: 'listitem' }, [
+        createElement('div', { class: 'track-card__identity' }, [
+          createElement('div', { class: 'track-card__title', text: track.name, title: track.name }),
+          createElement('div', { class: 'track-card__meta' }, [
+            createElement('span', { text: sourceLabel(track.source?.kind) }),
+            createElement('span', { text: `${formatBpm(track)} BPM` }),
+            createElement('span', { text: formatKey(track) }),
+            createElement('span', { text: formatTime(track.duration) }),
+          ]),
         ]),
         btn,
       ]);
@@ -139,8 +158,8 @@ function renderLibraryPanel(panel, store, slot, disposers, onPick) {
 
 function renderUploadPanel(panel, store, slot, disposers, onImported) {
   const fileInput = createElement('input', { type: 'file', accept: 'audio/*,.mp3,.wav,.flac,.m4a,.ogg,.opus,.aiff,.aac', multiple: 'multiple', hidden: 'true' });
-  const drop = createElement('div', {
-    class: 'picker__drop', role: 'button', tabindex: '0',
+  const drop = createElement('button', {
+    class: 'button button--ghost picker__drop', type: 'button',
     'aria-label': 'Upload audio files',
   }, [
     createElement('strong', { text: 'Drop audio files here' }),
@@ -148,32 +167,26 @@ function renderUploadPanel(panel, store, slot, disposers, onImported) {
   ]);
   const nameInput = createElement('input', {
     class: 'input', type: 'text', maxlength: '200', autocomplete: 'off',
-    placeholder: 'Name this track', 'aria-label': 'Track Name',
+    id: 'source-track-name', placeholder: 'Name this track', 'aria-label': 'Track Name',
   });
   const importBtn = createElement('button', {
     class: 'button button--primary', type: 'button', text: 'Import',
   });
   const nameField = createElement('div', { class: 'field' }, [
-    createElement('label', { text: 'Track Name' }),
+    createElement('label', { for: 'source-track-name', text: 'Track Name' }),
     nameInput,
     createElement('p', {
       class: 'picker__hint',
       text: 'Leave blank to use the file name. A name applies when one file is imported.',
     }),
   ]);
-  const status = createElement('div', { class: 'picker__hint' });
+  const status = createElement('div', { class: 'picker__hint', role: 'status' });
 
   panel.replaceChildren(fileInput, drop, nameField, importBtn, status);
   let pending = [];
 
   const openFile = () => fileInput.click();
   drop.addEventListener('click', openFile);
-  drop.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      openFile();
-    }
-  });
   ['dragenter', 'dragover'].forEach((name) => drop.addEventListener(name, (event) => {
     event.preventDefault();
     drop.classList.add('picker__drop--active');
@@ -243,21 +256,21 @@ function renderUploadPanel(panel, store, slot, disposers, onImported) {
 function renderYouTubePanel(panel, store, slot, disposers, onImported) {
   const urlInput = createElement('input', {
     class: 'input', type: 'url', inputmode: 'url', autocomplete: 'url',
-    placeholder: 'https://youtu.be/…', 'aria-label': 'YouTube URL',
+    id: 'source-youtube-url', placeholder: 'https://youtu.be/…', 'aria-label': 'YouTube URL',
   });
   const nameInput = createElement('input', {
     class: 'input', type: 'text', maxlength: '200', autocomplete: 'off',
-    placeholder: 'Name this track', 'aria-label': 'Track Name',
+    id: 'source-track-name', placeholder: 'Name this track', 'aria-label': 'Track Name',
   });
   const submitBtn = createElement('button', { class: 'button button--primary', type: 'button', text: 'Import' });
-  const status = createElement('div', { class: 'picker__hint' });
+  const status = createElement('div', { class: 'picker__hint', role: 'status' });
   const rights = createElement('p', {
     class: 'picker__rights',
     text: 'One video only. Only import audio you have the right to use.',
   });
 
   const nameField = createElement('div', { class: 'field' }, [
-    createElement('label', { text: 'Track Name' }),
+    createElement('label', { for: 'source-track-name', text: 'Track Name' }),
     nameInput,
     createElement('p', {
       class: 'picker__hint',
@@ -265,8 +278,8 @@ function renderYouTubePanel(panel, store, slot, disposers, onImported) {
     }),
   ]);
   const form = createElement('div', { class: 'field' }, [
-    createElement('label', { text: 'YouTube URL' }),
-    createElement('div', { class: 'library-toolbar' }, [urlInput, submitBtn]),
+    createElement('label', { for: 'source-youtube-url', text: 'YouTube URL' }),
+    createElement('div', { class: 'picker__submit-row' }, [urlInput, submitBtn]),
   ]);
 
   panel.replaceChildren(nameField, form, status, rights);

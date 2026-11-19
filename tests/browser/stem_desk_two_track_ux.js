@@ -156,6 +156,7 @@ try {
 
     const desk = page.locator('.stem-desk');
     record('the two-track Stem Desk is mounted', (await desk.count()) === 1);
+    for (const options of await desk.locator('.source-options summary').all()) await options.click();
     record('group A offers library, add/process, and load',
       (await page.getByRole('button', { name: 'Choose from Library for group A' }).count()) === 1
       && (await page.getByRole('button', { name: 'Add / Process Track for group A' }).count()) === 1
@@ -230,12 +231,12 @@ try {
     await crossfader.dispatchEvent('input');
     await sleep(200);
     record('crossfader 0 reports A open and B closed',
-      /gainA 1\.00 · gainB 0\.00/.test(await desk.innerText()));
+      /A 1\.00 \/ B 0\.00/.test(await desk.innerText()));
     await crossfader.fill('100');
     await crossfader.dispatchEvent('input');
     await sleep(200);
     record('crossfader 100 reports B open and A closed',
-      /gainA 0\.00 · gainB 1\.00/.test(await desk.innerText()));
+      /A 0\.00 \/ B 1\.00/.test(await desk.innerText()));
 
     // A gain drag must not replace the slider element (keyed row update).
     const slider = groupA.locator('.stem-desk__row').nth(2).locator('input[type="range"]');

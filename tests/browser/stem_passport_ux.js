@@ -93,6 +93,7 @@ try {
     await selectA.selectOption(trackC.id);
     await sleep(400);
 
+    await page.locator('.source-options summary').first().click();
     const importButton = page.getByRole('button', { name: 'Import My Stems for group A' });
     record('the desk offers an Import My Stems action', (await importButton.count()) === 1);
     await importButton.click();

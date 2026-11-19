@@ -107,7 +107,7 @@ function groupLevelRow(groupId, onChange) {
   });
   const text = createElement('span', { class: 'stem-desk__meta', text: '0 dB' });
   const row = createElement('div', { class: 'stem-desk__level-row' }, [
-    createElement('span', { class: 'stem-desk__group-label', text: 'level' }),
+    createElement('span', { class: 'stem-desk__group-label', text: 'Track level' }),
     input,
     text,
   ]);
@@ -198,8 +198,8 @@ export function mountStemDeskPanel({
     class: 'stem-desk',
     'aria-label': 'Stem Performance Desk',
   });
-  const title = createElement('h2', { class: 'stem-desk__title', text: 'Stem Performance Desk' });
-  const status = createElement('p', { class: 'stem-desk__status', role: 'status', text: 'Choose separated tracks for group A and group B.' });
+  const title = createElement('h2', { class: 'stem-desk__title', text: 'Performance desk' });
+  const status = createElement('p', { class: 'stem-desk__status', role: 'status', text: 'Choose tracks with stems, or prepare a stem set for each track.' });
   const memoryNote = createElement('p', {
     class: 'stem-desk__meta',
     text: 'A section is cut before the browser decodes it, at the recording’s own sample rate and channel count. Full length allows 128 MiB per stem, 512 MiB for one group, and 1024 MiB for eight stems. Available machine memory is not memory the browser can allocate.',
@@ -214,7 +214,7 @@ export function mountStemDeskPanel({
   const groupStart = {};
   for (const groupId of GROUP_IDS) {
     const select = createElement('select', {
-      class: 'stem-desk__select',
+      class: 'select stem-desk__select',
       'aria-label': `Track for group ${groupId}`,
     }, [createElement('option', { value: '', text: 'Choose a track…' })]);
     const chooseLibrary = createElement('button', {
@@ -230,7 +230,7 @@ export function mountStemDeskPanel({
       'aria-label': `Add / Process Track for group ${groupId}`,
     });
     const loadButton = createElement('button', {
-      class: 'button button--sm stem-desk__load',
+      class: 'button button--primary stem-desk__load',
       type: 'button',
       text: `Load ${groupId}`,
       'aria-label': `Load stems ${groupId}`,
@@ -243,7 +243,7 @@ export function mountStemDeskPanel({
       'aria-label': `Import My Stems for group ${groupId}`,
     });
     const section = createElement('select', {
-      class: 'stem-desk__select',
+      class: 'select stem-desk__select',
       'aria-label': `Section for group ${groupId}`,
     }, [
       createElement('option', { value: '90', text: '90 seconds' }),
@@ -260,15 +260,22 @@ export function mountStemDeskPanel({
       value: '0',
       'aria-label': `Section start in seconds for group ${groupId}`,
     });
-    const row = createElement('div', { class: 'stem-desk__group-controls', dataset: { group: groupId } }, [
-      createElement('span', { class: 'stem-desk__group-label', text: `Group ${groupId}` }),
+    const row = createElement('section', {
+      class: 'stem-desk__group-controls',
+      dataset: { group: groupId },
+      'aria-label': `Track ${groupId} source and section`,
+    }, [
+      createElement('h3', { class: 'stem-desk__source-title', text: `Group ${groupId}` }),
       select,
-      chooseLibrary,
-      addOrProcess,
-      importStemsButton,
-      section,
-      start,
       loadButton,
+      createElement('details', { class: 'source-options' }, [
+        createElement('summary', { text: 'Sources & section' }),
+        createElement('div', { class: 'stem-desk__actions' }, [chooseLibrary, addOrProcess, importStemsButton]),
+        createElement('div', { class: 'stem-desk__section-fields' }, [
+          createElement('label', { class: 'field' }, ['Duration', section]),
+          createElement('label', { class: 'field' }, ['Start (s)', start]),
+        ]),
+      ]),
     ]);
     groupSelects[groupId] = select;
     groupButtons[groupId] = loadButton;
@@ -279,7 +286,7 @@ export function mountStemDeskPanel({
     groupStart[groupId] = start;
     groupControls.appendChild(row);
   }
-  const playButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Play', disabled: 'true' });
+  const playButton = createElement('button', { class: 'button button--primary', type: 'button', text: 'Play', disabled: 'true' });
   const stopButton = createElement('button', { class: 'button button--sm', type: 'button', text: 'Stop', disabled: 'true' });
   const positionLabel = createElement('span', { class: 'stem-desk__meta', text: '0.0 s' });
   const transport = createElement('div', { class: 'stem-desk__actions stem-desk__transport' }, [playButton, stopButton, positionLabel]);
@@ -290,7 +297,7 @@ export function mountStemDeskPanel({
     class: 'button button--sm', type: 'button', text: 'Preview', disabled: 'true',
   });
   const approveButton = createElement('button', {
-    class: 'button button--sm', type: 'button', text: 'Approve', disabled: 'true',
+    class: 'button button--primary', type: 'button', text: 'Approve', disabled: 'true',
   });
   const rejectButton = createElement('button', {
     class: 'button button--danger button--sm', type: 'button', text: 'Reject', disabled: 'true',
@@ -299,6 +306,7 @@ export function mountStemDeskPanel({
     class: 'stem-desk__proposal', role: 'group', 'aria-label': 'Stem proposal',
   }, [askButton, previewButton, approveButton, rejectButton]);
   const proposalStatus = createElement('p', { class: 'stem-desk__proposal-status', role: 'status' });
+  const proposalDetails = createElement('div', { class: 'stem-desk__proposal-details', hidden: 'true' });
   const PROPOSAL_UNAPPROVED = 'Proposal not approved. Groups A and B stay on the stem desk. Entry offsets take effect on the next Play.';
   const PROPOSAL_APPROVED = 'Proposal approved. Groups A and B stay loaded on one transport. Entry offsets take effect on the next Play.';
   const PROPOSAL_INCOMPLETE = 'Proposal incomplete. Only one group is included. The other group stays as it is, and any entry offset takes effect on the next Play.';
@@ -309,36 +317,60 @@ export function mountStemDeskPanel({
     step: '1',
     value: '50',
     class: 'stem-desk__crossfader',
-    'aria-label': 'Crossfader A to B',
+    'aria-label': 'Crossfader A to B', disabled: 'true',
   });
-  const crossfaderGains = createElement('span', { class: 'stem-desk__meta stem-desk__crossfader-gains', text: 'gainA 1.00 · gainB 0.00' });
+  const crossfaderGains = createElement('span', { class: 'stem-desk__meta stem-desk__crossfader-gains', text: 'A — / B —' });
   const crossfader = createElement('div', { class: 'stem-desk__crossfader-row' }, [
-    createElement('span', { class: 'stem-desk__group-label', text: 'A / B' }),
-    crossfaderInput,
+    createElement('span', { class: 'stem-desk__group-label', text: 'Crossfader' }),
+    createElement('div', { class: 'stem-desk__fade-track' }, [
+      createElement('span', { text: 'A', 'aria-hidden': 'true' }),
+      crossfaderInput,
+      createElement('span', { text: 'B', 'aria-hidden': 'true' }),
+    ]),
     crossfaderGains,
   ]);
   const lanesMount = createElement('div', { class: 'stem-desk__lanes' });
   const note = createElement('p', { class: 'stem-desk__note', hidden: 'true' });
   const policy = createElement('p', {
     class: 'stem-desk__meta stem-desk__policy',
-    text: 'Solo applies across both tracks. The crossfader and each group level still apply on top, so a soloed lane on a closed track is silent.',
+    text: 'Solo applies across both tracks. The crossfader and track levels can still silence a soloed lane.',
   });
   const TWO_TRACK_POLICY = ' Two tracks start on one clock at their own tempo; this desk does not beat-match them.';
-  const ONE_TRACK_POLICY = ' One track keeps looping, as the four-stem desk always has.';
+  const ONE_TRACK_POLICY = ' A single loaded track loops.';
+
+  const memory = createElement('details', { class: 'stem-desk__memory' }, [
+    createElement('summary', { text: 'Section quality and memory limits' }),
+    memoryNote,
+  ]);
+  const producer = createElement('section', {
+    class: 'stem-desk__producer',
+    'aria-label': 'AI Producer',
+  }, [
+    createElement('h3', { text: 'AI Producer' }),
+    createElement('p', { class: 'producer-guide', text: 'Build an arrangement from your loaded stems. Preview the suggested mix, then approve or reject it.' }),
+    proposalRow,
+    proposalStatus,
+    proposalDetails,
+  ]);
 
   container.replaceChildren(root);
   replaceChildren(root, [
-    title,
-    groupControls,
-    status,
-    memoryNote,
-    proposalRow,
-    proposalStatus,
-    transport,
-    crossfader,
-    policy,
-    lanesMount,
-    note,
+    createElement('header', { class: 'console-heading' }, [title]),
+    createElement('div', { class: 'console-body' }, [
+      createElement('div', { class: 'console-banks' }, [
+        groupControls,
+        createElement('div', { class: 'stem-desk__master' }, [transport, crossfader]),
+        lanesMount,
+        createElement('div', { class: 'standby-banks' }, GROUP_IDS.map(id =>
+          createElement('div', { class: 'standby-bank', dataset: { group: id } }, [
+            createElement('span', { class: 'standby-disc', 'aria-hidden': 'true', text: id }),
+            createElement('span', { text: `Track ${id} · Awaiting stems` }),
+          ])
+        )),
+        status, note, policy, memory,
+      ]),
+      producer,
+    ]),
   ]);
 
   let desk = null;
@@ -372,7 +404,9 @@ export function mountStemDeskPanel({
     syncProposalButtons();
   }
 
-  function sayProposal(message) {
+  function sayProposal(message, phase = 'notice') {
+    producer.dataset.phase = phase;
+    proposalDetails.hidden = phase !== 'preview';
     proposalStatus.textContent = message;
     try {
       onAnnounce?.(message);
@@ -386,6 +420,9 @@ export function mountStemDeskPanel({
     pendingProposal = null;
     proposalPreviewed = false;
     if (had) sayProposal(PROPOSAL_UNAPPROVED);
+    if (producer.dataset.phase === 'approved') {
+      sayProposal('Last proposal approved. The mix has since been edited.');
+    }
     syncProposalButtons();
   }
 
@@ -757,14 +794,14 @@ export function mountStemDeskPanel({
     const metaEl = createElement('div', { class: 'stem-desk__meta' });
     const silentEl = createElement('div', { class: 'stem-desk__meta stem-desk__silent' });
     const mute = createElement('button', {
-      class: 'button button--sm',
       type: 'button',
       text: 'M',
+      class: 'button button--sm stem-desk__mute',
     });
     const solo = createElement('button', {
-      class: 'button button--sm',
       type: 'button',
       text: 'S',
+      class: 'button button--sm stem-desk__solo',
     });
     const gain = createElement('input', {
       type: 'range',
@@ -775,8 +812,8 @@ export function mountStemDeskPanel({
     });
     const gainText = createElement('span', { class: 'stem-desk__meta', text: '0 dB' });
     const row = createElement('div', { class: 'stem-desk__row', dataset: { key } }, [
-      createElement('div', {}, [nameEl, metaEl, silentEl]),
-      createElement('div', { class: 'stem-desk__actions' }, [mute, solo, gain, gainText]),
+      createElement('div', { class: 'stem-desk__lane-label' }, [nameEl, metaEl, silentEl]),
+      createElement('div', { class: 'stem-desk__actions stem-desk__lane-controls' }, [mute, solo, gain, gainText]),
     ]);
     const view = { key, row, nameEl, metaEl, silentEl, mute, solo, gain, gainText, lane: null };
 
@@ -841,8 +878,8 @@ export function mountStemDeskPanel({
     note.textContent = anyFallback ? FALLBACK_NOTE : '';
 
     policy.textContent = groups.length >= 2
-      ? 'Solo applies across both tracks. The crossfader and each group level still apply on top, so a soloed lane on a closed track is silent.' + TWO_TRACK_POLICY
-      : 'Solo applies across both tracks. The crossfader and each group level still apply on top, so a soloed lane on a closed track is silent.' + ONE_TRACK_POLICY;
+      ? 'Solo applies across both tracks. The crossfader and track levels can still silence a soloed lane.' + TWO_TRACK_POLICY
+      : 'Solo applies across both tracks. The crossfader and track levels can still silence a soloed lane.' + ONE_TRACK_POLICY;
 
     const liveGroupIds = new Set(groups.map((group) => group.trackId));
     for (const [groupId, view] of groupViews) {
@@ -880,7 +917,7 @@ export function mountStemDeskPanel({
         const section = createElement('section', {
           class: 'stem-desk__group',
           dataset: { group: group.trackId },
-        }, [heading, level.row, timing.row, rows]);
+        }, [heading, rows, level.row, timing.row]);
         view = { section, heading, rows, level, timing };
         groupViews.set(group.trackId, view);
         lanesMount.appendChild(section);
@@ -895,9 +932,12 @@ export function mountStemDeskPanel({
         updateRowView(rowView, lane);
         return rowView.row;
       });
-      // replaceChildren moves the existing row nodes instead of recreating
-      // them, so a gain drag keeps the same element and focus.
-      replaceChildren(view.rows, rows);
+      // Removing and reinserting a focused toggle drops keyboard focus.
+      // Keep the mounted rows in place whenever their order is unchanged.
+      const mounted = view.rows.children;
+      if (mounted.length !== rows.length || rows.some((row, index) => row !== mounted[index])) {
+        replaceChildren(view.rows, rows);
+      }
     }
 
     const liveKeys = new Set(lanes.map((lane) => lane.key));
@@ -914,7 +954,7 @@ export function mountStemDeskPanel({
     const value = state?.crossfader || { position: 50, gainA: 0, gainB: 0, disabled: true };
     crossfaderInput.value = String(value.position);
     crossfaderInput.disabled = Boolean(value.disabled);
-    crossfaderGains.textContent = `gainA ${value.gainA.toFixed(2)} · gainB ${value.gainB.toFixed(2)}`;
+    crossfaderGains.textContent = `A ${value.gainA.toFixed(2)} / B ${value.gainB.toFixed(2)}`;
     crossfaderInput.setAttribute(
       'aria-valuetext',
       `gainA ${value.gainA.toFixed(2)}, gainB ${value.gainB.toFixed(2)}`,
@@ -926,6 +966,7 @@ export function mountStemDeskPanel({
     const hasLanes = Boolean(state?.lanes?.length);
     playButton.disabled = !hasLanes || (!playing && state.status !== 'ready') ? 'true' : undefined;
     stopButton.disabled = playing ? undefined : 'true';
+    transport.dataset.playing = String(playing);
     playButton.textContent = playing ? 'Restart' : 'Play';
     if (!playing) positionLabel.textContent = '0.0 s';
     if (state) updateCrossfader(state);
@@ -1009,13 +1050,14 @@ export function mountStemDeskPanel({
     }
     pendingProposal = suggestion.proposal;
     proposalPreviewed = false;
-    sayProposal(PROPOSAL_UNAPPROVED);
+    sayProposal('Proposal not approved. Preview the suggested changes before approving.', 'ready');
     syncProposalButtons();
   });
 
   previewButton.addEventListener('click', () => {
     if (!desk || !pendingProposal) return;
-    const checked = validateStemDeskProposal(pendingProposal, desk.state());
+    const state = desk.state();
+    const checked = validateStemDeskProposal(pendingProposal, state);
     if (!checked.ok) {
       pendingProposal = null;
       proposalPreviewed = false;
@@ -1023,8 +1065,25 @@ export function mountStemDeskPanel({
       syncProposalButtons();
       return;
     }
+    const target = checked.proposal;
+    const targetsByGroup = GROUP_IDS.map((id) => {
+      const group = target.groups[id];
+      const lanes = state.lanes.filter((lane) => lane.trackId === id);
+      const assignments = lanes.map((lane) => {
+        const change = target.lanes[lane.key];
+        return `${stemLabel(lane.name)} ${change.muted ? 'muted' : 'open'}, ${change.gainDb} dB`;
+      });
+      return createElement('li', {}, [
+        createElement('strong', { text: `Group ${id} · ${group.levelDb} dB · entry ${formatEntryOffset(group.entryOffsetMs)}` }),
+        createElement('p', { text: assignments.join(' · ') }),
+      ]);
+    });
+    replaceChildren(proposalDetails, [
+      createElement('p', { text: `Crossfader at ${target.crossfader}% toward B` }),
+      createElement('ul', {}, targetsByGroup),
+    ]);
     proposalPreviewed = true;
-    sayProposal(`Preview only. ${pendingProposal.rationale} Nothing is applied until Approve.`);
+    sayProposal(`Preview only. ${pendingProposal.rationale} Nothing is applied until Approve.`, 'preview');
     syncProposalButtons();
   });
 
@@ -1040,12 +1099,14 @@ export function mountStemDeskPanel({
     }
     renderLanes(result.state);
     refreshTransport(result.state);
-    sayProposal(PROPOSAL_APPROVED);
+    sayProposal(PROPOSAL_APPROVED, 'approved');
+    if (document.activeElement === approveButton) askButton.focus();
   });
 
   rejectButton.addEventListener('click', () => {
     if (!pendingProposal) return;
     dropPendingProposal();
+    if (document.activeElement === rejectButton) askButton.focus();
   });
 
   crossfaderInput.addEventListener('input', (event) => {
@@ -1144,14 +1205,17 @@ export function mountStemDeskPanel({
       return;
     }
     const title = trackTitle(trackId);
-    const dialog = createElement('dialog', { class: 'dialog' });
+    const dialog = createElement('dialog', {
+      class: 'dialog', 'aria-labelledby': 'stem-import-title', 'aria-describedby': 'stem-import-description',
+    });
     const inputs = {};
     const status = createElement('p', { class: 'stem-desk__meta', role: 'status', text: '' });
 
     const body = createElement('div', { class: 'dialog__body' }, [
-      createElement('h2', { class: 'dialog__title', text: `Import my stems · ${title}` }),
+      createElement('h2', { class: 'dialog__title', id: 'stem-import-title', text: `Import my stems · ${title}` }),
       createElement('p', {
         class: 'dialog__description',
+        id: 'stem-import-description',
         text:
           'Choose the four files you separated yourself and name each role. They must come '
           + 'from one timeline: the same start point, sample rate and length. Equal length is '

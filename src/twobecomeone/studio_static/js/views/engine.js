@@ -20,7 +20,7 @@ export function mountEngine({ store, container }) {
       return;
     }
 
-    const nodes = [];
+    const nodes = [createElement('h1', { class: 'view-heading', text: 'Engine' })];
 
     // Warn only when the unauthenticated service is reachable beyond this
     // machine. Loopback-only is the intended safe local configuration.

@@ -538,17 +538,17 @@ test('the crossfader is disabled for one track and writes equal-power gains for 
   await loadGroup(container, 'A');
   const slider = container.querySelector('.stem-desk__crossfader');
   assert.equal(slider.disabled, true, 'one track has nothing to crossfade');
-  assert.match(container.querySelector('.stem-desk__crossfader-gains').textContent, /gainA 1\.00 · gainB 0\.00/);
+  assert.match(container.querySelector('.stem-desk__crossfader-gains').textContent, /A 1\.00 \/ B 0\.00/);
 
   await loadGroup(container, 'B');
   assert.equal(slider.disabled, false);
-  assert.match(container.querySelector('.stem-desk__crossfader-gains').textContent, /gainA 0\.71 · gainB 0\.71/);
+  assert.match(container.querySelector('.stem-desk__crossfader-gains').textContent, /A 0\.71 \/ B 0\.71/);
 
   slider.value = '0';
   slider.dispatchEvent(new window.Event('input', { bubbles: true }));
   await flush();
   assert.deepEqual(desk.calls.at(-1), ['setCrossfader', 0]);
-  assert.match(container.querySelector('.stem-desk__crossfader-gains').textContent, /gainA 1\.00 · gainB 0\.00/);
+  assert.match(container.querySelector('.stem-desk__crossfader-gains').textContent, /A 1\.00 \/ B 0\.00/);
 });
 
 test('dispose releases the desk and clears the panel', async () => {

@@ -51,7 +51,7 @@ function itemRow(item, onRemove) {
   if (status !== 'importing') {
     const remove = createElement('button', {
       type: 'button',
-      class: 'mashup-queue__remove',
+      class: 'button button--sm button--danger mashup-queue__remove',
       text: 'Remove',
     });
     remove.addEventListener('click', () => onRemove?.(item?.id));
@@ -79,7 +79,7 @@ function libraryAdder(tracks, onEnqueueTrack) {
     createElement('summary', {
       class: 'button mashup-queue__plus',
       'aria-label': 'Add a library track',
-      text: '+',
+      text: '+ Queue a track',
     }),
     createElement('div', { class: 'mashup-queue__library' }, choices),
   ]);

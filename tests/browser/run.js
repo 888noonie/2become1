@@ -188,9 +188,15 @@ async function journeyFirstRun(page) {
   record('first-run shows two empty decks', chooseButtons === 2, `${chooseButtons} choose buttons`);
 }
 
+async function openArrangement(page) {
+  const summary = page.getByText('Arrangement & rendering', {exact:true});
+  if (!await summary.evaluate(el => el.parentElement.open)) await summary.click();
+}
+
 async function journeyAssignAndSwap(page) {
   // Seeded library: assign the two tracks via the source picker.
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.deck__empty button').count()) === 2, { label: 'empty decks' });
 
   // Assign Foundation.
@@ -228,6 +234,7 @@ async function journeyAssignAndSwap(page) {
 
   // Refresh restores the swapped assignment.
   await page.reload();
+  await openArrangement(page);
   await waitFor(async () => {
     const restored = await page.locator('.deck-slot--anchor .deck__title').textContent().catch(() => '');
     const cueReady = await page.locator('input[aria-label="Cue position in seconds (foundation)"]').count();
@@ -245,6 +252,7 @@ async function journeyAssignAndSwap(page) {
   ), { label: 'cue autosave' });
   const savedCue = await page.locator('input[aria-label="Cue position in seconds (foundation)"]').inputValue();
   await page.reload();
+  await openArrangement(page);
   await waitFor(async () => (
     await page.locator('input[aria-label="Cue position in seconds (foundation)"]').inputValue().catch(() => '')
   ) === savedCue, { label: 'cue restored' });
@@ -258,6 +266,7 @@ async function journeyAssignAndSwap(page) {
     await page.locator('.deck-slot--anchor .deck__meta-row').textContent().catch(() => ''),
   ), { label: 'analysis override applied' });
   await page.reload();
+  await openArrangement(page);
   await waitFor(async () => /101\.1 BPM/.test(
     await page.locator('.deck-slot--anchor .deck__meta-row').textContent().catch(() => ''),
   ), { label: 'analysis override restored' });
@@ -266,6 +275,7 @@ async function journeyAssignAndSwap(page) {
 
 async function journeySeparation(page) {
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'anchor present' });
 
   // Open the stem dialog on the anchor deck.
@@ -310,6 +320,7 @@ async function journeySeparation(page) {
 
 async function journeyRender(page) {
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'anchor present' });
 
   // Wait for the server-authored plan to verify.
@@ -369,6 +380,7 @@ async function readDeckClocks(page) {
 
 async function journeyDualDeckConcurrent(page) {
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'anchor present' });
 
   await page.locator('.deck-slot--anchor button[aria-label="Play Foundation"]').click();
@@ -425,6 +437,7 @@ async function readMixerGains(page) {
 
 async function journeyLiveCrossfader(page) {
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.live-crossfader__slider').count()) === 1, { label: 'crossfader present' });
 
   const setFader = async (value) => {
@@ -454,6 +467,7 @@ async function journeyLiveCrossfader(page) {
 
 async function journeyBeatSync(page) {
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await page.locator('.deck-slot--anchor button[aria-label="Play Foundation"]').click();
   await waitFor(async () => (
     await page.locator('.deck-slot--anchor button[aria-label^="Pause Foundation"]').count()
@@ -557,6 +571,7 @@ async function journeyRecovery(page) {
 async function journeyOffline(page) {
   // Invalid YouTube URL must surface a toast, not a crash.
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__empty button').count()) >= 1 || (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'studio ready' });
 
   // Clear any stale toast from a prior journey so we observe this one's result.
@@ -584,6 +599,7 @@ async function journeyOffline(page) {
 async function journeyKeyboard(page) {
   // Keyboard-only: open a dialog, verify focus trap + Escape close + focus return.
   await page.goto(`${BASE}/#/studio`);
+  await openArrangement(page);
   await waitFor(async () => (await page.locator('.deck-slot--anchor .deck__title').count()) === 1, { label: 'anchor present' });
 
   // Focus the "Edit Analysis" button via keyboard (Tab until it is focused).

@@ -60,7 +60,7 @@ test('plus enqueues a library track and the queue has no YouTube paste', async (
   assert.equal(container.querySelector('[aria-label="YouTube links"]'), null);
   assert.equal(container.textContent.includes('Drop YouTube links'), false);
   const plus = container.querySelector('[aria-label="Add a library track"]');
-  assert.equal(plus.textContent, '+');
+  assert.equal(plus.textContent, '+ Queue a track');
   const choice = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Night Drive');
   choice.click();
   assert.deepEqual(calls, [track]);

@@ -2,65 +2,56 @@
  * dialogs, toasts, progress, forms). Colors come from tokens only. */
 
 /* ---- Buttons ---- */
-.button {
+.button,
+.input,
+.select,
+input[type="file"] {
   min-height: var(--target-min);
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--color-control-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-3);
-  padding: 0 var(--space-5);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border);
-  color: var(--color-text);
-  background: transparent;
-  font-weight: 700;
+  gap: var(--space-2);
+  min-width: var(--target-min);
+  padding: var(--space-1) var(--control-padding);
+  background: var(--color-surface-raised);
+  font-weight: 650;
   cursor: pointer;
   text-decoration: none;
-  transition: transform var(--motion-fast) ease, background var(--motion-fast) ease;
+  transition: background-color var(--motion-fast), border-color var(--motion-fast);
 }
 
-.button:hover {
-  transform: translateY(-1px);
-  background: var(--color-surface-raised);
-}
-
-.button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  transform: none;
-}
+.button:hover:not(:disabled) { background: var(--color-surface-hover); }
+.button:active:not(:disabled) { border-color: currentColor; }
 
 .button--primary {
   color: var(--color-background);
-  border: 0;
-  background: linear-gradient(100deg, var(--color-anchor), var(--color-waiting));
-}
-
-.button--primary:hover {
-  background: linear-gradient(100deg, var(--color-anchor), var(--color-waiting));
-}
-
-.button--danger {
-  color: var(--color-danger);
-  border-color: var(--color-danger);
-}
-
-.button--ghost {
+  background: var(--color-action);
   border-color: transparent;
-  color: var(--color-muted);
 }
 
-.button--icon {
-  width: var(--target-min);
-  height: var(--target-min);
-  padding: 0;
-  border-radius: var(--radius-pill);
-}
+.button--primary:hover:not(:disabled) { background: var(--color-action-hover); }
+.button--danger { color: var(--color-danger); }
+.button--danger:hover:not(:disabled) { background: var(--color-danger-bg); }
+.button--ghost { border-color: transparent; background: transparent; }
+.button--icon { width: var(--target-min); padding: 0; }
+.button--sm { padding-inline: var(--space-2); }
 
-.button--sm {
-  min-height: var(--target-min);
-  padding: 0 var(--space-3);
-  font-size: var(--text-xs);
+.button:disabled,
+.input:disabled,
+.select:disabled,
+input[type="range"]:disabled {
+  opacity: .48;
+  cursor: not-allowed;
 }
 
 /* ---- Badges / pills ---- */
@@ -104,7 +95,7 @@
   display: block;
   height: 100%;
   width: 0;
-  background: linear-gradient(90deg, var(--color-anchor), var(--color-waiting), var(--color-success));
+  background: var(--color-success);
   transition: width var(--motion-base) ease;
 }
 
@@ -122,20 +113,52 @@
 
 .input,
 .select {
-  min-height: var(--target-min);
-  padding: 0 var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text);
-  background: var(--color-surface);
-  font-size: var(--text-base);
-  min-width: 0;
-  max-width: 100%;
+  padding: var(--space-1) var(--control-padding);
+  background-color: var(--color-well);
 }
 
-.input:focus,
-.select:focus {
-  border-color: var(--color-focus);
+.select {
+  appearance: none;
+  cursor: pointer;
+  padding-inline-end: var(--space-8);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath d='m3 5 4 4 4-4' fill='none' stroke='%23aeb9c8' stroke-width='1.6'/%3E%3C/svg%3E");
+  background-position: right var(--space-3) center;
+  background-repeat: no-repeat;
+  text-overflow: ellipsis;
+}
+
+.select option { background: var(--color-well); color: var(--color-text); }
+.input:hover:not(:disabled), .select:hover:not(:disabled) { border-color: var(--color-muted); }
+.input:focus, .select:focus { border-color: var(--color-focus); }
+
+input[type="range"] {
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--target-min);
+  margin: 0;
+  accent-color: var(--channel-color, var(--color-action));
+  cursor: pointer;
+}
+
+input[type="file"] {
+  padding: 0;
+  background: var(--color-well);
+}
+
+input::file-selector-button {
+  min-height: calc(var(--target-min) - 2px);
+  margin-inline-end: var(--space-2);
+  padding-inline: var(--control-padding);
+  border: 0;
+  border-inline-end: 1px solid var(--color-control-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+@media (forced-colors: active) {
+  .select { appearance: auto; background-image: none; }
 }
 
 /* ---- Toast ---- */
@@ -166,6 +189,8 @@ dialog {
   padding: 0;
   max-width: min(560px, calc(100vw - var(--space-8)));
   width: 100%;
+  max-height: calc(100dvh - var(--space-8));
+  overflow-wrap: anywhere;
 }
 
 dialog::backdrop {
@@ -173,7 +198,7 @@ dialog::backdrop {
 }
 
 .dialog__body {
-  padding: var(--space-6);
+  padding: clamp(var(--space-4), 4vw, var(--space-6));
 }
 
 .dialog__body > .input {
@@ -185,7 +210,7 @@ dialog::backdrop {
 }
 
 .dialog__title {
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   margin-bottom: var(--space-2);
 }
 
@@ -197,6 +222,7 @@ dialog::backdrop {
 .dialog__actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: var(--space-3);
   margin-top: var(--space-5);
 }

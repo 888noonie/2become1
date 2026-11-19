@@ -152,6 +152,7 @@ try {
       { defaultSection });
 
     await selectA.selectOption(trackA.id);
+    await page.locator('.stem-desk__group-controls[data-group="A"] summary').click();
     await page.locator('select[aria-label="Section for group A"]').selectOption('60');
     await page.locator('input[aria-label="Section start in seconds for group A"]').fill('60');
     await page.getByRole('button', { name: 'Load stems A' }).click();
@@ -159,6 +160,7 @@ try {
     record('group A loads a 60 s section', true, await page.locator('.stem-desk__status').innerText());
 
     await selectB.selectOption(trackB.id);
+    await page.locator('.stem-desk__group-controls[data-group="B"] summary').click();
     await page.locator('select[aria-label="Section for group B"]').selectOption('60');
     await page.locator('input[aria-label="Section start in seconds for group B"]').fill('60');
     await page.getByRole('button', { name: 'Load stems B' }).click();
