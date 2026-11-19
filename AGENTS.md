@@ -183,3 +183,7 @@ Earlier audio history: `docs/stem-desk-audio-diagnosis.md`.
 Stage the source, tests, and docs for the change. Leave personal documents,
 `Mock Images/`, `.playwright-mcp/`, editor state, and session notes
 untracked. Do not commit unless the user asks.
+
+## Studio visual changes
+
+The PM accepted Black Tie at `e53b266`. Use the [Black Tie frontend guide](docs/black-tie.md) for the mixer hierarchy, shared controls, fully loaded viewport checks and the visual acceptance gate. Keep the approved musical behaviour covered by the Stem Performance Desk contracts above.
