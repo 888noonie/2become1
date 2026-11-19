@@ -2601,9 +2601,13 @@ class StudioService:
             handle.close()
         except OSError as exc:
             # The name is created before close(), so remove it even when close
-            # itself is what failed.
+            # itself is what failed. A failing cleanup must not replace the
+            # structured error with an unhandled one.
             if output_path is not None:
-                output_path.unlink(missing_ok=True)
+                try:
+                    output_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             raise UserError("the section could not be prepared") from exc
         command = [
             "ffmpeg", "-hide_banner", "-nostdin", "-y",
