@@ -58,15 +58,15 @@ stay 0. It is not a model call.
 
 | Gate | Result |
 | --- | --- |
-| Python suite | **629 passed, 1 skipped** |
-| Frontend suite | **567/567** |
+| Python suite | **630 passed, 1 skipped** |
+| Frontend suite | **569/569** |
 | Mission audio/memory gate | **20/20** |
 | Mission owner journey | **20/20** |
 | Two-track desk UI / PCM | **24/24** / **8/8** |
 | Single-desk UX | pass |
 | Stem Passport audio / journey | **9/9** / **15/15** |
 | Desktop / mobile journeys | 39/0 · 39/5 (the five known moderate a11y findings, 0 serious) |
-| Static assets | 760,643 bytes / 70 files, +109,738 (+16.86%) |
+| Static assets | 761,750 bytes / 70 files, +110,845 (+17.03%) |
 
 ### Audio and memory (60 s sections, 48 kHz)
 
@@ -128,6 +128,21 @@ boundary.
    panel says `Group A could not be reloaded; its existing N lanes are unchanged`.
    Regression test in `tests/frontend/stem-desk-panel.test.js`; the owner
    journey proves the eight loaded lanes survive a refused section.
+
+## Independent review
+
+Codex GPT-6.2 Sol reviewed the branch read-only at three successive heads:
+
+| Head | Verdict | Finding |
+| --- | --- | --- |
+| `adbbb09` | FAIL | A refused reload that combined a lane failure with a group-level budget refusal had fewer failures than lanes, so the panel still said “Loaded 4 stems”. |
+| `0077eea` | FAIL | The header repair left an odd-length 24-bit mono data chunk without the word-alignment pad. |
+| `a54c063` | **PASS** | The unlink guard preserves the structured error; no remaining blocking defect. |
+
+Both blocking findings are fixed: the desk records a per-track `committed`
+outcome in `state().lastLoad` and the panel uses it, and the section cut is
+written to a seekable temp file so ffmpeg emits the real sizes and the pad.
+Regression tests were shown to fail on the preceding head and pass here.
 
 ## Limits stated
 
