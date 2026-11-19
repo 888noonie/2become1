@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from twobecomeone.common import UserError
-from twobecomeone.studio import StudioService
+from twobecomeone.studio import StudioService, _wav_has_pcm
 
 REPORTED_STEM_BYTES = 68_327_416
 ROLES = ("vocals", "drums", "bass", "other")
@@ -390,6 +390,31 @@ class TestStemSections:
         with pytest.raises(UserError, match="past the end") as caught:
             service.stem_audio_window("set", "vocals", start=0.0000209, duration=30)
         assert str(tmp_path) not in str(caught.value)
+
+        one24 = tmp_path / "one24.wav"
+        with wave.open(str(one24), "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(3)
+            handle.setframerate(48000)
+            handle.writeframes(b"\x01\x00\x00")
+        service.stem_audio_path = lambda *_args, **_kwargs: one24
+        kept24 = service.stem_audio_window("set", "vocals", start=0, duration=30)
+        assert kept24[:4] == b"RIFF"
+        assert b"\x01\x00\x00" in kept24
+        assert len(kept24) < 4096
+        assert _wav_has_pcm(kept24) is True
+
+        floated = tmp_path / "one-float.wav"
+        sample = struct.pack("<f", 0.5)
+        fmt = struct.pack("<HHIIHH", 3, 1, 48000, 192000, 4, 32)
+        chunks = b"fmt " + struct.pack("<I", 16) + fmt + b"data" + struct.pack("<I", len(sample)) + sample
+        floated.write_bytes(b"RIFF" + struct.pack("<I", 4 + len(chunks)) + b"WAVE" + chunks)
+        service.stem_audio_path = lambda *_args, **_kwargs: floated
+        kept_float = service.stem_audio_window("set", "vocals", start=0, duration=30)
+        assert sample in kept_float
+        assert len(kept_float) < 4096
+        assert _wav_has_pcm(kept_float) is True
+        assert _wav_has_pcm(b"RIFF" + struct.pack("<I", 12) + b"WAVEdata" + struct.pack("<I", 0)) is False
 
         wide = tmp_path / "wide24.wav"
         with wave.open(str(wide), "wb") as handle:

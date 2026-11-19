@@ -12,7 +12,6 @@ the render orchestration, delegating job state transitions to the engine.
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import math
 import os
@@ -23,7 +22,6 @@ import subprocess
 import time
 import unicodedata
 import uuid
-import wave
 from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -85,12 +83,27 @@ def _audio_sample_count(stream: dict, rate: int, duration: float) -> int:
 
 
 def _wav_has_pcm(raw: bytes) -> bool:
-    """True when the WAV contains at least one PCM frame."""
-    try:
-        with wave.open(io.BytesIO(raw), "rb") as handle:
-            return handle.readframes(1) != b""
-    except wave.Error:
+    """True when the WAV data chunk contains at least one byte.
+
+    This does not decode the format. Python's wave reader rejects float and,
+    on 3.11, FFmpeg's extensible 24-bit header, and that rejection is not an
+    empty section.
+    """
+    if len(raw) < 12 or raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
         return False
+    offset = 12
+    while offset + 8 <= len(raw):
+        chunk_id = raw[offset:offset + 4]
+        size = int.from_bytes(raw[offset + 4:offset + 8], "little")
+        payload = offset + 8
+        if chunk_id == b"data":
+            if size == 0xFFFFFFFF:
+                return payload < len(raw)
+            return size > 0 and payload < len(raw)
+        if size == 0xFFFFFFFF:
+            return False
+        offset = payload + size + (size & 1)
+    return False
 
 
 def _window_pcm_codec(sample_fmt: str, bits: int | None) -> str:

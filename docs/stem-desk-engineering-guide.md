@@ -124,8 +124,9 @@ replacement refusal cannot read as a success.
   format, and it seeks by sample index rather than a rounded millisecond.
   16-bit PCM stays 16-bit. Wider integer PCM and float stay wide enough to
   hold the source samples. A start at or past the last sample is refused,
-  even when the rounded container duration still looks long enough. Every
-  stem in the group is given the same start and length. The estimate uses
+  even when the rounded container duration still looks long enough. An empty
+  cut is a data chunk with no bytes; a 24-bit or float section is not empty.
+  Every stem in the group is given the same start and length. The estimate uses
   the higher of the file rate and the 48 kHz playback context, and a section
   that would still pass 40 MiB is refused before the cut. Full length is a separate
   choice: 128 MiB per stem, 512 MiB per group, 1024 MiB for eight lanes.

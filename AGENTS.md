@@ -84,7 +84,8 @@ real view functions with `node --test tests/frontend/*.js`.
   index. 16-bit stays 16-bit, wider integer PCM stays wide enough to hold
   the samples, and float stays float. A start at or past the last sample is
   refused, including when the container duration rounds past that sample.
-  The same start and length are sent for every stem in that group. A section
+  An empty cut is a data chunk with no bytes. A 24-bit or float section is
+  not treated as empty. The same start and length are sent for every stem in that group. A section
   that would still decode past 40 MiB is
   refused with the estimate. Full length is explicit: 128 MiB per stem,
   512 MiB per group, and 1024 MiB for the desk. Those three move together.
