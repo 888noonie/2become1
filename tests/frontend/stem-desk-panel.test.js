@@ -36,6 +36,7 @@ class FakeDesk {
     this.position = 0;
     this.crossfaderPosition = 50;
     this.error = null;
+    this.lastLoad = null;
   }
 
   setLanes(trackId, title, lanes) {
@@ -67,16 +68,23 @@ class FakeDesk {
     this.lastOptions = options || null;
     this.lastUrls = groups.flatMap((group) => group.lanes.map((lane) => lane.audioUrl));
     if (this.failNextGroups) {
-      // The desk keeps its previous group and reports every requested lane as
-      // failed, exactly as a refused reload does.
+      // The desk keeps its previous group and reports a refused reload. Only
+      // two of four lanes fail here, the case where a failure count alone
+      // cannot tell a refusal from a committed partial load.
       const message = this.failNextGroups;
       this.failNextGroups = null;
-      const failures = groups.flatMap((group) => group.lanes.map((lane) => ({
+      const failures = groups.flatMap((group) => group.lanes.slice(0, 2).map((lane) => ({
         name: lane.name,
         code: 'S_STEM_UNAVAILABLE',
         message,
       })));
       this.error = { code: 'S_STEM_PARTIAL', message: 'some stems are unavailable', failures };
+      this.lastLoad = {
+        byTrack: Object.fromEntries(groups.map((group) => [group.trackId || 'A', {
+          committed: false,
+          failureCount: failures.length,
+        }])),
+      };
       return this.state();
     }
     for (const group of groups) {
@@ -92,6 +100,12 @@ class FakeDesk {
     }
     this.status = this.groups.length ? 'ready' : 'unavailable';
     this.error = null;
+    this.lastLoad = {
+      byTrack: Object.fromEntries(groups.map((group) => [group.trackId || 'A', {
+        committed: true,
+        failureCount: 0,
+      }])),
+    };
     return this.state();
   }
 
@@ -123,6 +137,7 @@ class FakeDesk {
       positionSeconds: this.position,
       durationSeconds: 12,
       crossfader,
+      lastLoad: this.lastLoad,
       groups: this.groups.map((group, index) => ({
         trackId: group.trackId,
         title: group.title,

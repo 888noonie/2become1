@@ -266,6 +266,40 @@ test('a failed stem load is a truthful unavailable/partial state, not silence', 
   assert.equal(state.error.failures[0].name, 'bass');
 });
 
+test('a refused reload reports committed=false and keeps the old lanes', async () => {
+  const ctx = new FakeContext({ duration: 5 });
+  let failing = false;
+  const fetchImpl = async () => (failing
+    ? {
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { message: 'the section starts past the end of the recording' } }),
+    }
+    : { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(64).buffer });
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl });
+  const lanes = [lane('vocals'), lane('drums'), lane('bass'), lane('other')];
+
+  const first = await desk.loadGroups([{ trackId: 'A', title: 'A', lanes }]);
+  assert.equal(first.lastLoad.byTrack.A.committed, true);
+
+  failing = true;
+  const refused = await desk.loadGroups([{ trackId: 'A', title: 'A', lanes }]);
+  assert.equal(refused.lastLoad.byTrack.A.committed, false);
+  assert.equal(refused.lanes.length, 4, 'the previous group is not disturbed');
+  assert.match(refused.error.failures[0].message, /starts past the end/);
+});
+
+test('a committed partial load reports committed=true', async () => {
+  const ctx = new FakeContext({ duration: 5 });
+  const fetchImpl = async (url) => (url.includes('bass')
+    ? { ok: false, status: 404, json: async () => ({ error: { message: 'missing stem' } }) }
+    : { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(64).buffer });
+  const desk = new StemDesk({ audioContext: ctx, fetchImpl });
+  const state = await desk.load([lane('vocals'), lane('drums'), lane('bass'), lane('other')]);
+  assert.equal(state.lastLoad.byTrack.A.committed, true);
+  assert.equal(state.lanes.length, 3);
+});
+
 test('a desk with no usable stem reports unavailable with the first reason', async () => {
   const desk = new StemDesk({
     audioContext: new FakeContext(),

@@ -12,8 +12,10 @@ and the section work). Isolated worktree `/tmp/opencode/for-your-ears`.
 
 Two original arrangements are synthesised by
 `tests/browser/for_your_ears_fixture.py`. They are not licensed recordings; they
-are original so there is no rights question, and each is built as four aligned
-parts plus their exact sum, so the mix is the stems added together.
+are original so there is no rights question. Each is built as four aligned parts
+with one common gain, and the mix is their sum. The identity is exact before
+export; after 16-bit quantisation the stored mix and the four stored stems can
+differ by a few least-significant bits.
 
 | Track | Key / tempo | Length | Full stem decoded at 48 kHz | Over the 40 MiB ceiling |
 | --- | --- | --- | --- | --- |
@@ -33,7 +35,10 @@ arp, formant-shaped lead) and the mix peak is 0.700 with every stem between
 
 1. **Library** shows *Midnight Circuit* and *Paper Lanterns*. Import the whole
    mix as the library track, then attach the four already-separated parts
-   (Stem Passport import; no separation job, no model call).
+   through **Import My Stems**. The import path itself starts no separation job
+   and no model call. The demo seed also suppresses the *upload route's*
+   automatic separation hook, because the four parts already exist; a normal
+   Studio upload still queues that hook.
 2. **Rename** a track from the Library. The label is stored in
    `tracks.display_name`; the original filename and media path do not move.
    The rename survives a page reload and a server restart.

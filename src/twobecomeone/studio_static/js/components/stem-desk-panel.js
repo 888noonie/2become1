@@ -1314,6 +1314,10 @@ export function mountStemDeskPanel({
         const groupLanes = state.lanes.filter((entry) => entry.trackId === groupId);
         const failures = Array.isArray(state.error?.failures) ? state.error.failures : [];
         const detail = failures[0] || null;
+        const outcome = state.lastLoad?.byTrack?.[groupId] || null;
+        const didNotCommit = outcome
+          ? outcome.committed === false
+          : failures.length >= lanes.length;
         if (!groupLanes.length) {
           // Show the real reason (byte counts, codes), not just "unavailable".
           const reason = detail
@@ -1322,12 +1326,13 @@ export function mountStemDeskPanel({
           say(`Group ${groupId} was refused: ${reason}`);
         } else if (state.error?.code === 'S_DESK_FULL') {
           say(`Group ${groupId} was refused by the memory budget: ${state.error.message || detail?.message || 'over budget'}. The other group is unchanged.`);
-        } else if (detail && failures.length >= lanes.length && groupLanes.length) {
-          // Every requested lane failed and the desk kept its previous group:
-          // saying "Loaded" here would claim a refresh that did not happen.
+        } else if (didNotCommit && groupLanes.length) {
+          // The desk kept its previous group: saying "Loaded" here would claim
+          // a refresh that did not happen. Prefer the desk's own commit flag;
+          // fall back to "every requested lane failed" for a stand-in desk.
           say(
             `Group ${groupId} could not be reloaded; its existing ${groupLanes.length} lanes are unchanged. ` +
-            `${detail.code || 'Unavailable'} — ${detail.message || detail.name}. ${sectionNote}`,
+            `${detail?.code || 'Unavailable'} — ${detail?.message || detail?.name || 'no playable media'}. ${sectionNote}`,
           );
         } else if (detail) {
           say(

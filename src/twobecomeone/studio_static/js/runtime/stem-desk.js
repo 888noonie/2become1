@@ -217,6 +217,10 @@ export class StemDesk {
     // Bumped by unload and dispose. A decode that resolves afterwards belongs
     // to a retired load and must not commit.
     this._loadEpoch = 0;
+    // The previous loadGroups outcome per track, so a caller can tell a
+    // refused reload (old group kept) from a committed partial load without
+    // guessing from the failure count.
+    this._lastLoad = null;
   }
 
   get status() {
@@ -256,6 +260,7 @@ export class StemDesk {
     });
 
     const failures = [];
+    const outcomes = [];
     let changed = false;
     const byteLimits = activeByteLimits(limits);
 
@@ -265,6 +270,11 @@ export class StemDesk {
       // unload() or dispose() retired this load while it was decoding. Leave
       // the desk as that call left it, including a newer load's audio.
       if (this._disposed || this._loadEpoch !== epoch) return this.state();
+      outcomes.push({
+        trackId: spec.trackId,
+        committed: Boolean(outcome.committed),
+        failureCount: outcome.failures.length,
+      });
       failures.push(...outcome.failures);
       if (outcome.committed) changed = true;
       if (signal?.aborted) break;
@@ -291,6 +301,12 @@ export class StemDesk {
       return this.state();
     }
 
+    this._lastLoad = {
+      byTrack: Object.fromEntries(outcomes.map((entry) => [entry.trackId, {
+        committed: entry.committed,
+        failureCount: entry.failureCount,
+      }])),
+    };
     this._decodedBytes = this._groups.reduce(
       (total, group) => total + group.lanes.reduce((sum, lane) => sum + lane.decodedBytes, 0),
       0,
@@ -931,6 +947,10 @@ export class StemDesk {
         beatMatched: false,
       },
       crossfader,
+      // Per-track result of the most recent loadGroups call. A caller can
+      // distinguish "the group committed with some lanes missing" from "the
+      // group was refused and its previous lanes survived".
+      lastLoad: this._lastLoad,
       groups: this._orderedGroups().map((group) => Object.freeze({
         trackId: group.trackId,
         title: group.title,
