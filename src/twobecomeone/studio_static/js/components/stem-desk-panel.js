@@ -1322,6 +1322,13 @@ export function mountStemDeskPanel({
           say(`Group ${groupId} was refused: ${reason}`);
         } else if (state.error?.code === 'S_DESK_FULL') {
           say(`Group ${groupId} was refused by the memory budget: ${state.error.message || detail?.message || 'over budget'}. The other group is unchanged.`);
+        } else if (detail && failures.length >= lanes.length && groupLanes.length) {
+          // Every requested lane failed and the desk kept its previous group:
+          // saying "Loaded" here would claim a refresh that did not happen.
+          say(
+            `Group ${groupId} could not be reloaded; its existing ${groupLanes.length} lanes are unchanged. ` +
+            `${detail.code || 'Unavailable'} — ${detail.message || detail.name}. ${sectionNote}`,
+          );
         } else if (detail) {
           say(
             `Loaded ${groupLanes.length} stems into group ${groupId}. ` +

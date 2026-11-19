@@ -279,6 +279,43 @@ class TestStemSections:
         finally:
             service.close()
 
+    def test_section_wav_declares_its_real_size(self, tmp_path, monkeypatch):
+        """A piped ffmpeg WAV has 0xFFFFFFFF sizes until we fill them in.
+
+        Chrome tolerates the placeholder, but a reader that trusts the header
+        reports a multi-gigabyte section for a 30 s cut.
+        """
+        _no_demucs(monkeypatch)
+        monkeypatch.setattr(
+            StudioService, "_queue_auto_separation", lambda self, track_id: None,
+        )
+        service = StudioService(tmp_path / "data")
+        try:
+            carrier = _tone(tmp_path / "carrier.wav", root=220.0)
+            with carrier.open("rb") as handle:
+                track = service.ingest(handle, "carrier.wav")
+            pattern = _pattern(tmp_path / "pattern.wav", seconds=40)
+            imported = service.import_stem_set(track["id"], [
+                _stage(service, pattern, role) for role in ROLES
+            ])
+            window = service.stem_audio_window(
+                imported["stem_set_id"], "vocals", start=5, duration=30,
+            )
+            assert struct.unpack("<I", window[4:8])[0] == len(window) - 8
+            offset = 12
+            while True:
+                chunk_id = window[offset:offset + 4]
+                size = struct.unpack("<I", window[offset + 4:offset + 8])[0]
+                if chunk_id == b"data":
+                    assert size == len(window) - (offset + 8)
+                    break
+                offset += 8 + size + (size & 1)
+            rate, channels, frames = _frames(window)
+            assert rate == 44100 and channels == 2
+            assert len(frames) == 30 * 44100 * 4
+        finally:
+            service.close()
+
     def test_long_recording_is_windowed_under_the_default_ceiling(self, tmp_path, monkeypatch):
         _no_demucs(monkeypatch)
         monkeypatch.setattr(

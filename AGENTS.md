@@ -92,6 +92,12 @@ real view functions with `node --test tests/frontend/*.js`.
   Machine RAM is not that allowance. A stored stem may be as large as that
   full-length ceiling; the default load still cuts a section. The desk's
   playback context stays 48 kHz; the section file is not resampled to make it fit.
+- The section route returns a WAV whose RIFF and data sizes are the real byte
+  counts, not ffmpeg's `0xFFFFFFFF` pipe placeholder, so a 30 second cut does
+  not read as a multi-gigabyte file. The payload bytes are unchanged.
+- A reload whose every requested lane fails keeps the previous group and says
+  `could not be reloaded; its existing N lanes are unchanged`, carrying the
+  server's reason. It must not say `Loaded` for a group it did not refresh.
 - A stem-desk proposal is `stem-desk-proposal/v1`.
   `suggestStemDeskProposal` only returns data: A keeps drums and bass, B keeps
   vocals and other, silent lanes stay muted, and both entry offsets stay 0.

@@ -451,7 +451,19 @@ export class StemDesk {
 
     const response = await fetchImpl(lane.audioUrl, { signal });
     if (!response || response.ok === false) {
-      throw new StemDeskError('S_STEM_UNAVAILABLE', `stem ${lane.name} could not be fetched`);
+      // Keep the server's reason (for example "the section starts past the
+      // end") instead of flattening every refusal into one message.
+      let reason = '';
+      try {
+        const body = await response.json();
+        reason = String(body?.error?.message || body?.detail || '').trim();
+      } catch {
+        reason = '';
+      }
+      throw new StemDeskError(
+        'S_STEM_UNAVAILABLE',
+        `stem ${lane.name} could not be fetched${reason ? `: ${reason}` : ''}`,
+      );
     }
     const declared = Number(response.headers?.get?.('content-length'));
     if (Number.isFinite(declared) && declared > limits.maxStemBytes) {

@@ -66,6 +66,19 @@ class FakeDesk {
   async loadGroups(groups, options) {
     this.lastOptions = options || null;
     this.lastUrls = groups.flatMap((group) => group.lanes.map((lane) => lane.audioUrl));
+    if (this.failNextGroups) {
+      // The desk keeps its previous group and reports every requested lane as
+      // failed, exactly as a refused reload does.
+      const message = this.failNextGroups;
+      this.failNextGroups = null;
+      const failures = groups.flatMap((group) => group.lanes.map((lane) => ({
+        name: lane.name,
+        code: 'S_STEM_UNAVAILABLE',
+        message,
+      })));
+      this.error = { code: 'S_STEM_PARTIAL', message: 'some stems are unavailable', failures };
+      return this.state();
+    }
     for (const group of groups) {
       const trackId = group.trackId || 'A';
       const title = group.title || trackId;
@@ -1473,6 +1486,22 @@ test('a group section uses one window for every stem, and full length is explici
   assert.equal(desk.lastOptions.limits.maxTrackDecodedBytes, 512 * 1024 * 1024);
   assert.equal(desk.lastOptions.limits.maxDecodedBytes, 1024 * 1024 * 1024);
   assert.match(container.querySelector('.stem-desk__status').textContent, /Full length/);
+});
+
+test('a refused reload says the existing lanes are unchanged', async () => {
+  const { container, desk } = mount({ variants: DEMUCS_QUAD });
+  await flush();
+  selectFor(container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  await loadGroup(container, 'A');
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Loaded 4 stems/);
+
+  desk.failNextGroups = 'the section starts past the end of the recording';
+  await loadGroup(container, 'A');
+  const status = container.querySelector('.stem-desk__status').textContent;
+  assert.match(status, /could not be reloaded; its existing 4 lanes are unchanged/);
+  assert.match(status, /starts past the end/);
+  assert.equal(container.querySelectorAll('.stem-desk__row').length, 4);
 });
 
 test('renaming a library track updates the desk heading without loading again', async () => {

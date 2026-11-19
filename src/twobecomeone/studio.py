@@ -106,6 +106,34 @@ def _wav_has_pcm(raw: bytes) -> bool:
     return False
 
 
+def _wav_with_real_sizes(raw: bytes) -> bytes:
+    """Fill in RIFF and data sizes on a WAV ffmpeg wrote to a pipe.
+
+    ffmpeg cannot seek back on ``pipe:1``, so it leaves both the RIFF chunk size
+    and the data chunk size as 0xFFFFFFFF placeholders. Chrome tolerates that,
+    but a WAV reader that trusts the header reports a multi-gigabyte file, which
+    makes a section look like it failed to cut. The payload bytes are correct;
+    only the two 32-bit sizes are rewritten.
+    """
+    if len(raw) < 12 or raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
+        return raw
+    out = bytearray(raw)
+    out[4:8] = (len(out) - 8).to_bytes(4, "little")
+    offset = 12
+    while offset + 8 <= len(out):
+        chunk_id = bytes(out[offset:offset + 4])
+        size = int.from_bytes(out[offset + 4:offset + 8], "little")
+        payload = offset + 8
+        if chunk_id == b"data":
+            out[offset + 4:offset + 8] = (len(out) - payload).to_bytes(4, "little")
+            break
+        if size == 0xFFFFFFFF:
+            # No declared size and not the data chunk: leave it alone.
+            break
+        offset = payload + size + (size & 1)
+    return bytes(out)
+
+
 def _window_pcm_codec(sample_fmt: str, bits: int | None) -> str:
     """Pick a WAV codec that keeps the source samples.
 
@@ -2610,9 +2638,10 @@ class StudioService:
             raise UserError("the section could not be prepared")
         if not _wav_has_pcm(proc.stdout):
             raise UserError("the section starts past the end of the recording")
-        if len(proc.stdout) > _DEFAULT_STEM_DECODED_BYTES:
+        section = _wav_with_real_sizes(proc.stdout)
+        if len(section) > _DEFAULT_STEM_DECODED_BYTES:
             raise UserError("the section is larger than the desk can fetch")
-        return proc.stdout
+        return section
 
     def _probe_audio_layout(self, path: Path) -> dict:
         """Read sample rate and channel count without decoding the whole file."""
