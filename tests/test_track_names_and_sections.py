@@ -316,6 +316,53 @@ class TestStemSections:
         finally:
             service.close()
 
+    def test_an_odd_length_24_bit_section_is_padded(self, tmp_path, monkeypatch):
+        """A word-aligned data chunk: the pad byte is outside the data size.
+
+        ffmpeg writing to a pipe omits the pad an odd data chunk needs, so a
+        30 s cut of a 44,101-frame 24-bit mono source ended one byte before the
+        chunk boundary. A seekable output file fixes the header and the pad.
+        """
+        _no_demucs(monkeypatch)
+        monkeypatch.setattr(
+            StudioService, "_queue_auto_separation", lambda self, track_id: None,
+        )
+        service = StudioService(tmp_path / "data")
+        try:
+            carrier = _tone(tmp_path / "carrier.wav", root=220.0)
+            with carrier.open("rb") as handle:
+                track = service.ingest(handle, "carrier.wav")
+            odd = tmp_path / "odd24.wav"
+            frames = 44101
+            with wave.open(str(odd), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(3)
+                handle.setframerate(44101)
+                handle.writeframes(b"\x01\x02\x03" * frames)
+            imported = service.import_stem_set(track["id"], [
+                _stage(service, odd, role) for role in ROLES
+            ])
+            window = service.stem_audio_window(
+                imported["stem_set_id"], "vocals", start=0, duration=30,
+            )
+            assert len(window) % 2 == 0
+            assert struct.unpack("<I", window[4:8])[0] == len(window) - 8
+            offset = 12
+            while True:
+                chunk_id = window[offset:offset + 4]
+                size = struct.unpack("<I", window[offset + 4:offset + 8])[0]
+                if chunk_id == b"data":
+                    assert size == frames * 3
+                    assert len(window) - (offset + 8) == size + (size & 1)
+                    break
+                offset += 8 + size + (size & 1)
+            with wave.open(io.BytesIO(window), "rb") as handle:
+                assert handle.getnframes() == frames
+                assert handle.getsampwidth() == 3
+                assert handle.getframerate() == 44101
+        finally:
+            service.close()
+
     def test_long_recording_is_windowed_under_the_default_ceiling(self, tmp_path, monkeypatch):
         _no_demucs(monkeypatch)
         monkeypatch.setattr(

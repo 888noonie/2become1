@@ -92,9 +92,10 @@ real view functions with `node --test tests/frontend/*.js`.
   Machine RAM is not that allowance. A stored stem may be as large as that
   full-length ceiling; the default load still cuts a section. The desk's
   playback context stays 48 kHz; the section file is not resampled to make it fit.
-- The section route returns a WAV whose RIFF and data sizes are the real byte
-  counts, not ffmpeg's `0xFFFFFFFF` pipe placeholder, so a 30 second cut does
-  not read as a multi-gigabyte file. The payload bytes are unchanged.
+- The section route writes the cut to a seekable temp file, so ffmpeg emits a
+  correct RIFF header: real RIFF/data sizes (not the `0xFFFFFFFF` pipe
+  placeholder) and the word-alignment pad an odd data chunk needs. A 30 second
+  cut must not read as a multi-gigabyte file or end before a chunk boundary.
 - A reload whose every requested lane fails keeps the previous group and says
   `could not be reloaded; its existing N lanes are unchanged`, carrying the
   server's reason. It must not say `Loaded` for a group it did not refresh.

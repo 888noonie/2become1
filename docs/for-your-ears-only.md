@@ -85,10 +85,12 @@ stay 0. It is not a model call.
 
 A 60 s section at start 60 s is **byte-exact** against the full stem at the same
 sample offset (44.1 kHz, 2 ch, 16-bit, 10,584,000 payload bytes). It keeps the
-source rate, channels and sample width. The returned WAV now declares
-`RIFF size = len − 8` and a real `data` size; before this mission ffmpeg's pipe
-placeholder (`0xFFFFFFFF`) made a 30 s cut read as 24,347 s to any reader that
-trusts the header.
+source rate, channels and sample width. The cut is written to a
+seekable temp file, so ffmpeg emits a normal header: `RIFF size = len − 8`, a
+real `data` size, and the word-alignment pad an odd data chunk needs. Before
+this mission the piped output carried `0xFFFFFFFF` sizes (a 30 s cut read as
+24,347 s), and an odd-length 24-bit mono cut ended one byte before the chunk
+boundary.
 
 ### Proposal reject/approve
 

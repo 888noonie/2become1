@@ -19,6 +19,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import time
 import unicodedata
 import uuid
@@ -104,34 +105,6 @@ def _wav_has_pcm(raw: bytes) -> bool:
             return False
         offset = payload + size + (size & 1)
     return False
-
-
-def _wav_with_real_sizes(raw: bytes) -> bytes:
-    """Fill in RIFF and data sizes on a WAV ffmpeg wrote to a pipe.
-
-    ffmpeg cannot seek back on ``pipe:1``, so it leaves both the RIFF chunk size
-    and the data chunk size as 0xFFFFFFFF placeholders. Chrome tolerates that,
-    but a WAV reader that trusts the header reports a multi-gigabyte file, which
-    makes a section look like it failed to cut. The payload bytes are correct;
-    only the two 32-bit sizes are rewritten.
-    """
-    if len(raw) < 12 or raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
-        return raw
-    out = bytearray(raw)
-    out[4:8] = (len(out) - 8).to_bytes(4, "little")
-    offset = 12
-    while offset + 8 <= len(out):
-        chunk_id = bytes(out[offset:offset + 4])
-        size = int.from_bytes(out[offset + 4:offset + 8], "little")
-        payload = offset + 8
-        if chunk_id == b"data":
-            out[offset + 4:offset + 8] = (len(out) - payload).to_bytes(4, "little")
-            break
-        if size == 0xFFFFFFFF:
-            # No declared size and not the data chunk: leave it alone.
-            break
-        offset = payload + size + (size & 1)
-    return bytes(out)
 
 
 def _window_pcm_codec(sample_fmt: str, bits: int | None) -> str:
@@ -2614,8 +2587,21 @@ class StudioService:
             )
 
         end_sample = start_sample + duration * rate
+        # ffmpeg cannot seek back on a pipe: the piped WAV carries 0xFFFFFFFF
+        # chunk sizes and omits the word-alignment pad an odd data chunk needs.
+        # A seekable temp file gets a correct header (sizes and pad) written by
+        # ffmpeg itself, so the section is a normal WAV to every decoder.
+        temp_root = getattr(self, "temp_dir", None)
+        try:
+            handle = tempfile.NamedTemporaryFile(
+                dir=temp_root, suffix=".wav", delete=False,
+            )
+            handle.close()
+            output_path = Path(handle.name)
+        except OSError as exc:
+            raise UserError("the section could not be prepared") from exc
         command = [
-            "ffmpeg", "-hide_banner", "-nostdin",
+            "ffmpeg", "-hide_banner", "-nostdin", "-y",
             "-protocol_whitelist", "file,pipe",
             "-i", str(source),
             "-map", "0:a:0",
@@ -2626,19 +2612,23 @@ class StudioService:
             ),
             "-c:a", _window_pcm_codec(layout["sample_fmt"], layout["bits_per_sample"]),
             "-f", "wav",
-            "pipe:1",
+            str(output_path),
         ]
         try:
             proc = subprocess.run(
                 command, capture_output=True, timeout=60, check=False,
             )
+            if proc.returncode != 0 or not output_path.is_file():
+                raise UserError("the section could not be prepared")
+            section = output_path.read_bytes()
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise UserError("the section could not be prepared") from exc
-        if proc.returncode != 0 or not proc.stdout or len(proc.stdout) < 44:
+        finally:
+            output_path.unlink(missing_ok=True)
+        if not section or len(section) < 44:
             raise UserError("the section could not be prepared")
-        if not _wav_has_pcm(proc.stdout):
+        if not _wav_has_pcm(section):
             raise UserError("the section starts past the end of the recording")
-        section = _wav_with_real_sizes(proc.stdout)
         if len(section) > _DEFAULT_STEM_DECODED_BYTES:
             raise UserError("the section is larger than the desk can fetch")
         return section
