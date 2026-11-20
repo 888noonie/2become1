@@ -324,6 +324,22 @@ const COMMANDS = {
     return { clipId, clipGainDb: gainDb };
   },
 
+  setClipFades(draft, args) {
+    const { clipId, fadeInBeats, fadeOutBeats } = args;
+    requireFinite(fadeInBeats, 'fadeInBeats');
+    requireFinite(fadeOutBeats, 'fadeOutBeats');
+    const clip = requireClip(draft, clipId);
+    if (fadeInBeats < -EPSILON || fadeOutBeats < -EPSILON) {
+      throw new InvalidEditError('fades must be >= 0', 'OUT_OF_RANGE');
+    }
+    if (fadeInBeats + fadeOutBeats > clip.durationBeats + EPSILON) {
+      throw new InvalidEditError('fades must not exceed the clip duration', 'FADES_EXCEED_CLIP');
+    }
+    clip.fadeInBeats = fadeInBeats;
+    clip.fadeOutBeats = fadeOutBeats;
+    return { clipId, fadeInBeats, fadeOutBeats };
+  },
+
   setTrackVolume(draft, args) {
     const { trackIndex, volumeDb } = args;
     requireTrackIndex(trackIndex);
@@ -509,6 +525,10 @@ export class EditEngine {
 
   setClipGain(clipId, gainDb) {
     return this.run({ name: 'setClipGain', args: { clipId, gainDb } }).result;
+  }
+
+  setClipFades(clipId, fadeInBeats, fadeOutBeats) {
+    return this.run({ name: 'setClipFades', args: { clipId, fadeInBeats, fadeOutBeats } }).result;
   }
 
   /** Arrives with the offline renderer (Milestone B). Fails loudly until then. */
