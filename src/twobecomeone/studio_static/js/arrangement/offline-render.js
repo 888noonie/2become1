@@ -26,6 +26,10 @@ function limiterLookaheadFrames(plan) {
   return Math.max(2, Math.round((plan.limiter.lookaheadMs / 1000) * plan.sampleRate));
 }
 
+/** Frames of limiter lookahead delay renderOffline trims from the returned
+ *  buffer, so sample 0 == arrangement frame 0 for every caller. */
+export { limiterLookaheadFrames };
+
 /**
  * @param {BaseAudioContext} ctx OfflineAudioContext or AudioContext
  * @param {object} plan from compileRenderPlan

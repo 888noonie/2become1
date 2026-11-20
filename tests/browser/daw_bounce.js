@@ -108,7 +108,8 @@ try {
   const page = await browser.newPage();
   page.on('pageerror', (err) => console.log(`page error: ${err}`));
   sampling = true;
-  await page.goto(`http://127.0.0.1:${port}/tests/browser/daw/bounce.html`);
+  const breakFades = process.argv.includes('--break-fades');
+  await page.goto(`http://127.0.0.1:${port}/tests/browser/daw/bounce.html${breakFades ? '?breakFades=1' : ''}`);
   let pageError = null;
   try {
     await page.waitForFunction('window.__bounceDone === true', null, { timeout: 900000 });

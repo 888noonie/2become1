@@ -12,127 +12,13 @@ import { EditEngine } from '/src/twobecomeone/studio_static/js/arrangement/edit-
 import { compileRenderPlan } from '/src/twobecomeone/studio_static/js/arrangement/render-plan.js';
 import { renderOffline, startRealtime } from '/src/twobecomeone/studio_static/js/arrangement/offline-render.js';
 import { encodeWav24 } from '/src/twobecomeone/studio_static/js/arrangement/wav.js';
+import { BDI_THRESHOLD, boundaryDiscontinuity, boundaryGate } from '/src/twobecomeone/studio_static/js/arrangement/click-guard.js';
 import SignalsmithStretch from '/src/twobecomeone/studio_static/vendor/signalsmith-stretch/SignalsmithStretch.mjs';
+import { SR, BPM, beat, buildStems } from './synth.js';
+import { applyHarnessArrangement } from './arrangement-script.js';
 
-const SR = 48000;
-const BPM = 120;
-const results = { measurements: {}, checks: [], negativeControls: [], gate5: {}, errors: [] };
+const results = { measurements: {}, checks: [], negativeControls: [], gate5: {}, clickEvidence: {}, errors: [] };
 const post = (path, body) => fetch(path, { method: 'POST', body });
-
-// ---------- deterministic synthesis (original material) ----------
-
-function makeBuffer(seconds, channels = 2) {
-  const n = Math.round(seconds * SR);
-  return Array.from({ length: channels }, () => new Float32Array(n));
-}
-
-function addTone(ch, startSec, seconds, freq, amp, { vibrato = 0, formants = null, f0ForFormants = null } = {}) {
-  const n = Math.round(seconds * SR);
-  const at = Math.round(startSec * SR);
-  const fade = Math.round(0.01 * SR);
-  for (let i = 0; i < n; i += 1) {
-    const env = Math.min(1, i / fade, (n - 1 - i) / fade);
-    let s;
-    if (formants) {
-      s = 0;
-      const f0 = f0ForFormants ?? freq;
-      for (let k = 1; k * f0 < 3400; k += 1) {
-        const f = k * f0;
-        let e = 0.02;
-        for (const [fc, bw, gain] of formants) {
-          const d = (f - fc) / bw;
-          e += gain * Math.exp(-0.5 * d * d);
-        }
-        s += (e / k) * Math.sin((2 * Math.PI * f * i) / SR);
-      }
-    } else {
-      const wobble = vibrato ? 1 + vibrato * Math.sin((2 * Math.PI * 5 * i) / SR) : 1;
-      s = Math.sin((2 * Math.PI * freq * wobble * i) / SR);
-    }
-    for (const c of ch) {
-      c[at + i] += amp * s * Math.max(0, env);
-    }
-  }
-}
-
-function addKick(ch, startSec, amp = 0.9) {
-  const at = Math.round(startSec * SR);
-  const n = Math.round(0.25 * SR);
-  for (let i = 0; i < n; i += 1) {
-    const t = i / SR;
-    const f = 120 * Math.exp(-t * 18) + 45;
-    const env = Math.exp(-t * 14);
-    const s = Math.sin(2 * Math.PI * f * t) * env * amp;
-    for (const c of ch) c[at + i] += s;
-  }
-}
-
-function addSnare(ch, startSec, amp = 0.5) {
-  const at = Math.round(startSec * SR);
-  const n = Math.round(0.18 * SR);
-  let seed = 12345;
-  for (let i = 0; i < n; i += 1) {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    const noise = (seed / 0x3fffffff - 1);
-    const env = Math.exp(-(i / SR) * 22);
-    const s = (noise * 0.7 + Math.sin((2 * Math.PI * 190 * i) / SR) * 0.3) * env * amp;
-    for (const c of ch) c[at + i] += s;
-  }
-}
-
-function addHat(ch, startSec, amp = 0.2) {
-  const at = Math.round(startSec * SR);
-  const n = Math.round(0.06 * SR);
-  let seed = 777;
-  for (let i = 0; i < n; i += 1) {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    const noise = (seed / 0x3fffffff - 1);
-    const env = Math.exp(-(i / SR) * 60);
-    for (const c of ch) c[at + i] += noise * env * amp;
-  }
-}
-
-const VOWEL = [[730, 80, 1], [1090, 90, 0.7], [2440, 120, 0.25]];
-const beat = 60 / BPM;
-
-function buildStems() {
-  // 0 drums: 8 s = 16 beats, 120 BPM pattern (kick/snare/hats).
-  const drums = makeBuffer(8);
-  for (let b = 0; b < 16; b += 1) {
-    if (b % 4 === 0 || b % 4 === 2) addKick(drums, b * beat);
-    if (b % 4 === 2) addSnare(drums, b * beat);
-    addHat(drums, b * beat + beat / 2, 0.16);
-    addHat(drums, b * beat, 0.1);
-  }
-  // 1 bass: A minor line (A1/C2/D2/E2).
-  const bass = makeBuffer(8);
-  const bassNotes = [55, 55, 65.4, 55, 73.4, 55, 82.4, 55, 55, 55, 65.4, 55, 82.4, 73.4, 65.4, 55];
-  for (let b = 0; b < 16; b += 1) {
-    addTone(bass, b * beat, beat * 0.9, bassNotes[b], 0.35);
-  }
-  // 3 lead: vowel (vocal-like) melody on long notes; note 4 is a pure 330 Hz
-  // sine whose positive peak sits exactly at source 5.000757 s — the point the
-  // arrangement trims through, so boundary-click probes are phase-proof.
-  const lead = makeBuffer(6, 2);
-  const melody = [220, 261.6, 293.7];
-  for (let i = 0; i < 3; i += 1) {
-    addTone(lead, i * 1.5, 1.4, melody[i], 0.4, { formants: VOWEL, f0ForFormants: melody[i] });
-  }
-  addTone(lead, 4.5, 1.4, 330, 0.5);
-  // 4 pad: soft triad chords (Am/F/G/Am).
-  const pad = makeBuffer(8);
-  const chords = [[220, 261.6, 329.6], [174.6, 220, 261.6], [196, 246.9, 293.7], [220, 261.6, 329.6]];
-  for (let i = 0; i < 4; i += 1) {
-    for (const f of chords[i]) addTone(pad, i * 2, 1.95, f, 0.12, { vibrato: 0.002 });
-  }
-  // 5 arp: sixteenth-note A-minor arpeggio.
-  const arp = makeBuffer(8);
-  const arpNotes = [440, 523.3, 659.3, 523.3];
-  for (let s = 0; s < 64; s += 1) {
-    addTone(arp, s * (beat / 4), beat / 4 * 0.8, arpNotes[s % 4], 0.18);
-  }
-  return { drums, bass, lead, pad, arp };
-}
 
 async function loadFixture(path) {
   const bytes = await (await fetch(path)).arrayBuffer();
@@ -284,45 +170,33 @@ function check(name, passed, detail) {
 
 function buildArrangement(stems, fixtureChords, fixturePerc, fixtureSide) {
   const engine = new EditEngine({ project: { ...makeProjectState(), transport: { ...makeProjectState().transport, masterBpm: BPM } } });
-  const refs = {};
-  const load = (trackIndex, name, channels, nativeBpm, key = null) => {
-    const bufferReference = `synth:${name}`;
-    const durationSec = channels[0].length / SR;
-    const { assetId, clipId } = engine.loadStemToTrack(trackIndex, {
-      name, durationSec, bufferReference, detectedKey: key,
-    }, nativeBpm);
-    refs[clipId] = { bufferReference, channels };
-    return { assetId, clipId };
+  // ONE arrangement script, shared with the node regression tests.
+  const channelsByName = {
+    'drums': stems.drums,
+    'bass': stems.bass,
+    'chords-100bpm': fixtureChords,
+    'lead-vowel': stems.lead,
+    'pad': stems.pad,
+    'arp': stems.arp,
+    'perc-140bpm': fixturePerc,
+    'side-texture': fixtureSide,
   };
-
-  const drums = load(0, 'drums', stems.drums, 120, 'Am');
-  const bass = load(1, 'bass', stems.bass, 120, 'Am');
-  const chords = load(2, 'chords-100bpm', fixtureChords, 100, 'C');
-  const lead = load(3, 'lead-vowel', stems.lead, 120, 'Am');
-  const pad = load(4, 'pad', stems.pad, 120, 'Am');
-  const arp = load(5, 'arp', stems.arp, 120, 'Am');
-  const perc = load(6, 'perc-140bpm', fixturePerc, 140, 'Am');
-  const side = load(7, 'side-texture', fixtureSide, null); // tempo unmeasured: stays unknown
-
-  // Non-destructive edits through the atomic API:
-  engine.splitClipAtBeat(drums.clipId, 8);              // split a drum region
-  engine.trimClip(drums.clipId, 'end', -1);             // trim the left half
-  engine.trimClip(bass.clipId, 'start', 1);             // trim the bass start
-  engine.moveClip(lead.clipId, 3, 8);                   // move the vocal clip to bar 3
-  engine.trimClip(lead.clipId, 'end', -1.998485);       // cut at the sine peak (beat ~18.0015)
-  engine.setClipPitch(lead.clipId, 7, true);            // transpose +7, formants kept
-  engine.setClipFades(pad.clipId, 2, 2);                // musical 2-beat fades
-  engine.setClipStretch(arp.clipId, 0.85);              // manual stretch ratio
-  engine.setClipGain(side.clipId, -12);
-  engine.setTrackEq(1, { lowGainDb: 3 });
-  engine.setTrackEq(3, { midGainDb: 2, highGainDb: 2 });
-  engine.setTrackEq(4, { lowGainDb: -2, highGainDb: 1 });
-  engine.setTrackPan(0, -0.2);
-  engine.setTrackPan(5, 0.3);
-  engine.setTrackPan(7, 0.7);
-  engine.setTrackVolume(2, -3);
-  engine.setLoopRange(0, 32);
-  return { engine, refs, ids: { drums, bass, chords, lead, pad, arp, perc, side } };
+  const sizes = Object.fromEntries(
+    Object.entries(channelsByName).map(([name, ch]) => [name, ch[0].length / SR]),
+  );
+  const { ids } = applyHarnessArrangement(engine, {
+    drumsSec: sizes['drums'], bassSec: sizes['bass'], chordsSec: sizes['chords-100bpm'],
+    leadSec: sizes['lead-vowel'], padSec: sizes['pad'], arpSec: sizes['arp'],
+    percSec: sizes['perc-140bpm'], sideSec: sizes['side-texture'],
+  });
+  // bufferReference per clip (split children share their asset's reference).
+  const refs = {};
+  for (const { clipId } of Object.values(ids)) {
+    const clip = engine.state.clips.find((c) => c.id === clipId);
+    const name = engine.state.assets[clip.assetId].name;
+    refs[clipId] = { bufferReference: `synth:${name}`, channels: channelsByName[name] };
+  }
+  return { engine, refs, ids };
 }
 
 function makeProjectState() {
@@ -341,11 +215,47 @@ async function main() {
   const { engine, refs, ids } = buildArrangement(stems, fixtureChords, fixturePerc, fixtureSide);
   results.measurements.stateClips = engine.state.clips.length;
 
-  const plan = compileRenderPlan(engine.state, {
-    tailFrames: Math.round(0.3 * SR),
-  });
+  const tailFrames = Math.round(0.3 * SR);
+
+  // ---- optional defective mode (?breakFades=1) ----
+  // Strips every fade from EVERY compiled plan (main, solo, variant and
+  // negative-control renders) so the ordinary acceptance gates run against a
+  // representative broken-fade implementation and genuinely FAIL it (the
+  // harness then exits nonzero). Demonstration mode only.
+  const breakFades = new URLSearchParams(location.search).has('breakFades');
+  results.measurements.breakFadesMode = breakFades;
+  const compilePlan = (state, opts) => {
+    const p = compileRenderPlan(state, opts);
+    if (breakFades) {
+      for (const c of p.clips) { c.fadeInFrames = 0; c.fadeOutFrames = 0; }
+    }
+    return p;
+  };
+
+  const plan = compilePlan(engine.state, { tailFrames });
   results.measurements.planClips = plan.clips.length;
   results.measurements.limiterLatencyFrames = 240;
+
+  // ---- duration truthfulness (Grok C2) ----
+  // The arrangement end is recomputed here from raw state with plain
+  // arithmetic (independent of the plan compiler) and must agree with the
+  // plan and, below, with the exported WAV's frame count. The end is a
+  // MUSICAL fact — the 140 BPM texture's beat-synced extent (18.6667 beats =
+  // 9.3333 s at the 120 master) — and is never trimmed to match prose.
+  const spbSec = 60 / engine.state.transport.masterBpm;
+  let independentEndFrame = 0;
+  for (const clip of engine.state.clips) {
+    independentEndFrame = Math.max(independentEndFrame,
+      Math.round((clip.timelineStartBeat + clip.durationBeats) * spbSec * SR));
+  }
+  results.measurements.independentEndFrame = independentEndFrame;
+  results.measurements.arrangementEndSec = plan.output.arrangementEndFrame / SR;
+  check('plan end equals the independently computed arrangement end',
+    plan.output.arrangementEndFrame === independentEndFrame,
+    { planEnd: plan.output.arrangementEndFrame, independentEndFrame });
+  check('plan total = arrangement end + documented tail (limiter lookahead is trimmed inside renderOffline)',
+    plan.output.totalFrames === plan.output.arrangementEndFrame + tailFrames,
+    { totalFrames: plan.output.totalFrames, arrangementEndFrame: plan.output.arrangementEndFrame, tailFrames });
 
   const buffers = {};
   for (const rec of Object.values(refs)) buffers[rec.bufferReference] = { channels: rec.channels };
@@ -394,7 +304,7 @@ async function main() {
   // Each solo render builds ONE stretch instance (clipFilter), not nine.
   const soloRenders = [];
   const soloOf = (trackIndex) => renderOffline(
-    compileRenderPlan(withOnlyTrack(engine.state, trackIndex), { tailFrames: Math.round(0.3 * SR) }),
+    compilePlan(withOnlyTrack(engine.state, trackIndex), { tailFrames: Math.round(0.3 * SR) }),
     buffers,
     { ...baseOptions, clipFilter: (c) => c.trackIndex === trackIndex },
   );
@@ -456,7 +366,7 @@ async function main() {
 
   // Solo law through the STATE (Sol B12): a render whose plan says "solo
   // track 0" (no clipFilter) must equal the physically filtered solo render.
-  const stateSoloPlan = compileRenderPlan(withOnlyTrack(engine.state, 0), { tailFrames: Math.round(0.3 * SR) });
+  const stateSoloPlan = compilePlan(withOnlyTrack(engine.state, 0), { tailFrames: Math.round(0.3 * SR) });
   const { audioBuffer: stateSoloBuf } = await renderOffline(stateSoloPlan, buffers, baseOptions);
   const stateSolo = stateSoloBuf.getChannelData(0);
   let soloDiff = 0;
@@ -476,7 +386,7 @@ async function main() {
   check('solo isolation (solo render is quieter than the full mix)', solo0Ratio < 0.9, { solo0Ratio });
 
   // Effective stretch ratio on the chords clip (100 BPM -> 120 master).
-  const chordPlan = compileRenderPlan(withOnlyTrack(engine.state, 2), { tailFrames: Math.round(0.3 * SR) });
+  const chordPlan = compilePlan(withOnlyTrack(engine.state, 2), { tailFrames: Math.round(0.3 * SR) });
   const chordClip = chordPlan.clips.find((c) => c.trackIndex === 2);
   const chordOnset = onsetSample(soloRenders[2], 0.01);
   let chordOffset = soloRenders[2].length - 1;
@@ -496,7 +406,7 @@ async function main() {
 
   // Pitch ratio on the lead (+7 formant-preserved) vs a pitch-0 variant.
   const noPitchState = cloneStateWithoutPitch(engine.state, ids.lead.clipId);
-  const noPitchPlan = compileRenderPlan(noPitchState, { tailFrames: Math.round(0.3 * SR) });
+  const noPitchPlan = compilePlan(noPitchState, { tailFrames: Math.round(0.3 * SR) });
   const { audioBuffer: noPitchBuf } = await renderOffline(noPitchPlan, buffers,
     { ...baseOptions, clipFilter: (c) => c.trackIndex === 3 });
   const leadStart = Math.round(8 * beat * SR) + 2400;
@@ -528,7 +438,7 @@ async function main() {
   // Formant behaviour on the vocal-like lead (constant-vowel segment), using
   // the smoothed-parabolic method from spike S6 (sub-harmonic resolution).
   const noCompState = cloneStateWithoutFormants(engine.state, ids.lead.clipId);
-  const noCompPlan = compileRenderPlan(noCompState, { tailFrames: Math.round(0.3 * SR) });
+  const noCompPlan = compilePlan(noCompState, { tailFrames: Math.round(0.3 * SR) });
   const { audioBuffer: noCompBuf } = await renderOffline(noCompPlan, buffers,
     { ...baseOptions, clipFilter: (c) => c.trackIndex === 3 });
   const winStart = leadStart;
@@ -562,19 +472,69 @@ async function main() {
     pipelineDelay >= 0 && pipelineDelay <= 480 && Math.abs(leadOnset - leadOnsetBase) <= 60,
     results.measurements.clipPlacement);
 
-  // Clip boundary clicks: the drums split (kick onset) and the mid-vowel trim
-  // cut at beat 18 = 9 s (steady vowel amplitude — the case where a missing
-  // fade becomes a real step).
+  // ---- clip boundary discontinuities (BDI gate — Grok C1) ----
+  // Every region edge is scored on its own track's solo render with the
+  // boundary-local detector. The old global slope gate is kept as evidence
+  // only: it conflates musical transients with clicks (a hi-hat burst's own
+  // sample slope raises the threshold until a gross hard cut passes).
   const splitFrame = Math.round(8 * beat * SR);
   const cutFrame = Math.round(18.001515 * beat * SR); // the sine-peak trim cut
-  const clickSplit = maxSlope(soloRenders[0], splitFrame + 99);
-  const clickCut = maxSlope(soloRenders[3], cutFrame + 99, Math.round(0.01 * SR));
-  const steady = maxSlope(soloRenders[0], Math.round(2 * SR));
-  results.measurements.clicks = { clickSplit, clickCut, steadyReference: steady };
-  // One unified gate: a boundary slope may not exceed 4x the steady content
-  // slope, so a broken-fade render fails the ordinary gate too (Sol B12).
-  check('no click at clip boundaries (split and mid-vowel trim cut)',
-    clickSplit < 4 * steady && clickCut < 4 * steady, results.measurements.clicks);
+  results.measurements.clicks = {
+    legacySlopes: {
+      clickSplit: maxSlope(soloRenders[0], splitFrame + 99),
+      clickCut: maxSlope(soloRenders[3], cutFrame + 99, Math.round(0.01 * SR)),
+      steadyReference: maxSlope(soloRenders[0], Math.round(2 * SR)),
+      note: 'legacy global gate (slope < 4x steady) recorded for continuity; it is NOT the acceptance gate',
+    },
+  };
+  const edgeBoundaries = [];
+  for (const clip of plan.clips) {
+    // A region is half-open [start, end); a missing fade steps exactly at its
+    // gain automation, which is sample-accurate at these frames. A region
+    // starting at frame 0 has no before-context and is skipped.
+    if (clip.timelineStartFrame > 0) {
+      edgeBoundaries.push({ clipId: clip.clipId, trackIndex: clip.trackIndex, edge: 'start', frame: clip.timelineStartFrame });
+    }
+    edgeBoundaries.push({ clipId: clip.clipId, trackIndex: clip.trackIndex, edge: 'end', frame: clip.timelineEndFrame });
+  }
+  const edgeEntries = edgeBoundaries.map((e) => ({
+    ...e, ...boundaryDiscontinuity(soloRenders[e.trackIndex], e.frame),
+  }));
+  const edgeGate = boundaryGate(edgeEntries);
+  results.measurements.boundaryGate = {
+    threshold: BDI_THRESHOLD,
+    worstIndex: edgeGate.worstIndex,
+    worstBoundary: edgeGate.worstBoundary,
+    boundaries: edgeEntries.map((e) => ({
+      clipId: e.clipId, edge: e.edge, frame: e.boundary,
+      index: Number(e.index.toFixed(3)),
+      envStep: Number(e.envelope.step.toFixed(5)),
+      envRoughness: Number(e.envelope.roughness.toFixed(5)),
+      waveBreak: Number(e.waveform.junctionBreak.toFixed(5)),
+    })),
+  };
+  check('no click at any clip boundary (BDI gate over every region edge)', edgeGate.passed,
+    results.measurements.boundaryGate);
+
+  // Saved signals for independent re-audit: ±14 ms mono windows around the
+  // representative boundaries (4-decimal sample values). The excerpt is wider
+  // than the detector's own ±13.4 ms context, so rescoring these bytes in
+  // isolation reproduces the in-run index exactly.
+  const windowOf = (x, at, ms = 14) => Array.from(
+    x.slice(Math.max(0, at - Math.round(ms * 0.001 * SR)), at + Math.round(ms * 0.001 * SR)),
+    (v) => Number(v.toFixed(4)),
+  );
+  const leadEndFrame = edgeBoundaries.find((e) => e.clipId === ids.lead.clipId && e.edge === 'end').frame;
+  const leadStartFrame = edgeBoundaries.find((e) => e.clipId === ids.lead.clipId && e.edge === 'start').frame;
+  results.clickEvidence.note = '±14 ms mono windows around key region edges (4-decimal sample values), wider than the detector context so they rescore to the in-run indices. Gain automation is sample-accurate, so a missing fade steps exactly at `frame`.';
+  results.clickEvidence.clean = {
+    leadCutFrame: leadEndFrame,
+    leadCutWindow: windowOf(soloRenders[3], leadEndFrame),
+    leadStartFrame,
+    leadStartWindow: windowOf(soloRenders[3], leadStartFrame),
+    drumsSplitFrame: splitFrame,
+    drumsSplitWindow: windowOf(soloRenders[0], splitFrame),
+  };
 
   // Musical fades on the pad: the 2-beat fade-out runs beats 14..16 = 7..8 s.
   const padA = rmsOf(soloRenders[4].slice(Math.round(6.4 * SR), Math.round(6.7 * SR)));
@@ -599,7 +559,7 @@ async function main() {
 
   // ---- negative controls: each defective render must FAIL its check ----
   const nc = (name, baseState, trackIndex, mutatePlan, probe) => {
-    const badPlan = compileRenderPlan(baseState(), { tailFrames: Math.round(0.3 * SR) });
+    const badPlan = compilePlan(baseState(), { tailFrames: Math.round(0.3 * SR) });
     mutatePlan(badPlan);
     return renderOffline(badPlan, buffers, {
       ...baseOptions,
@@ -641,14 +601,29 @@ async function main() {
     return { name: 'pitch ratio', passed, measuredFreqHz: f, expectedFreqHz: fBase * 2 ** (7 / 12) };
   });
 
-  await nc('broken clip fades', soloTrack(3), 3, (p) => {
+  await nc('broken clip fades (detector effectiveness)', soloTrack(3), 3, (p) => {
     for (const c of p.clips) { c.fadeInFrames = 0; c.fadeOutFrames = 0; }
   }, (x) => {
-    // The mid-vowel trim cut at 9 s is steady amplitude; without the
-    // micro-fade-out the region end becomes a hard step.
-    const badCutSlope = maxSlope(x, cutFrame + 99, Math.round(0.01 * SR));
-    const passed = badCutSlope <= clickCut * 2 + 0.02;
-    return { name: 'mid-vowel cut click', passed, badCutSlope, referenceSlope: clickCut };
+    // The ORDINARY boundary gate must reject the unfaded render at the same
+    // edges — this is the negative control that proves the detector remains
+    // effective (Grok C1). The mid-vowel cut steps at full sustain amplitude.
+    const brokenGate = boundaryGate([
+      boundaryDiscontinuity(x, leadStartFrame),
+      boundaryDiscontinuity(x, leadEndFrame),
+    ]);
+    results.clickEvidence.broken = {
+      leadCutFrame: leadEndFrame,
+      leadCutWindow: windowOf(x, leadEndFrame),
+      leadStartFrame,
+      leadStartWindow: windowOf(x, leadStartFrame),
+      gate: brokenGate,
+    };
+    return {
+      name: 'BDI gate rejects the unfaded boundaries',
+      passed: brokenGate.passed, // nc inverts: detected when the gate rejects
+      worstIndex: brokenGate.worstIndex,
+      flagged: brokenGate.flagged,
+    };
   });
 
   // ---- GATE 5: minimal real-time AudioWorklet proof ----
@@ -759,11 +734,28 @@ async function main() {
   }
 
   // ---- GATE 7 artifact (renderOffline already trims limiter latency) ----
+  // The artifact is the exact arrangement extent [0, arrangementEndFrame):
+  // the DSP tail (tailFrames) is deliberately excluded and the limiter's
+  // lookahead delay was trimmed inside renderOffline, so WAV frame 0 is
+  // arrangement frame 0. Its frame count must equal the computed end.
   const outL = L.slice(0, plan.output.arrangementEndFrame);
   const outR = R.slice(0, plan.output.arrangementEndFrame);
   const wav = encodeWav24([outL, outR], SR);
   results.measurements.artifactFrames = outL.length;
-  await post('/artifact', wav);
+  results.measurements.artifactDurationSec = outL.length / SR;
+  check('WAV frame count equals the computed arrangement end (tail excluded, lookahead trimmed)',
+    outL.length === independentEndFrame
+      && outL.length === plan.output.arrangementEndFrame
+      && outL.length !== plan.output.totalFrames,
+    {
+      artifactFrames: outL.length,
+      independentEndFrame,
+      totalFrames: plan.output.totalFrames,
+      artifactDurationSec: outL.length / SR,
+    });
+  // The artifact is only meaningful for the clean render — never overwrite it
+  // from the defective demonstration mode.
+  if (!breakFades) await post('/artifact', wav);
   await post('/results', JSON.stringify(results));
   window.__bounceDone = true;
 }
