@@ -115,10 +115,25 @@ at the region end (the stretch window smear is measured at ≈ 30–47 ms in S4)
 | Fact | Value |
 | --- | --- |
 | File | `/tmp/opencode/living-daylights/living-daylights-bounce.wav` (copy: `artifacts/living-daylights-bounce.wav`) |
-| sha256 | `82af8cb27389101553ea8b1f97df4d9b1ba1646a70901fc5f0a687f4435db7f1` |
-| Format | 24-bit PCM WAV, stereo, 48 kHz, 432,000 frames (9.000 s), canonical RIFF header |
+| sha256 | `82af8cb27389101553ea8b1f97df4d9b1ba1646a70901fc5f0a687f4435db7f1` (the audited file, preserved unchanged; re-renders of the same arrangement are equal to float32 epsilon but not bit-identical — see §11) |
+| Format | 24-bit PCM WAV, stereo, 48 kHz, **448,000 frames (9.3333 s)**, canonical RIFF header |
 | Source commit | this branch's commits in §10 |
 | Content | original synthesised arrangement (A minor, 120 BPM master) |
+
+**Duration derivation (corrected 2026-11-20 after Grok C2; this table
+previously read "432,000 frames (9.000 s)" — wrong prose, right audio):** the
+arrangement end is beat 18.6667 = 9.3333 s = 448,000 frames at 48 kHz, set by
+the 140 BPM percussion clip: 8 source-s at 140 BPM = 18.6667 source-beats,
+beat-synced to the 120 master (rate 120/140 = 0.8571 source-s per output-s,
+8 ÷ 0.8571 = 9.3333 output-s — two derivations that agree). The lead's
+sine-peak trim ends at beat 18.0015 = 432,036 frames and is an **interior**
+edge; the old prose conflated it (rounded to 432,000) with the arrangement end.
+The artifact was always 448,000 frames and was not truncated to match the
+prose. `tests/frontend/arrangement/bounce-artifact.test.js` now pins this with
+three independent derivations (raw state arithmetic, the RenderPlan, and the
+WAV container's frame count) plus the documented latency/tail handling (the
+0.3 s DSP tail is excluded from the artifact; `renderOffline` trims the
+limiter's 240-frame lookahead so WAV frame 0 == arrangement frame 0).
 
 Eight contributing tracks, each with measured RMS contribution
 (0.031–0.287): synthesised drums (split + trimmed), bass (start-trimmed),
@@ -166,13 +181,13 @@ claim is made.
 
 | Measurement | Value |
 | --- | --- |
-| Output length / start | 432,000-frame trimmed export (renderOffline now renders and trims the limiter's 240-frame lookahead, so sample 0 == arrangement frame 0); moved lead pipeline delay **+210 frames (4.4 ms)**, relative placement error **24 frames** between the pitched and unshifted variants |
+| Output length / start | **448,000-frame** artifact = the exact arrangement extent (9.3333 s; derivation in §4; the 0.3 s DSP tail is excluded and renderOffline trims the limiter's 240-frame lookahead, so sample 0 == arrangement frame 0); moved lead pipeline delay **+210 frames (4.4 ms)**, relative placement error **24 frames** between the pitched and unshifted variants |
 | Effective stretch ratio | measured **0.8318** vs expected 0.8333 (100→120 BPM), 0.2 % error |
 | Pitch frequency ratio | measured **1.500** vs expected 1.4983 (+7), zero-crossing resolution 2 Hz |
 | Pitch/duration independence | onsets AND offsets agree within 24 / 9 frames between shifted and unshifted renders |
 | Stereo integrity | mono-centred fixtures stay centred; panned tracks give max channel difference 0.388 in the expected direction |
 | Formants on the vocal-like lead | smoothed-parabolic F1: unshifted 694 Hz, compensated 495 Hz (Δ199), uncompensated 1004 Hz (Δ309) — **strictly nearer than uncompensated**; fine-resolution evidence remains spike S6 |
-| Clip boundary clicks | split slope 0.190, mid-vowel cut 0.027 vs steady reference 0.185 (gate: boundary slope ≤ 4× steady, so a broken-fade render at 0.155–0.201 mid-vowel cut also fails the ordinary gate) |
+| Clip boundary clicks | **BDI gate over every region edge** (boundary-local detector, §11): clean render worst edge 0.83 vs threshold 2.5; the representative broken-fade render fails the same gate at 12.3–18.0. The legacy slope gate (split 0.190 vs hi-hat reference 0.185) is evidence-only: it conflates musical transients with clicks and let a 0.201 broken cut pass at its 0.739 threshold (Grok C1, §11) |
 | Fades | pad RMS 0.133 → 0.046 across the 2-beat fade-out (−9.2 dB) |
 | Limiter | ceiling 0.966051 held (float32 epsilon < 1e-6); max gain reduction **−7.32 dB**; **true-peak protection is NOT claimed** and no oversampled measurement is pretended (`intersampleAssessment` records this) |
 | Mute/Solo law | a state-level solo render equals the physically filtered solo bit-for-bit (normalized diff **0.0**) — the graph enforces the law itself |
@@ -190,14 +205,14 @@ fails its check):
 | incorrect source-offset calculation | chords content alignment | measured lag −283 ms |
 | ignored latency compensation | clip placement | onset off by 2,426 frames |
 | pitch applied as playback speed | pitch ratio | 220 Hz where 329.6 expected |
-| broken clip fades | mid-vowel cut click | slope 0.201 vs 0.028 reference (7×) |
+| broken clip fades | BDI gate on the unfaded boundaries (detector effectiveness) | gate rejects at the mid-vowel cut, index 12.35 vs threshold 2.5 |
 
 ## 7. Tests and negative controls
 
 | Suite | Result |
 | --- | --- |
-| `tests/frontend/arrangement/` | **86 tests** — time-math 12, project-state 13, edit-api 23, history-and-proposals 14, render-plan 14 (incl. the split-boundary regression), dsp-units 9 (incl. the mono WAV pad regression), negative-control 2 |
-| `npm test` (all frontend incl. new) | **655 pass, 0 fail** |
+| `tests/frontend/arrangement/` | **104 tests** — time-math 12, project-state 13, edit-api 23, history-and-proposals 14, render-plan 14 (incl. the split-boundary regression), dsp-units 9 (incl. the mono WAV pad regression), negative-control 2, click-guard 13 (Grok C1 qualification), bounce-artifact 5 (Grok C2 duration truthfulness) |
+| `npm test` (all frontend incl. new) | **673 pass, 0 fail** |
 | `pytest -q` | **630 passed, 1 skipped** |
 | Spike harness | 11 proven + **S9 INCONCLUSIVE** (no underrun telemetry); exits non-zero on any failure |
 | Bounce harness | 15/15 checks + 4/4 negative controls detected; exits non-zero on any failure |
@@ -231,6 +246,11 @@ dependency. The dependency is 77 % of it and is the minimum vendored unit that
 keeps licence and provenance attached. Trigger thresholds are exceeded against
 the historical baseline and this entry records the reason.
 
+Gate 6 corrective action (2026-11-20) delta: **987,135 bytes / 85 files
+(+8,707 / +0.9 %)** — `js/arrangement/click-guard.js` 8,527 B (the boundary
+acceptance instrument, reused by Milestone C's transport click-safety) plus the
+`offline-render.js` export seam. Explained and minimal.
+
 ## 8. Independent review (GATE 6)
 
 Codex Sol (`codex-cli 0.170.0`) was dispatched the scoped challenge brief
@@ -256,7 +276,7 @@ tightened gate:
 | 9 | drivers exited 0 on failed gates | code path | both drivers set exit 1 on any failed check or undetected negative control |
 | 10 | duration/formant/placement gates accepted their own defects | evidence rows (equality formant pass; 351-frame error under 720 tolerance) | offset+onset duration check; strict parabolic formant comparison (Δ199 < Δ309); placement bounded to 480 frames absolute + 60 frames relative; latency NC tightened from 50 ms to 240 frames |
 | 11 | S8/S9/S10 gates vacuous (seconds-vs-frames bug, RSS hook clobber, unconditional pass) | code path + missing RSS in the saved report | CPU-factor gate; S9 recorded INCONCLUSIVE without telemetry; S10 window check in seconds with window-advance requirement; RSS hook no longer clobbered (24 samples now recorded) |
-| 12 | solo/fade gates could pass broken behaviour | evidence rows | state-solo == filtered-solo equality render (law enforced by the graph); leave-one-out-of-the-sum presence proof for all eight tracks; one click gate at 4× steady slope so the broken-fade render fails it too |
+| 12 | solo/fade gates could pass broken behaviour | evidence rows | state-solo == filtered-solo equality render (law enforced by the graph); leave-one-out-of-the-sum presence proof for all eight tracks; one click gate at 4× steady slope so the broken-fade render fails it too — **the click part of this repair was later shown ineffective (Grok C1) and is replaced by the BDI gate, §11** |
 
 IMPROVEs: GATE 5 now compares **both channels** and is described as a coarse
 envelope comparison; the meaningless linear "true-peak estimate" is removed and
@@ -314,3 +334,157 @@ real-time limiter/latency compensation loop.
 
 **No audible PASS is claimed until the PM listens to
 `artifacts/living-daylights-bounce.wav`.**
+
+## 11. GATE 6 corrective action — Cursor Grok findings (2026-11-20)
+
+Independent re-review by Cursor Grok found two discrepancies in this
+milestone's evidence. Both reproduce exactly; both are repaired here with
+regression tests. Repair-the-measurement-not-the-story: the audio was never
+wrong — the acceptance gate and the prose were.
+
+### 11.1 Grok C1 — the ordinary click gate was not trustworthy (reproduced)
+
+Grok's measurements against the audited run (reproduced bit-for-bit from
+`bounce-results.json`): steady reference 0.1848 → old threshold 0.7393;
+broken-fade slope 0.2009 **passes** the gate (0.201 < 0.739); the split
+boundary's 0.1903 is a hi-hat onset compared against a 0.1848 hi-hat
+reference. The from-signal reproduction
+(`click-guard.test.js` "Grok reproduction", pinned as regression) rebuilds the
+physics on a hi-hat burst reference (0.2680 → threshold 1.0722) and shows a
+**half-full-scale hard cut (slope 0.4995) passing** the old gate. Root cause:
+one global slope reference conflates musical transients with clicks — noise
+transients inflate the threshold until real cuts slide under it. The §6
+parenthetical that claimed broken cuts "also fail the ordinary gate" was false.
+
+**Replacement: the Boundary Discontinuity Index (BDI)**,
+`src/twobecomeone/studio_static/js/arrangement/click-guard.js`. A missing
+micro-fade leaves three simultaneous signatures at a region edge: an envelope
+step, a value step and a slope break; musical transients are locally
+continuous instead. So each signature is scored against the **local**
+continuity of the content it interrupts (±11 ms, never a global reference):
+
+- `TE = |RMS(after window) − RMS(before window)| / local envelope roughness`
+  (128-sample windows; the roughness is the **quadratic mean** of the 4 nearest
+  adjacent-window changes per side — a plain mean let a clean pad fade read
+  2.38/2.5 because quiet pairs diluted the fade's own ramp; a plain max let
+  one rough pair mask a broken pad cut at 1.29. Both failures measured and
+  fixed by the quadratic mean.)
+- `TW = |x[b] − x[b−1]| / local per-sample slope scale` (the value step must
+  exceed what the waveform already does per sample — a masking model. A
+  curvature-normalized variant was rejected: it read 2.41 on perfectly clean
+  pad edges, phase-lucky against the 2.5 threshold.)
+- `BDI = max(TE, TW)`, flagged above **2.5** ("the junction breaks continuity
+  2.5× worse than the roughest behaviour the surrounding ±11 ms already
+  shows"). Clip-gain automation is sample-accurate, so the junction sample is
+  the plan's exact region edge — no search, no tuning to the case.
+
+**Qualification — sensitivity and false positives** (13 cut phases per class,
+`tests/frontend/arrangement/click-guard.test.js`, 13/13):
+
+| content class | clean (max BDI) | broken (min–max BDI) | verdict |
+| --- | --- | --- | --- |
+| vocal (vowel sustain, end edge) | 0.61 | 3.56–6.11 | clean 24% of threshold; broken ≥ 1.42× |
+| pad (beating chord stack, end edge) | 2.10 | 3.26–27.70 | **limiting class** (clean 84%, broken 1.30×) |
+| drum (live noise burst, end edge) | 0.82 | 15.29–26.06 | strong |
+| silence → noise onset (start edge) | 0.98 | 10.27–14.13 | strong |
+| silence → tone onset (start edge) | 0.97 | 16.49–23.15 | strong |
+
+65/65 clean cuts pass, 65/65 broken cuts fail.
+
+Every region edge of the real bounce, scored on its own track's solo render
+(clean run of 2026-11-20 — the acceptance evidence, all under the 2.5
+threshold):
+
+| edge | frame | BDI | envelope step |
+| --- | --- | --- | --- |
+| clip-1 end | 168000 | 0.000 | 0.0000 |
+| clip-9 start | 192000 | 0.601 | 0.1327 |
+| clip-9 end | 384000 | 0.000 | 0.0000 |
+| clip-2 start | 24000 | 0.034 | 0.0034 |
+| clip-2 end | 384000 | 0.565 | 0.0003 |
+| clip-3 end | 320000 | 0.829 | 0.0200 |
+| clip-4 start | 192000 | 0.045 | 0.0008 |
+| clip-4 end | 432036 | 0.743 | 0.0581 |
+| clip-5 end | 384000 | 0.095 | 0.0000 |
+| clip-6 end | 384000 | 0.371 | 0.0136 |
+| clip-7 end | 448000 | 0.470 | 0.0178 |
+| clip-8 end | 384000 | 0.483 | 0.0061 |
+ The pad's margin is thin because
+its ~41 Hz beating genuinely moves the envelope at the fade-ramp rate (its
+audibility is correspondingly masked) — the margin is reported, not tuned away.
+Detection floors (scale-invariant ratios): waveform value steps **≥ ~10% of
+content amplitude** on sustained tones (7% passes, 15% fails the sweep);
+envelope steps **≥ ~20% of content RMS** on noise (10% passes, 20% flags).
+False-positive suites: content-continuous splits, mid-region musical onsets
+(never probed — only region edges are), 2-beat musical fades at both ends, and
+near-silent decayed edges all pass unflagged.
+
+**Acceptance path really fails broken renders.** The ordinary gate scores all
+12 region edges on the clean render (worst **0.83**, at the stretched chords'
+end) and the harness's detector-effectiveness negative control runs the SAME
+gate on the unfaded lead render: it **rejects** at the mid-vowel cut (index
+**12.35**, envelope step 0.27). End-to-end, `node tests/browser/daw_bounce.js
+--break-fades` renders every plan with fades stripped and the ordinary
+acceptance gate **fails the run** (worst 17.97 at the pad's fade end; the
+musical-fades check fails alongside) with **exit code 1**, versus exit 0 on the
+clean run. Saved ±14 ms signal windows for independent re-audit (clean and
+broken, both lead edges and the drums split) are in
+`bounce-results.json → clickEvidence` (1,344 samples each, 4-decimal) — wider
+than the detector's ±13.4 ms context, so rescoring the saved bytes reproduces
+the in-run indices exactly.
+
+**Named remaining blocker (claim narrowed where masking wins):** an incoming
+region whose source carries its own ≥10 ms attack ramp starts gently even
+without the micro-fade — the defect is locally invisible and perceptually
+masked (pinned as a documented blind-spot test). Cutting uncorrelated noise at
+a low point is likewise masked by the noise itself. Neither is claimed
+detected.
+
+### 11.2 Grok C2 — bounce duration (reproduced and reconciled)
+
+The audited WAV (`82af8cb2…`) parses to **448,000 frames = 9.333333 s**; the
+documentation claimed 432,000 frames (9.000 s). Reproduced, root-caused and
+fixed as derived in §4: the arrangement end is the 140 BPM percussion's
+beat-synced extent (18.6667 beats), the lead's 432,036-frame trim is an
+interior edge the prose had mis-labelled, and the **audio was correct all
+along**. The 140→120 stretch is consistent two ways (rate 120/140 = 0.8571
+source-s per output-s; 8 ÷ 0.8571 = 9.3333 output-s = 18.6667 beats × 0.5
+s/beat). Duration assertions are now truthfulness *checks* in the harness
+(independent state arithmetic == plan == WAV frames), and
+`tests/frontend/arrangement/bounce-artifact.test.js` (5/5) pins the
+three-way frame-count agreement, the stretch derivation, the lead-trim
+interiority, and the latency/tail contract (0.3 s tail excluded; 240-frame
+limiter lookahead trimmed inside `renderOffline`).
+
+### 11.3 Render reproducibility note (measured, not glossed)
+
+Re-rendering the identical arrangement is **not bit-reproducible**: this
+session's verification render (sha256 `64d62350…`) differs from the audited
+`82af8cb2…` by at most 11 24-bit LSBs (1.3 ppm full scale; normalized RMS
+3.6e-7) — the same float32-epsilon jitter already visible in the audited
+session's own re-runs (sample-peak measurements varied in the 7th decimal).
+The musical content and every measurement agree. The audited artifact is
+preserved byte-identical in `artifacts/` and the hash in §4 is that file.
+
+### 11.4 Regression results on the corrective HEAD
+
+| Suite | Result |
+| --- | --- |
+| `tests/frontend/arrangement/` | **104 pass** (86 prior + 13 click-guard + 5 bounce-artifact) |
+| `npm test` | **673 pass, 0 fail** |
+| bounce harness, clean | all 18 checks + 4 negative controls PASS, exit 0 |
+| bounce harness, `--break-fades` | acceptance gates FAIL (by design), exit 1 |
+| `pytest -q` | **630 passed, 1 skipped** (identical to the audited HEAD) |
+
+### 11.5 Items for Grok's independent re-audit
+
+1. The BDI design justification (§11.1) and its qualification tables — in
+   particular the pad margins (2.10 clean / 3.26 broken) and whether the
+   threshold 2.5 separation is accepted for that class.
+2. The saved clean/broken signal windows (`bounce-results.json →
+   clickEvidence`) against the gate's indices at frames 192000/432036.
+3. The duration derivation (§4) and the three-way regression test.
+4. The claim that the acceptance path fails broken renders end-to-end
+   (`--break-fades`, exit 1) while the clean run stays exit 0.
+5. The named blind spot (source-attack masking) as an acceptable narrowed
+   claim, or a requirement for further work before Milestone C.
