@@ -278,6 +278,15 @@ export function validateProject(state) {
     });
   }
 
+  // Optional master stage (OPERATION FULL HOUSE). Absent means 0 dB, so every
+  // earlier v1 project stays valid unchanged.
+  if (state.master !== undefined) {
+    if (!state.master || typeof state.master !== 'object'
+      || !inRange(state.master.volumeDb, MIN_VOLUME_DB, MAX_VOLUME_DB)) {
+      pushError(errors, 'master.volumeDb', 'OUT_OF_RANGE', `master.volumeDb must be ${MIN_VOLUME_DB}..${MAX_VOLUME_DB}`);
+    }
+  }
+
   const clips = state.clips;
   if (!Array.isArray(clips)) {
     pushError(errors, 'clips', 'INVALID', 'clips must be an array');

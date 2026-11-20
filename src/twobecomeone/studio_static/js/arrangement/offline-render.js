@@ -118,6 +118,7 @@ export async function buildBackbone(ctx, plan, options) {
     trackInputs[track.trackIndex] = low;
     trackInputs[`gain-${track.trackIndex}`] = gain; // for ramped live mute/solo
     trackInputs[`pan-${track.trackIndex}`] = panner;
+    trackInputs[`eq-${track.trackIndex}`] = { low, mid, high }; // live EQ moves
   }
 
   function dispose() {

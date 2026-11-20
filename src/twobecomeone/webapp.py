@@ -25,6 +25,7 @@ from . import __version__
 from .common import UserError
 from .contracts import TERMINAL_JOB_STATES
 from .http_safety import RequestSafetyMiddleware
+from .arrangements import ArrangementStore
 from .studio import RenderOptions, StudioService
 
 
@@ -144,6 +145,11 @@ class TrackPatchBody(BaseModel):
     mode: str | None = None
     first_beat: float | None = None
     suggested_downbeat: float | None = None
+
+
+class ArrangementSaveBody(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+    project: dict[str, Any]
 
 
 class ProjectCreateBody(BaseModel):
@@ -537,6 +543,23 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
     # ------------------------------------------------------------------
     # Projects
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Saved Studio arrangements (OPERATION FULL HOUSE)
+    # ------------------------------------------------------------------
+    arrangements = ArrangementStore(service.data_dir)
+
+    @app.get("/api/arrangements")
+    def list_arrangements():
+        return arrangements.list()
+
+    @app.get("/api/arrangements/{arrangement_id}")
+    def get_arrangement(arrangement_id: str):
+        return arrangements.get(arrangement_id)
+
+    @app.put("/api/arrangements/{arrangement_id}")
+    def save_arrangement(arrangement_id: str, body: ArrangementSaveBody):
+        return arrangements.save(arrangement_id, body.name, body.project)
 
     @app.get("/api/projects")
     def list_projects(

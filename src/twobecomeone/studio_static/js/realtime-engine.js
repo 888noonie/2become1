@@ -380,6 +380,81 @@ export class RealtimeEngine {
     return this.transport;
   }
 
+  /**
+   * OPERATION FULL HOUSE: the Studio editor changes the arrangement while it
+   * plays. The new plan replaces the old one; mixer values ramp on the shared
+   * backbone (no rebuild); a change to any clip re-anchors playback at the
+   * position heard `startLead` from now through the SAME two-voice seek
+   * handover a Seek uses, so outgoing voices from the old plan keep sounding
+   * until the new ones are armed, and no voice of the old plan can start
+   * afterwards. Returns { reseeked, refused? }.
+   */
+  async replacePlan(plan) {
+    if (this._disposed) return { reseeked: false };
+    if (plan.sampleRate !== this.sr) throw new RangeError('a replacement plan must keep the sample rate');
+    const previous = this.plan;
+    const clipsChanged = JSON.stringify(previous.clips) !== JSON.stringify(plan.clips)
+      || previous.masterBpm !== plan.masterBpm;
+    if (clipsChanged && plan.clips.some((c) => !(c.rate === 1 && c.pitchSemitones === 0))) {
+      // Pay the first Signalsmith node's one-off cost silently before the
+      // handover needs it (it otherwise eats the priming lead).
+      await this.#warmStretch();
+      if (this._disposed) return { reseeked: false };
+    }
+    this.plan = plan;
+    this.transport = { ...this.transport, arrangementEndFrame: plan.output.arrangementEndFrame };
+    this.minLoopFrames = Math.max(2 * this.admissionFrames, Math.round((60 / plan.masterBpm) * this.sr));
+    this.applyMix(plan);
+    if (!clipsChanged || !(ACTIVE_PHASES.has(this.transport.phase) && this.active)) return { reseeked: false };
+    const heard = this.#frameAtCtx(this.ctx.currentTime + this.startLeadFrames / this.sr);
+    const target = this.#loopEntry(Math.min(heard, Math.max(0, plan.output.arrangementEndFrame)), this.transport.loop);
+    const refusal = this.#admissionCheck(target, this.transport.loop);
+    if (refusal) {
+      this.#refuse(refusal);
+      return { reseeked: false, refused: refusal.code };
+    }
+    this.#reduce({ type: 'seek', frame: target, keepCue: true });
+    this.#kick();
+    return { reseeked: true, frame: target };
+  }
+
+  /** Ramp the shared backbone to a plan's mixer values (20 ms, never a step). */
+  applyMix(plan, rampSec = 0.02) {
+    const bb = this.backbone;
+    if (!bb) return;
+    const now = this.ctx.currentTime;
+    const glide = (param, value) => {
+      if (!param) return;
+      param.cancelScheduledValues(now);
+      param.setValueAtTime(param.value, now);
+      param.linearRampToValueAtTime(value, now + rampSec);
+    };
+    for (const t of plan.tracks) {
+      glide(bb.trackInputs[`gain-${t.trackIndex}`]?.gain, t.audible ? t.volumeLinear : 0);
+      glide(bb.trackInputs[`pan-${t.trackIndex}`]?.pan, t.pan);
+      const eq = bb.trackInputs[`eq-${t.trackIndex}`];
+      if (eq) {
+        glide(eq.low.gain, t.eq.lowGainDb);
+        glide(eq.mid.gain, t.eq.midGainDb);
+        glide(eq.high.gain, t.eq.highGainDb);
+      }
+    }
+    glide(bb.master.gain, plan.master.gainLinear);
+  }
+
+  /** The transport frame that is heard at context time `sec` (display). */
+  playheadAt(sec) {
+    if (!this.active || !ACTIVE_PHASES.has(this.transport.phase)) return this.transport.parkedFrame;
+    return this.#frameAtCtx(sec);
+  }
+
+  /** Seconds between a frame being rendered and reaching the speaker. */
+  outputDelaySec() {
+    const out = Number.isFinite(this.ctx.outputLatency) ? this.ctx.outputLatency : (this.ctx.baseLatency || 0);
+    const lim = this.backbone ? this.backbone.limiterLatencyFrames / this.sr : 0;
+    return out + lim;
+  }
+
   // Reducer passthroughs (C1 API). The engine delivers these itself; calling
   // them by hand is only meaningful in the matching phase.
   started() { return this.#reduce({ type: 'started' }); }

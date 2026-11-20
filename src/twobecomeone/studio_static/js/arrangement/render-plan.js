@@ -163,7 +163,8 @@ export function compileRenderPlan(state, options = {}) {
     anySolo,
     master: {
       order: 'track-then-clip (deterministic; overlapping regions sum)',
-      gainLinear: 1,
+      volumeDb: snapshot.master?.volumeDb ?? 0,
+      gainLinear: dbToLinear(snapshot.master?.volumeDb ?? 0),
     },
     limiter: {
       type: 'lookahead-brickwall',

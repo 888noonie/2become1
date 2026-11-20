@@ -136,8 +136,9 @@ function requireSourceBounds(draft, clip, asset, sourceOffsetSec, durationBeats)
  */
 const COMMANDS = {
   loadStemToTrack(draft, args, h) {
-    const { trackIndex, audioFile, nativeBpm } = args;
+    const { trackIndex, audioFile, nativeBpm, startBeat = 0 } = args;
     requireTrackIndex(trackIndex);
+    requireFinite(startBeat, 'startBeat');
     if (!audioFile || typeof audioFile !== 'object') {
       throw new InvalidEditError('audioFile must be an asset descriptor', 'INVALID_ARGUMENT');
     }
@@ -164,7 +165,11 @@ const COMMANDS = {
     const detectedKey = audioFile.detectedKey ?? null;
 
     const assetId = h.nextId('asset', 'assets');
-    const asset = Object.freeze(makeAsset({ id: assetId, name, durationSec, bufferReference, nativeBpm: measuredBpm, detectedKey }));
+    const asset = makeAsset({ id: assetId, name, durationSec, bufferReference, nativeBpm: measuredBpm, detectedKey });
+    // Provenance the Studio shows next to a tempo or a source (optional fields).
+    if (measuredBpm !== null) asset.nativeBpmSource = audioFile.nativeBpmSource ?? 'analysis';
+    if (audioFile.source && typeof audioFile.source === 'object') asset.source = structuredClone(audioFile.source);
+    Object.freeze(asset);
     const clipId = h.nextId('clip', 'clips');
     // A measured BPM gives beat_sync with the musical beat length; an unmeasured
     // BPM stays unknown and the clip starts in manual mode at ratio 1.
@@ -179,12 +184,21 @@ const COMMANDS = {
       id: clipId,
       trackIndex,
       assetId,
-      timelineStartBeat: 0,
+      timelineStartBeat: roundTime(Math.max(0, startBeat)),
       durationBeats,
       sourceOffsetSec: 0,
       stretchMode,
       customStretchRatio: stretchMode === 'manual' ? 1 : null,
     });
+    if (args.naturalSpeed === true && stretchMode === 'beat_sync') {
+      // Studio import: the clip plays its source at its own speed (ratio 1, no
+      // DSP) until the owner chooses Fit to project tempo. The measured tempo
+      // stays on the asset for that choice.
+      clip.stretchMode = 'manual';
+      clip.customStretchRatio = 1;
+      clip.durationBeats = roundTime(durationSec * (draft.transport.masterBpm / 60));
+      Object.assign(clip, clampMicroFades(clip.fadeInBeats, clip.fadeOutBeats, clip.durationBeats));
+    }
     draft.clips.push(clip);
     return { assetId, clipId };
   },
@@ -395,6 +409,125 @@ const COMMANDS = {
     return { masterBpm };
   },
 
+  // --- OPERATION FULL HOUSE: the Studio arrangement editor's commands. Each is
+  // one validated, atomic, undoable step through the same `run` path.
+
+  deleteClip(draft, args) {
+    const { clipId } = args;
+    const index = draft.clips.findIndex((c) => c.id === clipId);
+    if (index < 0) throw new InvalidEditError(`no clip ${clipId}`, 'NOT_FOUND');
+    draft.clips.splice(index, 1);
+    // The asset record stays: the source is never deleted, and undo restores
+    // the clip against the same reference.
+    return { clipId };
+  },
+
+  duplicateClip(draft, args, h) {
+    const { clipId, startBeat, trackIndex } = args;
+    const clip = requireClip(draft, clipId);
+    const at = startBeat ?? roundTime(clip.timelineStartBeat + clip.durationBeats);
+    requireFinite(at, 'startBeat');
+    if (at < -EPSILON) throw new InvalidEditError('startBeat must be >= 0', 'OUT_OF_RANGE');
+    const lane = trackIndex ?? clip.trackIndex;
+    requireTrackIndex(lane);
+    const copy = { ...structuredClone(clip), id: requireNewId(args) ?? h.nextId('clip', 'clips') };
+    copy.timelineStartBeat = roundTime(Math.max(0, at));
+    copy.trackIndex = lane;
+    draft.clips.push(copy);
+    return { clipId: copy.id };
+  },
+
+  setTrackName(draft, args) {
+    const { trackIndex, name } = args;
+    requireTrackIndex(trackIndex);
+    if (typeof name !== 'string' || !name.trim().length || name.length > 80) {
+      throw new InvalidEditError('track name must be 1..80 characters', 'INVALID_ARGUMENT');
+    }
+    draft.tracks[trackIndex].name = name.trim();
+    return { trackIndex, name: draft.tracks[trackIndex].name };
+  },
+
+  setMasterVolume(draft, args) {
+    const { volumeDb } = args;
+    requireRange(volumeDb, MIN_VOLUME_DB, MAX_VOLUME_DB, 'volumeDb');
+    draft.master = { ...(draft.master ?? {}), volumeDb };
+    return { volumeDb };
+  },
+
+  /** An owner-entered source tempo. Recorded as entered, never as measured. */
+  setAssetTempo(draft, args) {
+    const { assetId, nativeBpm } = args;
+    const asset = draft.assets[assetId];
+    if (!asset) throw new InvalidEditError(`no asset ${assetId}`, 'NOT_FOUND');
+    if (nativeBpm === null) {
+      if (draft.clips.some((c) => c.assetId === assetId && c.stretchMode === 'beat_sync')) {
+        throw new InvalidEditError('a clip follows this tempo; set it to a manual ratio first', 'TEMPO_IN_USE');
+      }
+      draft.assets[assetId] = { ...asset, nativeBpm: null, nativeBpmSource: null };
+      return { assetId, nativeBpm: null };
+    }
+    requireRange(nativeBpm, 20, 400, 'nativeBpm');
+    draft.assets[assetId] = { ...asset, nativeBpm, nativeBpmSource: 'owner' };
+    return { assetId, nativeBpm };
+  },
+
+  /**
+   * Stretch a clip while keeping the SAME source material: the timeline
+   * duration follows the new rate (a musician stretching a phrase expects it to
+   * get longer or shorter, not to run past its own audio). 'auto' follows the
+   * project tempo from the asset's tempo (beat_sync).
+   */
+  stretchClipKeepingSource(draft, args) {
+    const { clipId, ratioOrAuto } = args;
+    const clip = requireClip(draft, clipId);
+    const asset = requireAsset(draft, clip);
+    const bpm = draft.transport.masterBpm;
+    const spanSec = beatsToSourceSeconds(clip.durationBeats, clip, asset, bpm);
+    if (ratioOrAuto === 'auto') {
+      if (asset.nativeBpm == null) {
+        throw new InvalidEditError('this source has no tempo yet; enter its BPM first', 'BEAT_SYNC_UNAVAILABLE');
+      }
+      clip.stretchMode = 'beat_sync';
+      clip.customStretchRatio = null;
+    } else {
+      requireRange(ratioOrAuto, MIN_STRETCH_RATIO, MAX_STRETCH_RATIO, 'ratioOrAuto');
+      clip.stretchMode = 'manual';
+      clip.customStretchRatio = roundTime(ratioOrAuto);
+    }
+    const rate = sourceAdvanceRate(clip, asset, bpm);
+    const duration = roundTime(spanSec / rate / (60 / bpm));
+    if (duration < MIN_CLIP_DURATION_BEATS - EPSILON) {
+      throw new InvalidEditError('the stretched clip would be shorter than 1/64 beat', 'OUT_OF_RANGE');
+    }
+    clip.durationBeats = duration;
+    // Keep the musical fades the owner chose, clamped to the new length.
+    const fades = clampMicroFades(clip.fadeInBeats, clip.fadeOutBeats, duration);
+    clip.fadeInBeats = fades.fadeInBeats;
+    clip.fadeOutBeats = fades.fadeOutBeats;
+    requireSourceBounds(draft, clip, asset, clip.sourceOffsetSec, duration);
+    return { clipId, stretchMode: clip.stretchMode, customStretchRatio: clip.customStretchRatio, durationBeats: duration };
+  },
+
+  /**
+   * Several commands as ONE atomic, undoable step (a stem set landing on four
+   * tracks, or an AI Producer suggestion). Every sub-command runs on the same
+   * draft; any failure discards the whole batch.
+   */
+  batch(draft, args, h) {
+    const { commands } = args;
+    if (!Array.isArray(commands) || !commands.length || commands.length > 64) {
+      throw new InvalidEditError('batch needs 1..64 commands', 'INVALID_ARGUMENT');
+    }
+    const results = [];
+    for (const cmd of commands) {
+      if (cmd?.name === 'batch') throw new InvalidEditError('batches do not nest', 'INVALID_ARGUMENT');
+      const impl = COMMANDS[cmd?.name];
+      if (!impl) throw new InvalidEditError(`unknown command ${cmd?.name}`, 'UNKNOWN_COMMAND');
+      results.push(impl(draft, cmd.args ?? {}, h));
+    }
+    return { results };
+  },
+
   setLoopRange(draft, args) {
     const { startBeat, endBeat } = args;
     if (startBeat === null && endBeat === null) {
@@ -452,6 +585,11 @@ export class EditEngine {
     return this._future.length > 0;
   }
 
+  /** Increments on every committed edit, undo and redo (not on playhead moves). */
+  get revision() {
+    return this._revision ?? 0;
+  }
+
   get historyDepth() {
     return { past: this._past.length, future: this._future.length };
   }
@@ -495,6 +633,8 @@ export class EditEngine {
     this._past.push(previous);
     if (this._past.length > HISTORY_LIMIT) this._past.shift();
     this._future = [];
+    this._gesture = null;
+    this._revision = (this._revision ?? 0) + 1;
     return { result, warnings };
   }
 
@@ -573,6 +713,58 @@ export class EditEngine {
     return this.run({ name: 'setLoopRange', args: { startBeat, endBeat } }).result;
   }
 
+  deleteClip(clipId) {
+    return this.run({ name: 'deleteClip', args: { clipId } }).result;
+  }
+
+  duplicateClip(clipId, startBeat, trackIndex) {
+    return this.run({ name: 'duplicateClip', args: { clipId, startBeat, trackIndex } }).result;
+  }
+
+  setTrackName(trackIndex, name) {
+    return this.run({ name: 'setTrackName', args: { trackIndex, name } }).result;
+  }
+
+  setMasterVolume(volumeDb) {
+    return this.run({ name: 'setMasterVolume', args: { volumeDb } }).result;
+  }
+
+  setAssetTempo(assetId, nativeBpm) {
+    return this.run({ name: 'setAssetTempo', args: { assetId, nativeBpm } }).result;
+  }
+
+  stretchClipKeepingSource(clipId, ratioOrAuto) {
+    return this.run({ name: 'stretchClipKeepingSource', args: { clipId, ratioOrAuto } }).result;
+  }
+
+  batch(commands) {
+    return this.run({ name: 'batch', args: { commands } }).result;
+  }
+
+  /**
+   * Coalesced edits (a fader drag): the first call of a gesture pushes one
+   * history entry; later calls with the same `gestureKey` replace the state
+   * without adding history, so one drag is one undo step.
+   */
+  runGesture(command, gestureKey) {
+    const continuing = Boolean(gestureKey) && this._gesture === gestureKey && this._past.length > 0;
+    const base = continuing ? this._past[this._past.length - 1] : null;
+    const outcome = this.run(command); // resets the gesture on commit
+    if (continuing) {
+      // run() pushed the intermediate state; drop it so the gesture's base
+      // (the state before the drag began) is the one undo returns to.
+      this._past.pop();
+      if (this._past[this._past.length - 1] !== base) this._past.push(base);
+    }
+    this._gesture = gestureKey ?? null;
+    return outcome.result;
+  }
+
+  /** End the current coalescing gesture (pointer up). */
+  endGesture() {
+    this._gesture = null;
+  }
+
   /** Live playback marker: atomic and validated, but never enters history. */
   setPlayhead(playheadBeat) {
     requireFinite(playheadBeat, 'playheadBeat');
@@ -601,6 +793,8 @@ export class EditEngine {
     const current = this._state;
     this._future.push(current);
     const restored = this._past.pop();
+    this._gesture = null;
+    this._revision = (this._revision ?? 0) + 1;
     // Live transport markers are not editing state: carry them forward.
     restored.transport.playheadBeat = current.transport.playheadBeat;
     restored.transport.isPlaying = current.transport.isPlaying;
@@ -613,6 +807,8 @@ export class EditEngine {
     const current = this._state;
     this._past.push(current);
     const restored = this._future.pop();
+    this._gesture = null;
+    this._revision = (this._revision ?? 0) + 1;
     restored.transport.playheadBeat = current.transport.playheadBeat;
     restored.transport.isPlaying = current.transport.isPlaying;
     this._state = restored;
