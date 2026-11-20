@@ -504,7 +504,8 @@ try {
   const endBeat = Math.max(...reopened.clips.map((c) => c.timelineStartBeat + c.durationBeats));
   const expectFrames = Math.round(endBeat * (60 / reopened.transport.masterBpm) * 48000) + 24000;
   measurements.export = { ...report, file: wavPath };
-  check('11. export is 48 kHz, stereo, 24-bit', wav.sampleRate === 48000 && wav.channels === 2 && wav.bits === 24, wav);
+  check('11. export is 48 kHz, stereo, 24-bit', wav.sampleRate === 48000 && wav.channels === 2 && wav.bits === 24,
+    { sampleRate: wav.sampleRate, channels: wav.channels, bits: wav.bits, frames: wav.frames });
   check('11. export length = arrangement end + 0.5 s tail', Math.abs(wav.frames - expectFrames) <= 1, { frames: wav.frames, expectFrames });
   let peak = 0;
   for (let i = 0; i < wav.frames; i += 1) peak = Math.max(peak, Math.abs(wav.L[i]), Math.abs(wav.R[i]));
