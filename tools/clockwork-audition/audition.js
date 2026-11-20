@@ -229,10 +229,9 @@ export function mountAudition(root, deps) {
   loopBtn.addEventListener('click', () => {
     const on = !state.loopOn;
     if (state.engine) {
-      const before = state.engine.state().loop;
       state.engine.setLoop(on ? [2 * SR, 4 * SR] : null);
-      const after = state.engine.state().loop;
-      if (on && !after && !before) return render(); // refused; the reason is in the error list
+      // Reflect the ENGINE's loop, so a refused change (either way) is never shown as done.
+      if (!!state.engine.state().loop !== on) return render(); // refused; the reason is in the error list
     }
     state.loopOn = on;
     loopBtn.setAttribute('aria-pressed', String(on));
@@ -249,6 +248,7 @@ export function mountAudition(root, deps) {
     } else if (ev.key === ' ' || ev.code === 'Space') {
       if (ev.target && ev.target.tagName === 'INPUT' && ev.target.type !== 'range') return;
       ev.preventDefault(); // never also "click" a focused button
+      if (ev.repeat) return; // holding Space must not toggle repeatedly
       toggle();
     }
   };

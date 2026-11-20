@@ -24,7 +24,7 @@ unchanged in behaviour (§7).
 
 | Grok | Defect reproduced from code (C1 `ec74085`) | Repair |
 | --- | --- | --- |
-| **N1** BLOCKING | `#doSeek` faded the outgoing voice at `mapper.secForFrame(seamFrame)`, the OLD epoch's time for the target frame. Reproduced exactly: origin 5.0 s, seek at 6.0 s to frame 240 000 → old gate `set@9.995=1, linear@10.000=0`, incoming open at ~6.1 s, about 3.9 s doubled. | The new epoch's origin is `now + startLead`. Its voices are reserved, built and armed **first**. Only then are the outgoing voices faded, over the same 5 ms window the incoming fade in, from that origin. A seek that supersedes a seek not yet heard cancels that seek's voices and retracts its un-begun handover, so the audio actually sounding keeps sounding. |
+| **N1** BLOCKING | `#doSeek` faded the outgoing voice at `mapper.secForFrame(seamFrame)`, the OLD epoch's time for the target frame. Reproduced exactly: origin 5.0 s, seek at 6.0 s to frame 240 000 → old gate `set@9.995=1, linear@10.000=0`, incoming open at ~6.1 s, about 3.9 s doubled. | The new epoch's origin is `now + startLead`. Its voices are reserved, built and armed **first**. Only then are the outgoing voices faded, over the same 5 ms window the incoming fade in, from that origin. A seek that supersedes a seek not yet heard cancels that seek's voices and retracts its un-begun handover. Upcoming voices of the audible epoch (a loop-in partner, the next clip) keep playing up to the handover, so there is no dropout (fixed after the independent review, §9). |
 | **N2** BLOCKING | `tick()` returned early unless starting/playing/seeking, and stop completion lived only inside `fillWindow`. The engine stayed `stopping` at 100 s. | Pending-stop completion is serviced on every wake in any phase. The wake loop keeps running while a stop, a voice or an active phase needs service, then ends itself. `stopped` is delivered only after every connected voice is disconnected; it writes the parked cue once. A Play during Stop starts a new epoch and the superseded stop never parks. |
 | **N3** BLOCKING | The listening procedure described a demo page, Space/Esc and a `pkill` stop that did not exist. | `tools/clockwork-audition/` holds the page, a loopback-only server and synthesised fixtures. It has explicit Play, a visible Stop, Esc = Stop, Space = Play/Stop, a state and error display, a −24 dB default level (max −6 dB, ramped), no autoplay and no pilot tone, and a Stop watchdog. It uses the actual engine and a real ProjectState. The procedure was rewritten only after the controls passed tests. |
 | **N4** MAJOR | The horizon was a nominal 104 ms. The engine never called the tested arm sequence; it sent one future arm. No lead was measured, and lateness was not detected. | The timing terms are separated and labelled (§4). DSP voices are built unarmed. The engine measures `t0 − currentTime` and then sends **exactly** the legal Signalsmith pair: an arm in the past with compensated input, plus one future stop. A voice below the floor is never armed. A slow *first* batch re-anchors its epoch (`START_DELAYED`); a late voice inside a sounding epoch is an explicit `DEADLINE_MISS` stop. A rate outside 0.857–1.2, or any pitch shift, is reported `STRETCH_UNQUALIFIED`. |
@@ -136,7 +136,7 @@ limiter worklets, woken by `suspend()` every 1024 frames.
 | Check | Result |
 | --- | --- |
 | Seek, rate 1: old audio just before the handover / 10 ms after / 1.2–1.6 s later | −0.15 dB / **−165.9 dB** / −165.9 dB |
-| Seek, rate 1.2 (Signalsmith): same three windows | +0.04 dB / **−70.1 dB** / −62.0 dB |
+| Seek, rate 1.2 (Signalsmith): same three windows | +0.04 dB / **−70.1 dB** / −62.0 dB (cause of the −62 dB residual not established; the old voice is disconnected ~130 ms after the handover, so it is not that voice's tail — most likely leakage of the new 900 Hz material into the 300 Hz Goertzel window) |
 | New material 10 ms after the handover | within 1 dB |
 | Negative control, C1 seek | old tone still **+0.0 dB** later (detected) |
 | Stop: output after the 10 ms fade + limiter | **0.0** (max abs); `stopped`, isPlaying false, 0 processors, 0 slots |
@@ -199,8 +199,8 @@ any pitch shift are therefore *unqualified* and reported as such.
 
 ## 5. Voice capacity and lifecycle evidence
 
-- Capacity is derived from 8 tracks: 16 sounding + 2 seam partners + 4 tails = 22.
-  The graph limit is 32.
+- Capacity is derived from 8 tracks: 16 sounding + 8 handover partners (one per track) + 4 tails = 28.
+  The graph limit is 32. The earlier value, 22 (2 seam partners), refused ordinary 8-track use (§9).
 - Connected processors are counted from real node edges and checked at every wake:
   they equal the ledger's connected voices and never exceed capacity. The peak was
   16 during 8-track loops and seeks.
@@ -217,7 +217,10 @@ any pitch shift are therefore *unqualified* and reported as such.
   cue once and returns to baseline. It works immediately after Play, during a
   handover, during a loop, with no events left, and repeatedly.
 - **Seek** leaves no old audio after the 5 ms handover, both on the device clock
-  and in real-worklet PCM. Rapid seeks leave only the last epoch.
+  and in real-worklet PCM. It has no dropout before the handover, even next to a loop
+  seam or clip boundary. With 8 tracks, a second seek 30 ms after the first is accepted
+  and only the last target sounds. Two retargets within about 25 ms of each other
+  *next to a loop seam* on 8 tracks are refused (`POOL_EXHAUSTED`, audio untouched; §8).
 - **Loop** seams are complementary and sample-exact on phase-continuous material,
   and every pass is present exactly once.
 
@@ -266,11 +269,16 @@ Waveform-identical stretched or bypassed audio is **not** claimed.
    crossfades two different signals: correct in gain, but a short blend. A
    transient exactly at the loop start then plays at the crossfade weight
    (0.5 at the seam sample, 1.0 after 1.25 ms).
-4. **Partial seam material.** A clip edge within 1.25 ms of a loop point has less
-   pre- or post-roll material, so its seam window is partly empty.
-5. **Signalsmith qualification.** Seek on Signalsmith material leaves −62 to −70 dB
-   of old audio. That is gated stretch tail, not doubled audio. Priming is
-   qualified only for the default preset, rates 0.857–1.2 and 0 semitones.
+4. **Partial seam material.** A crossfade pair is formed only when the clip has
+   material before *a* and after *b*. Otherwise the outgoing pass fades over the
+   2.5 ms before *b* and the next pass starts with its own natural edge, a short
+   dip, never more than unity. When a seam extension reaches the clip's own edge,
+   the clip's fade is kept. A seek into the middle of a clip fade starts with the
+   2.5–5 ms transport ramp, not the remaining musical fade.
+5. **Signalsmith qualification.** After a seek on Signalsmith material, a −62 to
+   −70 dB residual is measured at the old frequency. Its cause is not established
+   (§3). Priming is qualified only for the default preset, rates 0.857–1.2 and
+   0 semitones.
 6. **Start lag.** A first batch of many Signalsmith voices starts up to about
    23 ms later than its target (`START_DELAYED`, reported). A late voice in a
    running epoch stops the transport (`DEADLINE_MISS`); it does not play
@@ -278,12 +286,53 @@ Waveform-identical stretched or bypassed audio is **not** claimed.
 7. **Display only.** `playhead()` reports the rendering position, not the speaker
    position, which is later by the output latency.
 8. **Short loops.** Loops under `max(1 beat, ≈308 ms)` are refused.
+9. **Rapid retargets.** On 8 tracks, two seeks or loop changes within about 25 ms
+   *next to a loop seam* need up to 32 slots and are refused (`POOL_EXHAUSTED`).
+   Playback is unchanged and the refusal is shown on the page.
+10. **Crossfade law.** The 5 ms seek handover is linear: it sums to unity in gain,
+    but on uncorrelated material it dips by about 2 dB RMS at its midpoint
+    (measured 0.1414 → 0.1132).
+11. **Not built.** A seek during the 10 ms stop fade is ignored by the reducer, as
+    before. The engine has no `resume()` after `pause()`; the audition page has no
+    Pause. Builds time out after 1 s of wall time (`VOICE_BUILD_TIMEOUT`, explicit
+    failure).
+12. **Simulation gaps** (named by the review). The simulated host does not model a
+    buffer source running out, stop-before-start, or the clock moving while voices
+    are armed (except where a test moves it), and most tests drive `tick()`
+    directly. The wake loop, races and live clock are covered by the
+    real-Chromium live and page checks, not by the simulation.
 
 ---
 
 ## 9. Independent final review
 
-See §12. It was filled in after the review ran.
+**Reviewer:** a Claude general-purpose subagent with a fresh context, launched by
+the author's session. It did not write the code and was read-only on the repo. It
+is the **same model family as the author** and is **not Grok**. Treat it as a
+separate review, not a cross-vendor audit. Its scripts are kept in the session's
+scratchpad (`.../scratchpad/review/r1–r5`).
+
+**Reviewer verdict on `c44a8de`: CONDITIONAL GO.**
+
+- **Confirmed:** both reproductions are genuine. The legacy control fails N1 and
+  N2 for Grok's reasons. The offline numbers and the live-repeat numbers match the
+  result files.
+- **Noted:** N4–N6 have no negative control against `ec74085`.
+
+| # | Severity | Finding (reviewer) | Status |
+| --- | --- | --- | --- |
+| 1 | MAJOR, confirmed | A seek cancelled the audible epoch's upcoming voices: a 50–100 ms dropout at a loop seam or clip boundary inside the start lead. | **Fixed.** Only voices of an unheard epoch, or starting after the handover, are cancelled. Re-running the reviewer's `r1` gives unity throughout. Test: *review 1*. A latent N6 pairing bug it exposed (1.5× gain when a clip starts exactly at *a*) was also fixed. Test: *review 1b*. |
+| 2 | MAJOR, confirmed | A build that never resolves stopped the wake loop, with no error. | **Fixed.** The wake is re-armed before awaiting, and builds time out with an explicit `VOICE_BUILD_TIMEOUT`. Test: *review 2*. Re-running `r2`: wakes continue. |
+| 3 | MAJOR, confirmed | The 22-slot pool refused normal 8-track seeks and loop-offs near seams. | **Fixed** for the reviewer's cases (`r3`: 30/120/200 ms all accepted; seek 50 ms before a seam accepted). Back-to-back retargets next to a seam are still refused safely (§8.9). Tests: *review 3* (three). |
+| 4 | MINOR, confirmed | A hard onset at up to 0.5 gain, with the clip fade dropped, at a partial loop edge. | **Fixed.** The clip fade is kept when the extension reaches the clip edge (`r4`: gain at the seam is 0.021, against an ideal of 0.042). Test: *review 4*. |
+| 5 | MINOR, plausible | The loop button could show "off" while the engine still loops. | **Fixed.** The button now reflects the engine's loop state. |
+| 6 | MINOR | Holding Space toggled repeatedly. | **Fixed.** `ev.repeat` is ignored. |
+| 7, 8 | MINOR | Seek during the stop fade is ignored; no `resume()`. | Documented (§8.11), not changed. |
+| 9 | MINOR | The linear handover dips about 2 dB. | Documented (§8.10). |
+| docs | — | Overstatements: the −62 dB "tail", "rapid seeks", the seam wording. | Corrected (§3, §6, §8). |
+
+**Re-review not run.** The fixes were verified by re-running the reviewer's own
+scripts and the full suites (§12). A second independent pass has not been run.
 
 ---
 
@@ -306,3 +355,47 @@ to 1,095,661 bytes / 90 files (+35,854 B, +3.4%).
   55,945 B; `js/realtime-engine.js` 50,375 B.
 - **Audition tool:** 22.7 KB in `tools/clockwork-audition/`, outside
   `studio_static`; the Studio does not serve it.
+
+---
+
+## 12. Final verification on the repaired HEAD (after the review fixes)
+
+| Suite | Result |
+| --- | --- |
+| `npm test` (frontend, all) | 777 tests, **776 pass, 0 fail**, 1 skipped (pre-existing untracked bounce artifact) |
+| `pytest -q` (Python, this checkout's `src`) | **630 passed, 1 skipped**. Run on `c44a8de`; the review fixes touch no Python. |
+| `legacy-control.mjs` | C1 `ec74085`: N1 **fails**, N2 **fails** (detected) |
+| Chromium offline + routing + page | **30/30 PASS**. Seek: old audio −165.9 dB (rate 1) / −70.1 dB (rate 1.2) 10 ms after the handover. Loop seams 1.07e-7 against the ideal. Stop output 0. The bounce is within C1's own 1-ULP variation. The page flow passes. |
+| Chromium live, 6 runs per set (`live-repeat.sh 6`) | audition **6/6**, minimum Signalsmith lead 89.4 ms, 1 re-anchored start. Worst case (8 DSP) **6/6**, minimum lead 84.0 ms, 6 re-anchored starts, build max 54.8 ms, catch-up max 17.6 ms. Wake lateness max 2.4 ms. **0 deadline misses.** |
+| PipeWire playback streams opened by any run | **0** |
+| Reviewer's scripts `r1`–`r5` re-run | r1 unity throughout (no dropout); r2 wakes continue; r3 all accepted; r4 fade kept; r5 back-to-back retarget refused safely (documented) |
+
+**Disk note.** The first pytest attempt filled `/tmp` (tmpfs). Only that run's own
+`/tmp/pytest-of-richardn/pytest-2` (458 MB) was removed. The re-run used a
+`--basetemp` under `~/.local/state`, which was removed afterwards. The older
+`pytest-0` and `pytest-1` (2.7 GB each, from earlier sessions) were left in place.
+
+## 13. Verdict and handover
+
+**Owner audition: CONDITIONAL GO.**
+
+- **Why this is ready.** The live engine now honours the stop, seek, loop,
+  capacity and late-detection contracts, and the evidence comes from the engine
+  itself and from real worklets. The audition page exists, is tested, and makes no
+  sound until the owner presses Play.
+- **What is still conditional:**
+  1. The owner listens and writes the verdict (`docs/clockwork-listening-procedure.md` §6).
+  2. Real-device latency and load are unmeasured.
+  3. The limitations in §8 hold.
+- **Milestone D (arrangement UI): still NO-GO** until the owner's listening
+  verdict. This rescue did not start it.
+
+**Open work**
+
+1. The owner audition.
+2. Optionally, a second independent (ideally cross-vendor) review of the review fixes.
+3. Negative controls for N4–N6 against `ec74085`.
+4. An equal-power or correlation-aware handover.
+5. `resume()` after `pause()`.
+6. Moving the bounce to `bypass-unity` after sign-off, with a new artifact baseline.
+7. A preset sweep for Signalsmith qualification.

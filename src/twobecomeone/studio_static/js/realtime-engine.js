@@ -148,7 +148,10 @@ export class RealtimeEngine {
     this.minLoopFrames = Math.max(2 * this.admissionFrames, Math.round((60 / plan.masterBpm) * this.sr));
 
     const cap = deriveVoiceCapacity({
-      trackCount: plan.tracks.length, maxOverlappingPerTrack: 2, seamPartners: 2, tailReserve: 4,
+      // One handover partner per track: a seek next to a loop seam holds the old
+      // pass, its loop-in partner and the new epoch at once (independent review
+      // finding 3: 22 refused ordinary 8-track use). 8 tracks -> 28 <= 32.
+      trackCount: plan.tracks.length, maxOverlappingPerTrack: 2, seamPartners: plan.tracks.length, tailReserve: 4,
     });
     this.capacityDerivation = cap;
     this.capacity = Math.min(options.capacity ?? cap.capacity, MAX_CLIPS_PER_GRAPH);
@@ -435,8 +438,12 @@ export class RealtimeEngine {
     if (kind === 'seek') {
       for (const v of this.voices.values()) {
         if (!v.armed) continue; // in-flight builds of a superseded epoch are discarded on completion
-        if (v.t0 > now && !(v.fadeScheduled && v.fadeAtSec <= now)) {
-          // Superseded before it was ever heard: cancel outright (gate stays 0).
+        const epochUnheard = v.rec.originSec > now; // a superseded seek not yet heard
+        const afterHandover = v.t0 >= originSec; // would only start after this handover
+        if ((epochUnheard || afterHandover) && !(v.fadeScheduled && v.fadeAtSec <= now)) {
+          // Never to be heard: cancel outright (gate stays 0). Upcoming voices of
+          // the AUDIBLE epoch (a loop-in partner, the next clip) keep playing
+          // until this handover — independent review finding 1 (dropout).
           this.#fadeVoice(v, now, 0);
         } else if (v.fadeScheduled && v.fadeByRec && v.fadeAtSec > now) {
           // Its handover to a superseded seek has not begun: retract it, so the
@@ -485,7 +492,11 @@ export class RealtimeEngine {
     const step = async () => {
       this._wakeTimer = null;
       if (this._disposed) return;
-      await this.tick();
+      const pass = this.tick();
+      // Re-arm BEFORE awaiting: a fill that hangs must never stop the wakes
+      // (independent review finding 2).
+      if (this.#needsService()) this.#ensureScheduler();
+      await pass;
       if (this.#needsService()) this.#ensureScheduler();
     };
     this._wakeTimer = this._timers.setTimeout(step, this.wakeMs);
@@ -615,7 +626,15 @@ export class RealtimeEngine {
     let pre = 0; let post = 0;
     const loopIn = map.hasLoop && occ.pass >= 1 && occ.outStart === map.loopStart
       && clip.timelineStartFrame < map.loopStart;
-    const loopOut = map.hasLoop && occ.outEnd === map.loopEnd && clip.timelineEndFrame > map.loopEnd;
+    // A crossfade PAIR needs material on both sides of the seam: the clip must
+    // start before a (its next pass pre-rolls) AND end after b (this pass
+    // post-rolls). A clip that crosses b but not a has no partner (its next pass
+    // starts naturally at a): it fades out over [b - N, b] with no post-roll, so
+    // the track's gain never exceeds 1 at the seam (review re-check: a clip
+    // starting exactly at a summed to 1.5).
+    const crossesB = map.hasLoop && occ.outEnd === map.loopEnd && clip.timelineEndFrame > map.loopEnd;
+    const loopOut = crossesB && clip.timelineStartFrame < map.loopStart;
+    const loopEnd = crossesB && !loopOut;
     if (loopIn) pre = Math.min(half, map.loopStart - clip.timelineStartFrame, occ.ctxStart);
     if (loopOut) post = Math.min(half, clip.timelineEndFrame - map.loopEnd);
     const epochIn = occ.ctxStart === 0;
@@ -628,11 +647,13 @@ export class RealtimeEngine {
       sourceStart: sourceFrameAt(clip, occ.outStart - pre),
       sourceEnd: sourceFrameAt(clip, occ.outEnd + post),
       inKind: epochIn ? (rec.kind === 'seek' ? 'handover-in' : 'start') : (loopIn ? 'loop-in' : 'open'),
-      outKind: loopOut ? 'loop-out' : 'natural',
-      naturalStart: occ.outStart === clip.timelineStartFrame && !loopIn,
-      naturalEnd: occ.outEnd === clip.timelineEndFrame,
+      outKind: loopOut ? 'loop-out' : (loopEnd ? 'loop-end' : 'natural'),
+      // A seam extension that reaches the clip's own edge keeps the clip's
+      // musical fade there (review finding 4: a hard onset at up to 0.5 gain).
+      naturalStart: occ.outStart - pre === clip.timelineStartFrame,
+      naturalEnd: occ.outEnd + post === clip.timelineEndFrame,
       seamInCtxFrame: loopIn ? occ.ctxStart : null,
-      seamOutCtxFrame: loopOut ? occ.ctxEnd : null,
+      seamOutCtxFrame: (loopOut || loopEnd) ? occ.ctxEnd : null,
     };
   }
 
@@ -671,7 +692,13 @@ export class RealtimeEngine {
       this.voices.set(key, v);
       batch.push(v);
     }
-    const builds = batch.map((v) => this.#build(v));
+    // A build that does not finish within the timeout is a failure, reported
+    // explicitly (never a silent skip); its node is disconnected if it arrives.
+    const timeoutMs = this.options.buildTimeoutMs ?? 1000;
+    const builds = batch.map((v) => new Promise((resolve) => {
+      const t = globalThis.setTimeout(() => { v.buildTimedOut = true; resolve(false); }, timeoutMs);
+      this.#build(v).then((ok) => { globalThis.clearTimeout(t); resolve(ok && !v.buildTimedOut); });
+    }));
     const settled = await Promise.all(builds);
     if (rec !== this.active || rec.cancelled || this._disposed) {
       for (const v of batch) if (!v.armed) this.#discard(v, 'stale');
@@ -681,7 +708,8 @@ export class RealtimeEngine {
     if (settled.some((ok) => !ok)) {
       // A voice that cannot be built is never skipped silently: fail explicitly.
       for (const v of batch) if (!v.armed) this.#discard(v, 'build-failed');
-      this.#reduce({ type: 'fail', code: 'VOICE_BUILD_FAILED', message: 'a clip voice could not be constructed' });
+      const timedOut = batch.some((v) => v.buildTimedOut);
+      this.#reduce({ type: 'fail', code: timedOut ? 'VOICE_BUILD_TIMEOUT' : 'VOICE_BUILD_FAILED', message: timedOut ? `a clip voice was not built within ${timeoutMs} ms` : 'a clip voice could not be constructed' });
       return;
     }
     if (!rec.firstBatchDone && batch.length) this.#reanchorIfLate(rec, batch);
@@ -747,7 +775,7 @@ export class RealtimeEngine {
           timeOriginSec: v.rec.originSec,
           sampleRate: this.sr,
         });
-        if (!this.voices.has(v.key)) {
+        if (!this.voices.has(v.key) || v.buildTimedOut) {
           // Released while building (dispose): never leave the node connected.
           voice.head?.disconnect?.();
           voice.clipGain?.disconnect?.();
@@ -919,6 +947,7 @@ export class RealtimeEngine {
     else if (vp.inKind === 'loop-in') ramp(0, 1, rec.originSec + loopSeamWindow(vp.seamInCtxFrame) / sr, LOOP_XFADE_FRAMES);
     else ev.push({ type: 'set', v: 1, t: v.t0 }); // interior natural start: the clip fade shapes it
     if (vp.outKind === 'loop-out') ramp(1, 0, rec.originSec + loopSeamWindow(vp.seamOutCtxFrame) / sr, LOOP_XFADE_FRAMES);
+    else if (vp.outKind === 'loop-end') ramp(1, 0, rec.originSec + (vp.seamOutCtxFrame - LOOP_XFADE_FRAMES) / sr, LOOP_XFADE_FRAMES);
     return ev;
   }
 

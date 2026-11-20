@@ -649,3 +649,122 @@ test('no .value write ever lands on a connected (running) node', async () => {
   for (const n of ctx.nodes) if (n.gain) assert.equal(n.gain.valueWritesWhileConnected, 0);
   engine.dispose();
 });
+
+// ---------------------------------------------- independent review re-checks
+
+test('review 1: a seek just before a loop seam or clip boundary keeps the audible epoch sounding (no dropout)', async () => {
+  for (const [clips, loop, boundary] of [
+    [[planClip({ clipId: 'pad', start: 0, length: 20 * SR })], [0, 4 * SR], 4.0],
+    [[planClip({ clipId: 'A', start: 0, length: 2 * SR }), planClip({ clipId: 'B', start: 2 * SR, length: 2 * SR, sourceStart: 2 * SR })], null, 2.0],
+  ]) {
+    const { ctx, engine } = await makeEngine({ clips });
+    if (loop) engine.setLoop(loop);
+    engine.play();
+    await engine.settle();
+    const at = engine.active.originSec + boundary;
+    await advance(ctx, engine, at - 0.05);
+    engine.seek(SR);
+    await engine.settle();
+    const newOrigin = engine.active.originSec;
+    for (let t = at - 0.01; t < newOrigin + 0.02; t += 0.001) {
+      const sum = trackSum(engine, t);
+      assert.ok(sum > 1 - 1e-6 || Math.abs(t - at) < LOOP_XFADE_FRAMES / SR, `no dropout at ${t.toFixed(4)} (${sum})`);
+      assert.ok(sum <= 1 + 1e-6, `no doubled gain at ${t.toFixed(4)} (${sum})`);
+    }
+    engine.dispose();
+  }
+});
+
+test('review 1b: a clip starting exactly at the loop start never sums above unity at the seam', async () => {
+  const { ctx, engine } = await makeEngine({ clips: [planClip({ clipId: 'pad', start: 0, length: 20 * SR })] });
+  engine.setLoop([0, 4 * SR]);
+  engine.play();
+  await advance(ctx, engine, 4.3);
+  const seam = engine.active.originSec + 4.0;
+  for (let k = -200; k <= 200; k += 5) assert.ok(trackSum(engine, seam + k / SR) <= 1 + 1e-9);
+  engine.dispose();
+});
+
+test('review 2: a build that never resolves cannot stall the wake loop; it fails explicitly', async () => {
+  let hang = false;
+  const factory = fakeStretchFactory({ beforeResolve: () => (hang ? new Promise(() => {}) : null) });
+  const { ctx, engine, log, timers } = await makeEngine({ clips: [
+    planClip({ clipId: 'A', trackIndex: 0, start: 0, length: 3 * SR }),
+    planClip({ clipId: 'B', trackIndex: 1, start: SR, length: SR, rate: 1.2 }),
+  ], factory, buildTimeoutMs: 30 });
+  engine.play();
+  await engine.settle();
+  hang = true;
+  for (let i = 0; i < 60; i += 1) {
+    ctx.currentTime += 0.025;
+    await timers.fireAll();
+    await new Promise((r) => setTimeout(r, 2));
+  }
+  assert.equal(engine.state().phase, 'failed');
+  assert.equal(log.fail.at(-1).code, 'VOICE_BUILD_TIMEOUT');
+  assert.equal(ctx.connectedProcessors(), 0, 'every voice released');
+  engine.dispose();
+});
+
+test('review 3: 8 tracks — a second seek 30 ms after the first is accepted', async () => {
+  const clips = Array.from({ length: 8 }, (_, i) => planClip({ clipId: `c${i}`, trackIndex: i, start: 0, length: 20 * SR }));
+  const { ctx, engine, log } = await makeEngine({ clips });
+  assert.equal(engine.capacity, 28);
+  engine.play();
+  await advance(ctx, engine, 1.0);
+  engine.seek(4 * SR);
+  await flush();
+  ctx.currentTime += 0.03;
+  engine.seek(8 * SR);
+  await engine.settle();
+  assert.deepEqual(log.capacity, [], 'no refusal');
+  await advance(ctx, engine, 1.3);
+  assert.ok(audible(engine).every((v) => v.occ.outStart === 8 * SR), 'only the last target sounds');
+  engine.dispose();
+});
+
+test('review 3: 8 tracks — a seek 50 ms before a loop seam is accepted', async () => {
+  const clips = Array.from({ length: 8 }, (_, i) => planClip({ clipId: `c${i}`, trackIndex: i, start: 0, length: 20 * SR }));
+  const { ctx, engine, log } = await makeEngine({ clips });
+  engine.setLoop([SR, 4 * SR]);
+  engine.play();
+  await engine.settle();
+  await advance(ctx, engine, engine.active.originSec + 4.0 - 0.05);
+  engine.seek(2 * SR);
+  await engine.settle();
+  assert.deepEqual(log.capacity, [], 'no refusal');
+  assert.ok(ctx.connectedProcessors() <= engine.capacity);
+  engine.dispose();
+});
+
+test('review 3 (documented limit): two retargets within ~25 ms next to a seam on 8 tracks refuse safely', async () => {
+  const clips = Array.from({ length: 8 }, (_, i) => planClip({ clipId: `c${i}`, trackIndex: i, start: 0, length: 20 * SR }));
+  const { ctx, engine, log } = await makeEngine({ clips });
+  engine.setLoop([SR, 4 * SR]);
+  engine.play();
+  await engine.settle();
+  await advance(ctx, engine, engine.active.originSec + 4.0 - 0.05);
+  engine.seek(2 * SR);
+  await flush();
+  const epoch = engine.state().epoch;
+  engine.seek(3 * SR);
+  assert.equal(log.capacity.at(-1)?.code, 'POOL_EXHAUSTED');
+  assert.equal(engine.state().epoch, epoch, 'the refused retarget changed nothing');
+  assert.ok(ctx.connectedProcessors() <= engine.capacity);
+  engine.dispose();
+});
+
+test('review 4: a seam extension that reaches the clip start keeps the clip fade-in (no hard onset)', async () => {
+  const a = 2 * SR;
+  const { ctx, engine } = await makeEngine({ clips: [planClip({ clipId: 'p', start: a - 10, length: 4 * SR, fadeIn: 240 })] });
+  engine.setLoop([a, 3 * SR]);
+  engine.play(a - 10);
+  await advance(ctx, engine, 1.3);
+  const inc = [...engine.voices.values()].find((v) => v.pass === 1 && v.armed);
+  assert.ok(inc, 'pass 1 armed');
+  assert.equal(inc.vp.naturalStart, true);
+  assert.equal(inc.clipSpec.fadeInFrames, 240);
+  const g = (t) => gateAt(inc, t) * inc.clipGain.gain.valueAt(t);
+  assert.ok(g(inc.t0 + 1 / SR) < 0.01, `onset is faded, not hard (${g(inc.t0 + 1 / SR)})`);
+  engine.dispose();
+});
