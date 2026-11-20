@@ -134,6 +134,16 @@ test('WAV encoding clamps beyond-full-scale samples instead of wrapping', () => 
   assert.equal(sample(47), -8388608);  // clamped -full scale
 });
 
+test('WAV encoding word-aligns odd data chunks (mono 24-bit)', () => {
+  // One mono 24-bit frame is 3 data bytes: the file carries a pad byte, the
+  // RIFF size counts it, and the data chunk size does not (Sol B8 regression).
+  const wav = encodeWav24([Float32Array.from([0.5])], 48000);
+  const h = readWavHeader(wav);
+  assert.equal(h.dataSize, 3);
+  assert.equal(h.riffSize, 40); // 36 + 3 + 1 pad
+  assert.equal(wav.byteLength, 48); // 44 + 3 + 1 pad
+});
+
 test('WAV encoding rejects malformed channel input', () => {
   assert.throws(() => encodeWav24([], 48000), RangeError);
   assert.throws(() => encodeWav24([new Float32Array(10), new Float32Array(9)], 48000), RangeError);

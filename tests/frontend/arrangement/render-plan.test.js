@@ -131,6 +131,25 @@ test('invalid state cannot produce a plan', () => {
   assert.throws(() => compileRenderPlan(engine.state, { latencyCompensationFrames: -1 }), RangeError);
 });
 
+test('adjacent regions share boundary frames exactly (Sol B2 regression)', () => {
+  // Off-grid trims and splits used to round start and duration independently,
+  // letting split children overlap by one frame.
+  const engine = new EditEngine();
+  const { clipId } = engine.loadStemToTrack(0, {
+    name: 'a.wav', durationSec: 4, bufferReference: 'r:a',
+  }, null); // manual ratio 1, 8 beats at 120 BPM
+  engine.trimClip(clipId, 'start', 0.100025);
+  const { rightId } = engine.splitClipAtBeat(clipId, 0.20005);
+  const plan = compileRenderPlan(engine.state);
+  const left = plan.clips.find((c) => c.clipId === clipId);
+  const right = plan.clips.find((c) => c.clipId === rightId);
+  assert.equal(left.timelineEndFrame, right.timelineStartFrame,
+    'timeline children must abut without overlap or gap');
+  assert.equal(left.sourceEndFrame, right.sourceStartFrame,
+    'source children must abut without overlap or gap');
+  assert.equal(left.timelineEndFrame - left.timelineStartFrame, left.timelineDurationFrames);
+});
+
 // ---------- negative controls (GATE 4 mandate) ----------
 
 test('negative control: wrong source-offset math is caught', () => {

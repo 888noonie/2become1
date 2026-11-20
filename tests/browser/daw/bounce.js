@@ -161,6 +161,13 @@ function onsetSample(x, th = 0.02, from = 0) {
   return -1;
 }
 
+function offsetSample(x, th = 0.02) {
+  for (let i = x.length - 1; i >= 0; i -= 1) {
+    if (Math.abs(x[i]) > th) return i;
+  }
+  return -1;
+}
+
 function zeroCrossFreq(x, start, seconds = 0.5) {
   const end = Math.min(x.length, start + Math.round(seconds * SR));
   let c = 0;
@@ -176,6 +183,35 @@ function f0Estimate(x, start, length = 8192) {
     if (a > best.amp) best = { freq: f, amp: a };
   }
   return best.freq;
+}
+
+/** Smoothed-parabolic F1 estimate (the S6 method; sub-harmonic resolution). */
+function f1Parabolic(x, start, length, f0) {
+  const amps = [];
+  for (let k = 1; k * f0 < 3400; k += 1) amps.push(goertzel(x, start, length, k * f0));
+  const logA = amps.map((a) => Math.log(Math.max(1e-12, a)));
+  const smooth = logA.map((v, i) => {
+    let s = 0;
+    let n = 0;
+    for (let j = i - 2; j <= i + 2; j += 1) {
+      if (j >= 0 && j < logA.length) { s += logA[j]; n += 1; }
+    }
+    return s / n;
+  });
+  let best = -1;
+  for (let i = 0; i < smooth.length; i += 1) {
+    const f = (i + 1) * f0;
+    if (f < 400 || f > 1200) continue;
+    if (best < 0 || smooth[i] > smooth[best]) best = i;
+  }
+  if (best < 1 || best >= smooth.length - 1) return NaN;
+  const [a, b, c] = [smooth[best - 1], smooth[best], smooth[best + 1]];
+  const denom = a - 2 * b + c;
+  let delta = denom === 0 ? 0 : (0.5 * (a - c)) / denom;
+  // Clamp to half a harmonic step: with few in-band harmonics the parabola
+  // can run away, which is an estimator artefact, not a formant movement.
+  delta = Math.max(-0.5, Math.min(0.5, delta));
+  return (best + 1 + delta) * f0;
 }
 
 function goertzel(x, start, length, freq) {
@@ -336,17 +372,12 @@ async function main() {
   results.measurements.ceiling = plan.limiter.ceilingLinear;
   check('limiter sample-peak ceiling (-0.3 dBFS)', peak <= plan.limiter.ceilingLinear + 1e-4, { peak });
 
-  // Intersample (true-peak ESTIMATE, 4x linear upsample — reported, not claimed).
-  let truePeakEst = 0;
-  for (let i = 0; i < L.length - 1; i += 1) {
-    for (let k = 0; k < 4; k += 1) {
-      const t = k / 4;
-      truePeakEst = Math.max(truePeakEst, Math.abs(L[i] + (L[i + 1] - L[i]) * t));
-      truePeakEst = Math.max(truePeakEst, Math.abs(R[i] + (R[i + 1] - R[i]) * t));
-    }
-  }
-  results.measurements.truePeakEstimate4x = truePeakEst;
+  // Intersample peaks: linear interpolation cannot exceed neighbouring
+  // samples, so no oversampled measurement is claimed here at all (Sol
+  // IMPROVE). The ceiling claim is sample-peak only.
   results.measurements.truePeakClaimed = false;
+  results.measurements.intersampleAssessment =
+    'no oversampled true-peak measurement was performed; true-peak protection is NOT claimed';
 
   const gr = limiterStats.length ? limiterStats[limiterStats.length - 1].maxReductionDb : 0;
   results.measurements.limiterMaxReductionDb = gr;
@@ -375,6 +406,69 @@ async function main() {
   const contributions = soloRenders.map((x) => rmsOf(x));
   results.measurements.trackRms = contributions;
   check('eight contributing stems (every track audible)', contributions.every((r) => r > 1e-4), contributions);
+
+  // Presence in the FULL mix (Sol B12): the un-limited master is the sum of
+  // the solo renders, so removing track i from that sum must degrade its
+  // agreement with the real (limited) master for every i.
+  const sumAll = new Float32Array(L.length);
+  for (const s of soloRenders) {
+    for (let i = 0; i < sumAll.length; i += 1) sumAll[i] += s[i] ?? 0;
+  }
+  const env10 = (x) => {
+    const out = [];
+    const hop = 480;
+    for (let i = 0; i + hop < x.length; i += hop) {
+      let s = 0;
+      for (let j = i; j < i + hop; j += 1) s += x[j] ** 2;
+      out.push(Math.sqrt(s / hop));
+    }
+    return out;
+  };
+  const corr = (a, b) => {
+    const n = Math.min(a.length, b.length);
+    const ma = a.reduce((s, v) => s + v, 0) / n;
+    const mb = b.reduce((s, v) => s + v, 0) / n;
+    let c = 0;
+    let va = 0;
+    let vb = 0;
+    for (let i = 0; i < n; i += 1) {
+      c += (a[i] - ma) * (b[i] - mb);
+      va += (a[i] - ma) ** 2;
+      vb += (b[i] - mb) ** 2;
+    }
+    return c / Math.sqrt(Math.max(1e-12, va * vb));
+  };
+  const envFull = env10(L);
+  const envSum = env10(sumAll);
+  const corrAll = corr(envFull, envSum);
+  const presenceMargins = [];
+  for (let t = 0; t < 8; t += 1) {
+    const without = new Float32Array(L.length);
+    for (let i = 0; i < without.length; i += 1) {
+      without[i] = sumAll[i] - (soloRenders[t][i] ?? 0);
+    }
+    const corrWithout = corr(envFull, env10(without));
+    presenceMargins.push(corrAll - corrWithout);
+  }
+  results.measurements.mixPresenceMargins = presenceMargins;
+  check('every track measurably shapes the full mix (leave-one-out of the sum)',
+    presenceMargins.every((m) => m > 0), presenceMargins);
+
+  // Solo law through the STATE (Sol B12): a render whose plan says "solo
+  // track 0" (no clipFilter) must equal the physically filtered solo render.
+  const stateSoloPlan = compileRenderPlan(withOnlyTrack(engine.state, 0), { tailFrames: Math.round(0.3 * SR) });
+  const { audioBuffer: stateSoloBuf } = await renderOffline(stateSoloPlan, buffers, baseOptions);
+  const stateSolo = stateSoloBuf.getChannelData(0);
+  let soloDiff = 0;
+  let soloEnergy = 0;
+  for (let i = 0; i < stateSolo.length; i += 1) {
+    soloDiff += (stateSolo[i] - (soloRenders[0][i] ?? 0)) ** 2;
+    soloEnergy += stateSolo[i] ** 2;
+  }
+  const soloLawDiff = Math.sqrt(soloDiff / Math.max(1e-9, soloEnergy));
+  results.measurements.soloLawDiff = soloLawDiff;
+  check('mute/solo law enforced by the graph itself (state solo == filtered solo)',
+    soloLawDiff < 0.05, { soloLawDiff });
 
   // Mute/Solo behaviour: a solo render contains ONLY that track.
   const solo0Ratio = rmsOf(soloRenders[0]) / Math.max(1e-9, rmsOf(L));
@@ -421,36 +515,51 @@ async function main() {
   const leadOnset = onsetSample(soloRenders[3], 0.01);
   const leadOnsetBase = onsetSample(noPitchBuf.getChannelData(0), 0.01);
   results.measurements.pitchDurationUnchanged = { leadOnset, leadOnsetBase };
-  check('pitch without duration change (onsets agree)',
-    Math.abs(leadOnset - leadOnsetBase) < 0.03 * SR, { leadOnset, leadOnsetBase });
+  // Duration claim needs the END as well as the start (Sol B10).
+  const leadOffset = offsetSample(soloRenders[3], 0.01);
+  const leadOffsetBase = offsetSample(noPitchBuf.getChannelData(0), 0.01);
+  results.measurements.pitchDurationUnchanged.leadOffset = leadOffset;
+  results.measurements.pitchDurationUnchanged.leadOffsetBase = leadOffsetBase;
+  check('pitch without duration change (onsets and offsets agree)',
+    Math.abs(leadOnset - leadOnsetBase) < 0.03 * SR
+      && Math.abs(leadOffset - leadOffsetBase) < 0.03 * SR,
+    results.measurements.pitchDurationUnchanged);
 
-  // Formant behaviour on the vocal-like lead (constant-vowel segment).
-  // Relative claim: compensation holds the F1 envelope nearer the unshifted
-  // render than an uncompensated shift moves it. Absolute peaks carry the
-  // harmonic-grid quantisation (±f0/2) and are reported as such.
+  // Formant behaviour on the vocal-like lead (constant-vowel segment), using
+  // the smoothed-parabolic method from spike S6 (sub-harmonic resolution).
   const noCompState = cloneStateWithoutFormants(engine.state, ids.lead.clipId);
   const noCompPlan = compileRenderPlan(noCompState, { tailFrames: Math.round(0.3 * SR) });
   const { audioBuffer: noCompBuf } = await renderOffline(noCompPlan, buffers,
     { ...baseOptions, clipFilter: (c) => c.trackIndex === 3 });
   const winStart = leadStart;
   const winLen = 8192;
-  const f1Base = envelopePeakHz(noPitchBuf.getChannelData(0), winStart, winLen, fBase, [400, 1200]);
-  const f1Shifted = envelopePeakHz(soloRenders[3], winStart, winLen, fShifted, [400, 1200]);
-  const f1NoComp = envelopePeakHz(noCompBuf.getChannelData(0), winStart, winLen, fShifted, [400, 1200]);
+  const f1Base = f1Parabolic(noPitchBuf.getChannelData(0), winStart, winLen, fBase);
+  const f1Shifted = f1Parabolic(soloRenders[3], winStart, winLen, fShifted);
+  const f1NoComp = f1Parabolic(noCompBuf.getChannelData(0), winStart, winLen, fShifted);
   results.measurements.formants = {
     f1Base, f1Shifted, f1NoComp,
     compensatedDeltaHz: Math.abs(f1Shifted - f1Base),
     uncompensatedDeltaHz: Math.abs(f1NoComp - f1Base),
-    quantisationNote: 'harmonic-grid peaks quantise to ±f0/2',
+    method: 'smoothed-parabolic harmonic envelope (S6 method)',
   };
-  check('formant envelope held under +7 (preserveFormants)',
-    Math.abs(f1Shifted - f1Base) <= Math.abs(f1NoComp - f1Base),
+  check('formant envelope held under +7 (preserveFormants strictly nearer than uncompensated)',
+    Math.abs(f1Shifted - f1Base) < Math.abs(f1NoComp - f1Base),
     results.measurements.formants);
 
-  // Clip placement: the lead was moved to beat 8; onset must land there.
-  const expectedLeadFrame = Math.round(8 * beat * SR) + 99; // + measured stretch residual
-  results.measurements.clipPlacement = { leadOnset, expectedLeadFrame, errorFrames: leadOnset - expectedLeadFrame };
-  check('sample-accurate clip placement (lead at beat 8)', Math.abs(leadOnset - expectedLeadFrame) < 0.015 * SR,
+  // Clip placement: the lead was moved to beat 8. Absolute pipeline delay is
+  // bounded tightly (stretch residual + the micro-fade threshold crossing),
+  // and RELATIVE placement (shifted vs unshifted variant, which share one
+  // schedule) must be near-exact (Sol B10).
+  const expectedLeadFrame = Math.round(8 * beat * SR);
+  const pipelineDelay = leadOnset - expectedLeadFrame;
+  results.measurements.clipPlacement = {
+    leadOnset,
+    expectedLeadFrame,
+    pipelineDelayFrames: pipelineDelay,
+    relativePlacementErrorFrames: leadOnset - leadOnsetBase,
+  };
+  check('sample-accurate clip placement (bounded pipeline delay + exact relative placement)',
+    pipelineDelay >= 0 && pipelineDelay <= 480 && Math.abs(leadOnset - leadOnsetBase) <= 60,
     results.measurements.clipPlacement);
 
   // Clip boundary clicks: the drums split (kick onset) and the mid-vowel trim
@@ -462,8 +571,10 @@ async function main() {
   const clickCut = maxSlope(soloRenders[3], cutFrame + 99, Math.round(0.01 * SR));
   const steady = maxSlope(soloRenders[0], Math.round(2 * SR));
   results.measurements.clicks = { clickSplit, clickCut, steadyReference: steady };
+  // One unified gate: a boundary slope may not exceed 4x the steady content
+  // slope, so a broken-fade render fails the ordinary gate too (Sol B12).
   check('no click at clip boundaries (split and mid-vowel trim cut)',
-    clickSplit < 0.35 && clickCut < 0.35, results.measurements.clicks);
+    clickSplit < 4 * steady && clickCut < 4 * steady, results.measurements.clicks);
 
   // Musical fades on the pad: the 2-beat fade-out runs beats 14..16 = 7..8 s.
   const padA = rmsOf(soloRenders[4].slice(Math.round(6.4 * SR), Math.round(6.7 * SR)));
@@ -510,10 +621,12 @@ async function main() {
   });
 
   await nc('ignored latency compensation', soloTrack(3), 3, (p) => {
-    for (const c of p.clips) c.timelineStartFrame += Math.round(0.05 * SR);
+    // Shift by exactly the limiter lookahead (240 frames) — the same scale the
+    // gate protects, not a coarse 50 ms probe (Sol B10).
+    for (const c of p.clips) c.timelineStartFrame += 240;
   }, (x) => {
     const onset = onsetSample(x, 0.01);
-    const passed = Math.abs(onset - leadOnset) < 0.015 * SR;
+    const passed = Math.abs(onset - leadOnset) <= 150;
     return { name: 'clip placement', passed, measuredOnset: onset, referenceOnset: leadOnset };
   });
 
@@ -579,30 +692,34 @@ async function main() {
     }
     const envCorrAt = (hopMs) => {
       const hop = Math.round((hopMs / 1000) * SR);
-      const ea = [];
-      const eb = [];
-      for (let i = 0; i + hop < n; i += hop) {
-        let sa = 0;
-        let sb = 0;
-        for (let j = 0; j < hop; j += 1) {
-          sa += L[i + j] ** 2;
-          sb += rt.l[i + offset + j] ** 2;
+      const corrFor = (chA, chB) => {
+        const ea = [];
+        const eb = [];
+        for (let i = 0; i + hop < n; i += hop) {
+          let sa = 0;
+          let sb = 0;
+          for (let j = 0; j < hop; j += 1) {
+            sa += chA[i + j] ** 2;
+            sb += chB[i + offset + j] ** 2;
+          }
+          ea.push(Math.sqrt(sa / hop));
+          eb.push(Math.sqrt(sb / hop));
         }
-        ea.push(Math.sqrt(sa / hop));
-        eb.push(Math.sqrt(sb / hop));
-      }
-      const mean = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
-      const ma = mean(ea);
-      const mb = mean(eb);
-      let c = 0;
-      let va = 0;
-      let vb = 0;
-      for (let i = 0; i < ea.length; i += 1) {
-        c += (ea[i] - ma) * (eb[i] - mb);
-        va += (ea[i] - ma) ** 2;
-        vb += (eb[i] - mb) ** 2;
-      }
-      return c / Math.sqrt(Math.max(1e-12, va * vb));
+        const mean = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
+        const ma = mean(ea);
+        const mb = mean(eb);
+        let c = 0;
+        let va = 0;
+        let vb = 0;
+        for (let i = 0; i < ea.length; i += 1) {
+          c += (ea[i] - ma) * (eb[i] - mb);
+          va += (ea[i] - ma) ** 2;
+          vb += (eb[i] - mb) ** 2;
+        }
+        return c / Math.sqrt(Math.max(1e-12, va * vb));
+      };
+      // Both channels must agree (Sol IMPROVE): report the worse of the two.
+      return Math.min(corrFor(L, rt.l), corrFor(R, rt.r));
     };
     const envCorrelation1ms = envCorrAt(1);
     const envCorrelation10ms = envCorrAt(10);
@@ -641,10 +758,9 @@ async function main() {
     results.errors.push(`gate5: ${err}`);
   }
 
-  // ---- GATE 7 artifact: trimmed export (limiter lookahead removed) ----
-  const trimFrames = 240;
-  const outL = L.slice(trimFrames, plan.output.arrangementEndFrame + trimFrames);
-  const outR = R.slice(trimFrames, plan.output.arrangementEndFrame + trimFrames);
+  // ---- GATE 7 artifact (renderOffline already trims limiter latency) ----
+  const outL = L.slice(0, plan.output.arrangementEndFrame);
+  const outR = R.slice(0, plan.output.arrangementEndFrame);
   const wav = encodeWav24([outL, outR], SR);
   results.measurements.artifactFrames = outL.length;
   await post('/artifact', wav);

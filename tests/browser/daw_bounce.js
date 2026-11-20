@@ -131,9 +131,11 @@ try {
 
   for (const c of report.checks ?? []) {
     console.log(`${c.passed ? 'PASS' : 'FAIL'} check: ${c.name} ${JSON.stringify(c.detail).slice(0, 160)}`);
+    if (!c.passed) process.exitCode = 1;
   }
   for (const nc of report.negativeControls ?? []) {
     console.log(`${nc.detected ? 'PASS' : 'FAIL'} negative control detected: ${nc.name} ${JSON.stringify(nc.check).slice(0, 160)}`);
+    if (!nc.detected) process.exitCode = 1;
   }
   console.log(`GATE5: ${JSON.stringify(report.gate5 ?? {})}`);
   console.log(`measurements: ${JSON.stringify(report.measurements ?? {}).slice(0, 900)}`);

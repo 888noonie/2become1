@@ -96,8 +96,14 @@ export function compileRenderPlan(state, options = {}) {
       const asset = snapshot.assets[clip.assetId];
       const rate = sourceAdvanceRate(clip, asset, transport.masterBpm);
       const spanSec = clipSourceSpanSec(clip, asset, transport.masterBpm);
-      const startSec = clip.timelineStartBeat * spb;
-      const durSec = clip.durationBeats * spb;
+      // Frame boundaries are quantised ONCE at each region edge, so adjacent
+      // regions share boundary frames exactly (no 1-frame overlap or gap from
+      // independent rounding of start and duration).
+      const placeShiftSec = latencyCompensationFrames / sampleRate;
+      const startFrame = Math.round((clip.timelineStartBeat * spb + placeShiftSec) * sampleRate);
+      const endFrame = Math.round(((clip.timelineStartBeat + clip.durationBeats) * spb + placeShiftSec) * sampleRate);
+      const sourceStartFrame = Math.round(clip.sourceOffsetSec * sampleRate);
+      const sourceEndFrame = Math.round((clip.sourceOffsetSec + spanSec) * sampleRate);
       const fadeInSec = clip.fadeInBeats * spb;
       const fadeOutSec = clip.fadeOutBeats * spb;
       clips.push({
@@ -105,13 +111,12 @@ export function compileRenderPlan(state, options = {}) {
         trackIndex,
         assetId: clip.assetId,
         bufferReference: asset.bufferReference,
-        timelineStartFrame: Math.round((startSec + latencyCompensationFrames / sampleRate) * sampleRate),
-        timelineDurationFrames: Math.round(durSec * sampleRate),
-        timelineEndFrame: Math.round((startSec + latencyCompensationFrames / sampleRate) * sampleRate)
-          + Math.round(durSec * sampleRate),
-        sourceStartFrame: Math.round(clip.sourceOffsetSec * sampleRate),
-        sourceSpanFrames: Math.round(spanSec * sampleRate),
-        sourceEndFrame: Math.round(clip.sourceOffsetSec * sampleRate) + Math.round(spanSec * sampleRate),
+        timelineStartFrame: startFrame,
+        timelineDurationFrames: endFrame - startFrame,
+        timelineEndFrame: endFrame,
+        sourceStartFrame,
+        sourceSpanFrames: sourceEndFrame - sourceStartFrame,
+        sourceEndFrame,
         rate,
         outputDurationMultiplier: outputDurationMultiplier(clip, asset, transport.masterBpm),
         pitchSemitones: clip.pitchSemitones,

@@ -21,13 +21,16 @@ export function encodeWav24(channels, sampleRate) {
   const bytesPerSample = 3;
   const blockAlign = channels.length * bytesPerSample;
   const dataSize = frames * blockAlign;
-  const buffer = new ArrayBuffer(44 + dataSize);
+  // RIFF chunks are word-aligned: an odd data chunk carries a pad byte that is
+  // counted in RIFF's size but not in the data chunk's size.
+  const pad = dataSize % 2;
+  const buffer = new ArrayBuffer(44 + dataSize + pad);
   const view = new DataView(buffer);
   const ascii = (offset, text) => {
     for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i));
   };
   ascii(0, 'RIFF');
-  view.setUint32(4, 36 + dataSize, true);
+  view.setUint32(4, 36 + dataSize + pad, true);
   ascii(8, 'WAVE');
   ascii(12, 'fmt ');
   view.setUint32(16, 16, true);           // fmt chunk size

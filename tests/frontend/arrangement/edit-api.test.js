@@ -329,7 +329,13 @@ test('source assets are never destructively edited', () => {
   assert.equal(JSON.stringify(engine.state.assets[assetId]), assetJson);
 });
 
-test('exportMasterMix fails loudly until the renderer exists (Milestone B)', () => {
+test('exportMasterMix encodes renderer PCM and refuses to invent audio', () => {
   const engine = new EditEngine();
+  // Without renderer output it still fails loudly.
   assert.throws(() => engine.exportMasterMix(), ExportNotReadyError);
+  const wav = engine.exportMasterMix({
+    channels: [Float32Array.from([0, 0.5, -0.5]), Float32Array.from([0, -0.5, 0.5])],
+    sampleRate: 48000,
+  });
+  assert.equal(wav.byteLength, 44 + 3 * 2 * 3);
 });

@@ -28,11 +28,17 @@ export function checkRenderPlan(state, plan, options = {}) {
     const durSec = clip.durationBeats * spb;
     const spanSec = clip.durationBeats * spb * rate;
 
+    // Region edges are quantised once (boundary convention, render-plan.js).
+    const startFrame = Math.round((startSec + latency / sr) * sr);
+    const endFrame = Math.round((startSec + durSec + latency / sr) * sr);
+    const srcStart = Math.round(clip.sourceOffsetSec * sr);
+    const srcEnd = Math.round(clip.sourceOffsetSec * sr + spanSec * sr);
+
     const expected = {
-      timelineStartFrame: Math.round((startSec + latency / sr) * sr),
-      timelineDurationFrames: Math.round(durSec * sr),
-      sourceStartFrame: Math.round(clip.sourceOffsetSec * sr),
-      sourceSpanFrames: Math.round(spanSec * sr),
+      timelineStartFrame: startFrame,
+      timelineDurationFrames: endFrame - startFrame,
+      sourceStartFrame: srcStart,
+      sourceSpanFrames: srcEnd - srcStart,
       fadeInFrames: Math.round(clip.fadeInBeats * spb * sr),
       fadeOutFrames: Math.round(clip.fadeOutBeats * spb * sr),
     };
@@ -73,7 +79,8 @@ export function checkRenderPlan(state, plan, options = {}) {
       ? state.transport.masterBpm / asset.nativeBpm
       : clip.customStretchRatio;
     const spb2 = 60 / state.transport.masterBpm;
-    end = Math.max(end, Math.round(clip.timelineStartBeat * spb2 * sr) + Math.round(clip.durationBeats * spb2 * sr));
+    end = Math.max(end,
+      Math.round((clip.timelineStartBeat * spb2 + clip.durationBeats * spb2) * sr));
   }
   if (plan.output.arrangementEndFrame !== end + latency) {
     // placement compensation shifts clip frames, so the end shifts too

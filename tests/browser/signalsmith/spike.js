@@ -394,15 +394,16 @@ async function s7_latencySeekTail() {
   metrics.markerExpectedSample = Math.round(0.5 * RATE);
   metrics.markerErrorSamples = onset - Math.round(0.5 * RATE);
 
-  // Tail: 1 s tone ends at source 1.5 s; how far does output ring past the
-  // expected end (rate 1: output end = 1.5 s)?
+  // Tail: the click fixture's signal ends at 0.5 + 0.02 + 1.2 = 1.72 s; how far
+  // does output ring past that (rate 1)?
   const offset = offsetSample(out, 0.001);
-  metrics.tailSecAfterExpectedEnd = (offset - Math.round(1.5 * RATE)) / RATE;
+  metrics.signalEndSec = 1.72;
+  metrics.tailSecAfterSignalEnd = (offset - 1.72 * RATE) / RATE;
 
   // Pre-roll: silence before the marker in the output.
   metrics.preRollSec = onset / RATE - 0.5;
 
-  const ok = Math.abs(metrics.markerErrorSamples) < 0.02 * RATE && metrics.tailSecAfterExpectedEnd < 1;
+  const ok = Math.abs(metrics.markerErrorSamples) < 0.02 * RATE && metrics.tailSecAfterSignalEnd < 1;
   record('S7-latency-tail-seek', ok, metrics,
     metrics.hasSeekFlush ? ['seek/flush exposed on the web node'] : ['seek/flush not exposed on the web node; fixed-length alignment measured empirically']);
 }
@@ -454,7 +455,9 @@ async function s8_eightInstances(onSampleRss) {
     jsHeapLoadedBytes: memLoaded,
     jsHeapAfterRenderBytes: memAfter,
   };
-  const ok = metrics.peak > 0.01 && metrics.peak <= metrics.worstCaseCoherentPeak + 0.02;
+  const ok = metrics.peak > 0.01
+    && metrics.peak <= metrics.worstCaseCoherentPeak + 0.02
+    && metrics.cpuLoadFactor < 1;
   record('S8-eight-instances', ok, metrics,
     ['JS heap excludes the WASM linear memory inside the worklet thread; see driver RSS samples']);
 }
@@ -502,8 +505,13 @@ async function s9_realtimeLoad(onSampleRss) {
   };
   metrics.soakSeconds = 5;
   await ctx.close();
-  record('S9-realtime-load', true, metrics,
-    ['headless Chromium has no physical output device; underrunRatio comes from AudioRenderCapacity, callback jitter is main-thread only']);
+  // Without underrun telemetry this experiment cannot qualify the audio
+  // deadline: it is INCONCLUSIVE, not a pass (Sol B11).
+  const qualified = metrics.renderCapacityAvailable;
+  record('S9-realtime-load', qualified, metrics,
+    qualified ? [] : [
+      'INCONCLUSIVE: AudioRenderCapacity unavailable in this Chromium build, so underruns cannot be measured; callback jitter is main-thread only',
+    ]);
 }
 
 async function s10_boundedMemory(onSampleRss) {
@@ -540,7 +548,8 @@ async function s10_boundedMemory(onSampleRss) {
     jsHeapLast: heapAfterLoad[heapAfterLoad.length - 1] ?? null,
   };
   const windowHeld = metrics.lastExtent
-    && (metrics.lastExtent.end - metrics.lastExtent.start) <= 15 * RATE + RATE;
+    && (metrics.lastExtent.end - metrics.lastExtent.start) <= 15 // seconds, not frames
+    && metrics.lastExtent.start >= 40; // the window actually advanced
   record('S10-bounded-memory', Boolean(windowHeld), metrics,
     windowHeld ? [] : ['dropBuffers did not keep the retained window bounded']);
 }
@@ -560,10 +569,10 @@ function node_setInterval_shim(ms, fn) {
 
 // ---------- run all ----------
 
-window.__spikeRssHook = null; // driver installs an RSS sampler factory here
-
 async function main() {
-  const onSampleRss = window.__spikeRssHook;
+  // The driver may install window.__spikeRssHook (an RSS sampler factory)
+  // before this module runs; never clobber it.
+  const onSampleRss = window.__spikeRssHook ?? null;
   await s1_workletLive();
   await s2_offlineRenders();
   await s3_passthrough();

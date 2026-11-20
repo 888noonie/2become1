@@ -123,6 +123,7 @@ try {
     console.log(`     ${JSON.stringify(r.metrics)}`);
     for (const n of r.notes) console.log(`     note: ${n}`);
   }
+  if (fail > 0) process.exitCode = 1;
   console.log(`\n${pass} pass, ${fail} fail — results in ${path.join(OUT, 'spike-results.json')}`);
   if (samples.length) console.log(`chromium tree RSS: max ${report.maxTreeRssKb} KiB over ${samples.length} samples`);
   if (error) {

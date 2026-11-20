@@ -32,6 +32,7 @@ import {
   serializeProject,
   validateProject,
 } from './project-state.js';
+import { encodeWav24 } from './wav.js';
 import {
   DEFAULT_MICRO_FADE_BEATS,
   EPSILON,
@@ -531,9 +532,15 @@ export class EditEngine {
     return this.run({ name: 'setClipFades', args: { clipId, fadeInBeats, fadeOutBeats } }).result;
   }
 
-  /** Arrives with the offline renderer (Milestone B). Fails loudly until then. */
-  exportMasterMix() {
-    throw new ExportNotReadyError();
+  /** Export is encoding, never a second mixing engine: it takes the
+   *  renderer's finished PCM and returns a 24-bit WAV container. */
+  exportMasterMix(rendered) {
+    if (!rendered || !Array.isArray(rendered.channels) || !Number.isFinite(rendered.sampleRate)) {
+      throw new ExportNotReadyError(
+        'exportMasterMix encodes finished renderer PCM: pass { channels, sampleRate } from the renderer',
+      );
+    }
+    return encodeWav24(rendered.channels, rendered.sampleRate);
   }
 
   // --- Track and transport ---
