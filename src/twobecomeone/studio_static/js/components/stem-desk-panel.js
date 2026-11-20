@@ -393,20 +393,32 @@ export function mountStemDeskPanel({
   let loadingCount = 0;
   let pendingProposal = null;
   let proposalPreviewed = false;
-  // While a suggestion is being heard: the mix to return to, the controls the
-  // musician has touched since (flipping never moves those), and which mix is
-  // currently on the desk.
-  let audition = null;
+  // One idea at a time, from Hear it (or Approve) until it is set aside or
+  // undone: the suggestion, the mix from just before it, the controls the
+  // musician has moved since (nothing ever moves those back), and what is on
+  // the desk now: 'idea', 'mine', or 'kept' (the idea was kept; Undo is ready).
+  let idea = null;
+  const auditioning = () => idea !== null && idea.hearing !== 'kept';
   const rowViews = new Map();
   const groupViews = new Map();
 
   function syncProposalButtons() {
     const groups = desk?.state()?.groups?.length || 0;
     askButton.disabled = loadingCount > 0 || groups < 1 ? 'true' : undefined;
-    previewButton.disabled = pendingProposal && !audition ? undefined : 'true';
+    previewButton.disabled = pendingProposal && !auditioning() ? undefined : 'true';
     hearButton.disabled = pendingProposal ? undefined : 'true';
-    hearButton.textContent = audition?.hearing === 'idea' ? 'Hear mine' : 'Hear it';
-    approveButton.disabled = pendingProposal && proposalPreviewed ? undefined : 'true';
+    hearButton.textContent = idea?.hearing === 'idea' ? 'Hear mine' : 'Hear it';
+    // One button, named for what pressing it keeps or takes back.
+    if (auditioning()) {
+      approveButton.textContent = idea.hearing === 'idea' ? 'Keep it' : 'Keep mine';
+      approveButton.disabled = undefined;
+    } else if (idea?.hearing === 'kept') {
+      approveButton.textContent = 'Undo';
+      approveButton.disabled = undefined;
+    } else {
+      approveButton.textContent = 'Approve';
+      approveButton.disabled = pendingProposal && proposalPreviewed ? undefined : 'true';
+    }
     rejectButton.disabled = pendingProposal ? undefined : 'true';
   }
 
@@ -430,43 +442,47 @@ export function mountStemDeskPanel({
     }
   }
 
-  // A live move by the musician. While a suggestion is being heard the idea
-  // survives the move and that control is simply theirs from then on;
-  // otherwise it ends the pending proposal as before.
+  // A live move by the musician. While an idea is being heard or can still be
+  // undone, the move is simply theirs from then on: nothing puts that control
+  // back. Otherwise it ends the pending proposal as before.
   function humanMove(control) {
-    if (!audition) {
+    if (!idea) {
       dropPendingProposal();
       return;
     }
-    if (control) audition.touched.add(control);
+    if (control) idea.touched.add(control);
   }
 
-  // Put the desk back to the mix from before Hear it, except for controls the
-  // musician has moved since. Never plays anything.
-  // Flips on a playing desk glide over a few milliseconds (the desk's own
+  // Changes on a playing desk glide over a few milliseconds (the desk's own
   // AudioParam automation); on a stopped desk, or a stand-in without it, they
   // are plain assignments.
   function glide(change) {
     return typeof desk?.glide === 'function' ? desk.glide(change) : change();
   }
 
-  function returnToMine() {
-    const heard = audition;
-    audition = null;
+  // Put the desk back to the mix from just before the idea, except for the
+  // controls the musician has moved since. Never plays anything.
+  function returnToBefore() {
+    const held = idea;
+    idea = null;
     try {
-      const state = glide(() => applyStemDeskMix(heard.snapshot, desk, heard.touched)).state;
+      const state = glide(() => applyStemDeskMix(held.before, desk, held.touched)).state;
       renderLanes(state);
       refreshTransport(state);
+      return true;
     } catch {
-      // The desk changed under the audition (a group was replaced); there is
+      // The desk changed under the idea (a group was replaced); there is
       // nothing of the old mix left to restore.
+      return false;
     }
   }
 
   function dropPendingProposal() {
     const had = pendingProposal !== null || proposalPreviewed;
-    const wasHearing = audition !== null;
-    if (wasHearing) returnToMine();
+    const wasHearing = auditioning();
+    if (wasHearing) returnToBefore();
+    // A kept idea's Undo does not outlive a new track or a new suggestion.
+    else idea = null;
     pendingProposal = null;
     proposalPreviewed = false;
     if (wasHearing) sayProposal('Back to your mix. Nothing was kept.');
@@ -1087,7 +1103,7 @@ export function mountStemDeskPanel({
 
   askButton.addEventListener('click', () => {
     if (!desk || loadingCount > 0) return;
-    if (audition) dropPendingProposal();
+    if (idea) dropPendingProposal();
     const groups = desk.state().groups || [];
     if (groups.length < 2) {
       dropPendingProposal();
@@ -1142,18 +1158,18 @@ export function mountStemDeskPanel({
     syncProposalButtons();
   });
 
-  const HEARING_IDEA = 'Hearing the suggestion. Hear mine to compare, Approve to keep it, Reject to go back.';
-  const HEARING_MINE = 'Hearing your mix. Hear it to go back to the suggestion, Approve to keep it, Reject to stay.';
+  const HEARING_IDEA = 'Hearing the suggestion. Your own moves stay yours.';
+  const HEARING_MINE = 'Hearing your mix. The suggestion is one press away.';
 
   hearButton.addEventListener('click', () => {
     if (!desk || !pendingProposal) return;
-    if (audition) {
+    if (auditioning()) {
       // Flip between the suggestion and the musician's mix on the one
       // transport. Controls the musician has touched are never moved.
-      const next = audition.hearing === 'idea' ? 'mine' : 'idea';
-      const mix = next === 'idea' ? audition.target : audition.snapshot;
-      const state = glide(() => applyStemDeskMix(mix, desk, audition.touched)).state;
-      audition.hearing = next;
+      const next = idea.hearing === 'idea' ? 'mine' : 'idea';
+      const mix = next === 'idea' ? idea.target : idea.before;
+      const state = glide(() => applyStemDeskMix(mix, desk, idea.touched)).state;
+      idea.hearing = next;
       renderLanes(state);
       refreshTransport(state);
       sayProposal(next === 'idea' ? HEARING_IDEA : HEARING_MINE, 'preview');
@@ -1169,15 +1185,14 @@ export function mountStemDeskPanel({
       syncProposalButtons();
       return;
     }
-    const snapshot = captureStemDeskMix(state);
-    audition = { target: checked.proposal, snapshot, touched: new Set(), hearing: 'idea' };
+    idea = { target: checked.proposal, before: captureStemDeskMix(state), touched: new Set(), hearing: 'idea' };
     showProposalDetails(checked.proposal, state);
     proposalPreviewed = true;
     let applied;
     try {
       applied = glide(() => applyStemDeskMix(checked.proposal, desk)).state;
     } catch (error) {
-      returnToMine();
+      returnToBefore();
       pendingProposal = null;
       proposalPreviewed = false;
       sayProposal(`Could not try the suggestion: ${error?.message || 'the desk refused it'}. Your mix is unchanged.`);
@@ -1190,29 +1205,41 @@ export function mountStemDeskPanel({
     syncProposalButtons();
   });
 
+  // Keep it / Keep mine / Undo / Approve: one button that keeps what the
+  // musician is hearing, or takes back the idea they last kept.
   approveButton.addEventListener('click', () => {
     if (!desk) return;
-    if (audition) {
-      // Keep: the suggestion is already on the desk (re-apply it if the
-      // musician was listening to their own mix), minus anything they moved.
-      const heard = audition;
-      audition = null;
-      pendingProposal = null;
-      proposalPreviewed = false;
-      if (heard.hearing === 'mine') {
-        const state = glide(() => applyStemDeskMix(heard.target, desk, heard.touched)).state;
-        renderLanes(state);
-        refreshTransport(state);
-      }
+    if (idea?.hearing === 'kept') {
+      returnToBefore();
       syncProposalButtons();
-      sayProposal(PROPOSAL_APPROVED, 'approved');
+      sayProposal('Undone. Back to your mix from before the suggestion; your own moves stay.');
       if (document.activeElement === approveButton) askButton.focus();
       return;
     }
+    if (auditioning()) {
+      pendingProposal = null;
+      proposalPreviewed = false;
+      if (idea.hearing === 'mine') {
+        // Keep what is heard: the musician's mix. The suggestion was never
+        // applied to it, so nothing changes and there is nothing to undo.
+        idea = null;
+        syncProposalButtons();
+        sayProposal('Kept your mix. The suggestion is set aside.');
+        if (document.activeElement === approveButton) askButton.focus();
+      } else {
+        // Focus stays here: the same button is now Undo.
+        idea.hearing = 'kept';
+        syncProposalButtons();
+        sayProposal('Kept the suggestion. Undo takes it back; your own moves stay.', 'approved');
+      }
+      return;
+    }
     if (!pendingProposal || !proposalPreviewed) return;
-    const result = approveStemDeskProposal(pendingProposal, desk);
+    const before = captureStemDeskMix(desk.state());
+    const result = glide(() => approveStemDeskProposal(pendingProposal, desk));
     pendingProposal = null;
     proposalPreviewed = false;
+    if (result.ok) idea = { target: null, before, touched: new Set(), hearing: 'kept' };
     syncProposalButtons();
     if (!result.ok) {
       sayProposal(result.message);

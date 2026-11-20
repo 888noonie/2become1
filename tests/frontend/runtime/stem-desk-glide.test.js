@@ -204,3 +204,71 @@ test('Stop after a glide stops the desk', async () => {
   desk.glide(() => applyStemDeskMix(target, desk));
   assert.equal(desk.stop().status === 'playing', false);
 });
+
+const rampCount = (ctx) => params(ctx).reduce((sum, param) => sum + param.ramps.length, 0);
+
+test('one flip schedules exactly one ramp per gain that changes, and none for the rest', async () => {
+  const { ctx, desk } = await loadedDesk();
+  const target = validateStemDeskProposal(proposal(desk.state()), desk.state()).proposal;
+  desk.play();
+  resetAll(ctx);
+  desk.glide(() => applyStemDeskMix(target, desk));
+  // A:vocals mutes, B:drums drops 12 dB, and the crossfader moves both groups.
+  assert.equal(rampCount(ctx), 4);
+  for (const param of params(ctx)) assert.ok(param.ramps.length <= 1);
+  const vocals = desk._lanes.find((entry) => entry.key === 'A:vocals').node.gain;
+  const drumsA = desk._lanes.find((entry) => entry.key === 'A:drums').node.gain;
+  assert.deepEqual(vocals.ramps.map(([value]) => value), [0]);
+  assert.equal(drumsA.ramps.length, 0, 'an unchanged lane is not touched');
+});
+
+test('rapid flipping while playing: each flip ramps from where the gain is, once per changed gain', async () => {
+  const { ctx, desk } = await loadedDesk();
+  const mine = captureStemDeskMix(desk.state());
+  const target = validateStemDeskProposal(proposal(desk.state()), desk.state()).proposal;
+  desk.play();
+  const vocals = desk._lanes.find((entry) => entry.key === 'A:vocals').node.gain;
+  for (let flip = 0; flip < 10; flip += 1) {
+    resetAll(ctx);
+    ctx.currentTime += 0.005; // far inside the previous 40 ms glide
+    desk.glide(() => applyStemDeskMix(flip % 2 === 0 ? target : mine, desk));
+    assert.equal(rampCount(ctx), 4, `flip ${flip}`);
+    assert.equal(vocals.cancels.length, 1, 'the unfinished ramp is replaced, not stacked');
+    assert.equal(vocals.holds.length, 1, 'and the new one starts from the current gain');
+    assert.equal(vocals.ramps[0][0], flip % 2 === 0 ? 0 : 1);
+  }
+  assert.equal(desk.state().status, 'playing');
+  assert.equal(desk.state().lanes.find((entry) => entry.key === 'A:vocals').muted, false);
+});
+
+test('Stop during a glide stops at once, and the next change lands without a ramp', async () => {
+  const { ctx, desk } = await loadedDesk();
+  const mine = captureStemDeskMix(desk.state());
+  const target = validateStemDeskProposal(proposal(desk.state()), desk.state()).proposal;
+  desk.play();
+  desk.glide(() => applyStemDeskMix(target, desk));
+  ctx.currentTime += 0.01;
+  assert.equal(desk.stop().status, 'ready');
+  resetAll(ctx);
+  desk.glide(() => applyStemDeskMix(mine, desk));
+  assert.equal(rampCount(ctx), 0, 'a stopped desk is not ramped');
+  const vocals = desk._lanes.find((entry) => entry.key === 'A:vocals').node.gain;
+  assert.ok(vocals.cancels.length > 0, 'the pending ramp is dropped');
+  assert.equal(vocals.assigned.at(-1), 1);
+});
+
+test('a group reloaded during a glide gets fresh gains and the next flip still glides', async () => {
+  const { ctx, desk } = await loadedDesk();
+  const target = validateStemDeskProposal(proposal(desk.state()), desk.state()).proposal;
+  desk.play();
+  desk.glide(() => applyStemDeskMix(target, desk));
+  ctx.currentTime += 0.01;
+  await desk.loadGroups([{ trackId: 'A', title: 'A', lanes: NAMES.map((name) => lane('A', name)) }]);
+  const reloaded = desk._lanes.find((entry) => entry.key === 'A:vocals');
+  assert.equal(reloaded.node.gain.ramps.length, 0);
+  assert.equal(desk.state().status, 'ready', 'a successful load stops playback, as accepted');
+  desk.play();
+  resetAll(ctx);
+  desk.glide(() => desk.setMuted('A:vocals', true));
+  assert.deepEqual(reloaded.node.gain.ramps.map(([value]) => value), [0]);
+});

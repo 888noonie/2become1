@@ -102,34 +102,38 @@ real view functions with `node --test tests/frontend/*.js`.
 - A stem-desk proposal is `stem-desk-proposal/v1`.
   `suggestStemDeskProposal` only returns data: A keeps drums and bass, B keeps
   vocals and other, silent lanes stay muted, and both entry offsets stay 0.
-  The desk buttons are Ask for a proposal, Preview, Hear it, Approve, and
-  Reject. Preview only displays the suggestion. `Hear it` (trial, 2026-11-20)
-  is the one deliberate way to hear a suggestion before keeping it: it
-  validates the proposal exactly as Approve does, snapshots the current mix,
-  and sets the proposal values through the desk's own setters
-  (`applyStemDeskMix`). It never calls `play`, starts no source and adds no
-  second transport; a running desk is heard changing on the one clock, a
-  stopped desk waits for Play. The same button then reads `Hear mine` and
-  flips between the suggestion and the snapshot. Approve keeps the suggestion
-  (permanent), also when Hear mine is showing, apart from controls the
-  musician moved; Reject, asking again, choosing another track or loading a group
-  returns to the snapshot. A control the musician moves while hearing the
-  suggestion is theirs from then on: flipping, Reject and Approve never move
-  it, and the idea survives the move. Without Hear it, `approveStemDeskProposal`
-  still applies a proposal only after it matches the loaded stem-set ids and
-  lane measurements and names every loaded group. Any soloed lane blocks it,
-  including a lane on a group the proposal does not name. Unknown fields,
-  including playback rate and pitch, reject the whole proposal and leave the
-  mix unchanged. Outside Hear it, a nudge, mute, solo, gain, level, or
-  crossfader move drops the pending proposal. An entry-offset nudge or a
-  proposed offset is heard on the next Play, as always. On a playing desk the
-  flips (Hear it, Hear mine, Reject, Approve from Hear mine) run inside
-  `StemDesk.glide`, which uses the gains' own AudioParam automation to ramp
-  each changed gain over `STEM_DESK_GLIDE_SECONDS` (0.04 s of the audio clock)
-  instead of jumping; a stopped desk assigns directly. A manual move during a
-  glide cancels the pending ramp so it is never pulled back. Every other gain
-  change still assigns directly. Whether the 40 ms glide is click-free is a PM
-  listening check, not something this note claims is proven.
+  The desk buttons are Ask for a proposal, Preview, Hear it, one keep button,
+  and Reject. Preview only displays the suggestion. `Hear it` validates the
+  proposal exactly as Approve does, captures the current mix, and sets the
+  proposal through the desk's own setters (`applyStemDeskMix`). The same
+  button then reads `Hear mine` and flips between the two. Nothing calls
+  `play`; no source starts and there is no second transport.
+  The keep button is named for what pressing it does and keeps what is heard:
+  `Keep it` while hearing the suggestion, `Keep mine` while hearing the
+  musician's mix (the suggestion is set aside and was never applied to that
+  mix), `Approve` after Preview without listening, and `Undo` after a
+  suggestion was kept or approved. Undo returns the mix captured just before
+  that suggestion. Reject, asking again, choosing another track or loading a
+  group while hearing returns to that mix; a new suggestion, another track or
+  a load also ends a pending Undo. There is one captured mix per idea, not a
+  second snapshot system.
+  A control the musician moves while an idea is being heard or can still be
+  undone is theirs: flipping, Keep, Reject and Undo never move it. Outside an
+  idea, a nudge, mute, solo, gain, level, or crossfader move drops the pending
+  proposal. `approveStemDeskProposal` still applies a proposal only after it
+  matches the loaded stem-set ids and lane measurements and names every
+  loaded group; any soloed lane blocks it, and unknown fields, including
+  playback rate and pitch, reject it whole. Entry offsets are heard on the
+  next Play, as always.
+  Flips, keeps from Preview, Reject and Undo run inside `StemDesk.glide`: the
+  setters update the model and the gains are applied once at the end. On a
+  playing desk each gain that actually changes ramps once over
+  `STEM_DESK_GLIDE_SECONDS` (0.04 s of the audio clock) from wherever it is,
+  including mid-glide; unchanged gains are not touched, and a stopped desk
+  assigns directly. A manual move during a glide cancels that gain's pending
+  ramp so it is never pulled back. Every other gain change still assigns
+  directly. Whether the glide is click-free is a PM listening check, not
+  something this note claims is proven.
 - The Studio sidebar queue adds a track that is already in the library. It has
   no YouTube paste box. YouTube import stays in Choose Track. The queue is not
   persisted.

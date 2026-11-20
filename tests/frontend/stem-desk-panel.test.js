@@ -1344,9 +1344,9 @@ test('ask, preview, reject, and approve do not apply a proposal before approval'
   assert.equal(desk.state().lanes.find((lane) => lane.key === 'A:vocals').method, 'demucs');
   assert.equal(desk.state().lanes.find((lane) => lane.key === 'B:vocals').stemSetId, 'set-bbb');
   assert.equal(desk.calls.some(([name]) => name === 'play'), false);
-  const applied = desk.calls.length;
-  approveButton.click();
-  assert.equal(desk.calls.length, applied);
+  // The approved idea can be taken back with the same button.
+  assert.equal(approveButton.textContent, 'Undo');
+  assert.equal(approveButton.disabled, false);
 
   askButton.click();
   container.querySelector('button[aria-label="Group A earlier"]').click();
@@ -1388,124 +1388,198 @@ async function twoTrackDesk() {
   return { ...ctx, ask, preview, hear, approve, reject, lane, say, laneGain };
 }
 
-test('Hear it puts the suggestion on the live desk, Hear mine flips back, and nothing plays by itself', async () => {
-  const t = await twoTrackDesk();
+const noPlay = (t) => assert.equal(t.desk.calls.some(([name]) => name === 'play'), false, 'nothing plays by itself');
+const handMix = (t) => {
+  // A mix the musician built by hand, so a return is not just the defaults.
   t.desk.setCrossfader(30);
   t.desk.setGain('B:drums', -4);
-  assert.equal(t.hear.textContent, 'Hear it');
-  assert.equal(t.hear.disabled, true, 'no suggestion yet, nothing to hear');
-
-  t.ask.click();
-  assert.equal(t.hear.disabled, false);
-  assert.equal(t.lane('A:vocals').muted, false, 'asking applies nothing');
-
-  t.hear.click();
+  t.desk.setTrackLevel('B', -3);
+};
+const setInput = (input, value) => {
+  input.value = value;
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+};
+const suggestionHeard = (t) => {
   assert.equal(t.lane('A:vocals').muted, true);
   assert.equal(t.lane('B:drums').muted, true);
-  assert.equal(t.hear.textContent, 'Hear mine');
-  assert.equal(t.approve.disabled, false);
-  assert.equal(t.preview.disabled, true, 'Preview stays display-only and is not offered mid-audition');
-  assert.match(t.say(), /Hearing the suggestion/);
-
-  t.hear.click();
-  assert.equal(t.hear.textContent, 'Hear it');
+  assert.equal(t.desk.crossfaderPosition, 50);
+};
+const mineHeard = (t) => {
   assert.equal(t.lane('A:vocals').muted, false);
   assert.equal(t.lane('B:drums').muted, false);
-  assert.equal(t.lane('B:drums').gainDb, -4, 'the musician mix comes back exactly');
-  assert.equal(t.desk.crossfaderPosition, 30);
-  assert.match(t.say(), /Hearing your mix/);
-
-  t.hear.click();
-  assert.equal(t.lane('A:vocals').muted, true);
-
-  t.reject.click();
-  assert.equal(t.lane('A:vocals').muted, false);
   assert.equal(t.lane('B:drums').gainDb, -4);
   assert.equal(t.desk.crossfaderPosition, 30);
-  assert.match(t.say(), /Back to your mix\. Nothing was kept/);
-  assert.equal(t.approve.disabled, true);
-  assert.equal(t.hear.disabled, true);
+  assert.equal(t.desk.groups.find((group) => group.trackId === 'B').levelDb, -3);
+};
+
+test('1. Ask, Hear it, Hear mine, Hear it: one button flips, the keep button names what it keeps', async () => {
+  const t = await twoTrackDesk();
+  handMix(t);
+  assert.equal(t.hear.disabled, true, 'nothing to hear before a suggestion');
+  t.ask.click();
+  mineHeard(t);
+  t.hear.click();
+  suggestionHeard(t);
+  assert.equal(t.hear.textContent, 'Hear mine');
+  assert.equal(t.approve.textContent, 'Keep it');
+  assert.equal(t.preview.disabled, true, 'Preview stays display-only and is not offered mid-audition');
+  t.hear.click();
+  mineHeard(t);
   assert.equal(t.hear.textContent, 'Hear it');
-  assert.equal(t.desk.calls.some(([name]) => name === 'play'), false);
+  assert.equal(t.approve.textContent, 'Keep mine');
+  t.hear.click();
+  suggestionHeard(t);
+  assert.equal(t.approve.textContent, 'Keep it');
+  noPlay(t);
 });
 
-test('a fader the musician moves while hearing the suggestion is never put back', async () => {
+test('2. Hear it, Keep it, Undo: the idea is kept and then taken back in one press', async () => {
   const t = await twoTrackDesk();
+  handMix(t);
   t.ask.click();
   t.hear.click();
-  assert.equal(t.lane('A:drums').gainDb, 0);
-
-  const gain = t.laneGain('A:drums');
-  gain.value = '-6';
-  gain.dispatchEvent(new window.Event('input', { bubbles: true }));
-  assert.equal(t.lane('A:drums').gainDb, -6);
-  assert.equal(t.hear.textContent, 'Hear mine', 'the idea survives the move');
+  t.approve.click(); // Keep it
+  suggestionHeard(t);
+  assert.match(t.say(), /Kept the suggestion/);
+  assert.equal(t.approve.textContent, 'Undo');
   assert.equal(t.approve.disabled, false);
-
-  t.hear.click(); // hear mine
-  assert.equal(t.lane('A:drums').gainDb, -6, 'their tweak stays when comparing');
-  assert.equal(t.lane('A:vocals').muted, false, 'untouched controls do go back');
-  t.hear.click(); // hear it again
-  assert.equal(t.lane('A:drums').gainDb, -6);
-  assert.equal(t.lane('A:vocals').muted, true);
-
-  t.approve.click();
-  assert.equal(t.lane('A:drums').gainDb, -6, 'keeping the idea keeps the tweak');
-  assert.equal(t.lane('A:vocals').muted, true);
-  assert.equal(t.lane('B:drums').muted, true);
-  assert.match(t.say(), /Proposal approved/);
-  assert.equal(t.approve.disabled, true);
   assert.equal(t.hear.disabled, true);
-  assert.equal(t.desk.calls.some(([name]) => name === 'play'), false);
+  assert.equal(t.reject.disabled, true);
+  t.approve.click(); // Undo
+  mineHeard(t);
+  assert.match(t.say(), /Undone/);
+  assert.equal(t.approve.textContent, 'Approve');
+  assert.equal(t.approve.disabled, true);
+  noPlay(t);
 });
 
-test('returning to the original after a tweak leaves the tweak and restores the rest', async () => {
+test('3. Hear mine, Keep mine keeps the musician mix and never applies the unheard suggestion (negative control)', async () => {
   const t = await twoTrackDesk();
+  handMix(t);
   t.ask.click();
   t.hear.click();
-  const gain = t.laneGain('B:vocals');
-  gain.value = '-3';
-  gain.dispatchEvent(new window.Event('input', { bubbles: true }));
-  t.reject.click();
-  assert.equal(t.lane('B:vocals').gainDb, -3);
-  assert.equal(t.lane('A:vocals').muted, false);
-  assert.equal(t.lane('B:drums').muted, false);
+  t.hear.click(); // Hear mine
+  const callsBefore = t.desk.calls.length;
+  t.approve.click(); // labelled Keep mine (test 1 checks the label)
+  // The previous build applied the suggestion here although the musician was
+  // hearing their own mix; this assertion fails on that build.
+  mineHeard(t);
+  assert.equal(t.desk.calls.length, callsBefore, 'keeping what is heard changes nothing');
+  assert.match(t.say(), /Kept your mix/);
+  assert.equal(t.approve.textContent, 'Approve');
+  assert.equal(t.approve.disabled, true, 'nothing was kept from the AI, so there is nothing to undo');
+  assert.equal(t.hear.disabled, true);
+  noPlay(t);
 });
 
-test('keeping the suggestion while listening to the original applies it', async () => {
+test('4. Hear it, move a fader, flip twice, Keep it: the move survives everything, and Undo leaves it', async () => {
   const t = await twoTrackDesk();
+  handMix(t);
   t.ask.click();
   t.hear.click();
-  t.hear.click(); // hear mine
+  setInput(t.laneGain('A:drums'), '-7');
+  t.hear.click();
+  assert.equal(t.lane('A:drums').gainDb, -7, 'their move stays while hearing their mix');
   assert.equal(t.lane('A:vocals').muted, false);
-  t.approve.click();
+  t.hear.click();
+  assert.equal(t.lane('A:drums').gainDb, -7, 'and while hearing the suggestion');
   assert.equal(t.lane('A:vocals').muted, true);
-  assert.equal(t.lane('B:drums').muted, true);
+  t.approve.click(); // Keep it
+  assert.equal(t.lane('A:drums').gainDb, -7);
+  suggestionHeard(t);
+  t.approve.click(); // Undo
+  assert.equal(t.lane('A:drums').gainDb, -7, 'Undo takes back the AI, not the musician');
+  mineHeard(t);
+  noPlay(t);
+});
+
+test('5. Keep it, then a manual adjustment, then Undo: Undo stays and the adjustment is kept', async () => {
+  const t = await twoTrackDesk();
+  handMix(t);
+  t.ask.click();
+  t.hear.click();
+  t.approve.click(); // Keep it
+  setInput(t.laneGain('B:vocals'), '-5');
+  t.container.querySelector('button[aria-label="Group A later"]').click();
+  assert.equal(t.approve.textContent, 'Undo', 'carrying on does not throw the Undo away');
+  t.approve.click();
+  assert.equal(t.lane('B:vocals').gainDb, -5);
+  assert.ok(t.desk.groups.find((group) => group.trackId === 'A').entryOffsetMs > 0);
+  mineHeard(t);
+  noPlay(t);
+});
+
+test('5b. Approve from Preview can be undone the same way', async () => {
+  const t = await twoTrackDesk();
+  handMix(t);
+  t.ask.click();
+  t.preview.click();
+  t.approve.click();
+  suggestionHeard(t);
+  assert.match(t.say(), /Proposal approved/);
+  assert.equal(t.approve.textContent, 'Undo');
+  t.approve.click();
+  mineHeard(t);
+  noPlay(t);
+});
+
+for (const view of ['suggestion', 'mix']) {
+  test(`6. Reject while hearing the ${view} returns to the musician mix and keeps their move`, async () => {
+    const t = await twoTrackDesk();
+    handMix(t);
+    t.ask.click();
+    t.hear.click();
+    if (view === 'mix') t.hear.click();
+    setInput(t.laneGain('B:vocals'), '-3');
+    t.reject.click();
+    assert.equal(t.lane('B:vocals').gainDb, -3);
+    mineHeard(t);
+    assert.match(t.say(), /Back to your mix\. Nothing was kept/);
+    assert.equal(t.approve.disabled, true);
+    assert.equal(t.hear.disabled, true);
+    noPlay(t);
+  });
+}
+
+test('10. Asking again or choosing another track mid-audition returns to the mix; a kept Undo ends there too', async () => {
+  const t = await twoTrackDesk();
+  handMix(t);
+  t.ask.click();
+  t.hear.click();
+  t.ask.click();
+  mineHeard(t);
+  assert.equal(t.hear.textContent, 'Hear it');
+  assert.equal(t.hear.disabled, false, 'the new suggestion is ready to hear');
+  t.hear.click();
+  selectFor(t.container, 'A').dispatchEvent(new window.Event('change'));
+  mineHeard(t);
+  assert.equal(t.hear.disabled, true);
+
+  t.ask.click();
+  t.hear.click();
+  t.approve.click(); // Keep it
+  assert.equal(t.approve.textContent, 'Undo');
+  selectFor(t.container, 'A').dispatchEvent(new window.Event('change'));
+  assert.equal(t.approve.textContent, 'Approve', 'a new track ends the Undo rather than guessing');
+  suggestionHeard(t);
+  noPlay(t);
 });
 
 const TOUCHES = {
   'a lane gain': {
-    touch: (t) => { const g = t.laneGain('A:drums'); g.value = '-7'; g.dispatchEvent(new window.Event('input', { bubbles: true })); },
+    touch: (t) => setInput(t.laneGain('A:drums'), '-7'),
     check: (t) => assert.equal(t.lane('A:drums').gainDb, -7),
   },
   'a lane mute': {
     touch: (t) => { t.container.querySelectorAll('.stem-desk__row')[2].querySelector('button[aria-label^="Mute "]').click(); },
-    check: (t) => assert.equal(t.lane('A:bass').muted, true),
+    check: (t, wasMuted) => assert.equal(t.lane('A:bass').muted, !wasMuted),
   },
   'the crossfader': {
-    touch: (t) => {
-      const input = t.container.querySelector('input[aria-label="Crossfader A to B"]');
-      input.value = '80';
-      input.dispatchEvent(new window.Event('input', { bubbles: true }));
-    },
+    touch: (t) => setInput(t.container.querySelector('input[aria-label="Crossfader A to B"]'), '80'),
     check: (t) => assert.equal(t.desk.crossfaderPosition, 80),
   },
   'a group level': {
-    touch: (t) => {
-      const input = t.container.querySelector('input[aria-label^="Group A"][aria-label$="level"]');
-      input.value = '-5';
-      input.dispatchEvent(new window.Event('input', { bubbles: true }));
-    },
+    touch: (t) => setInput(t.container.querySelector('input[aria-label^="Group A"][aria-label$="level"]'), '-5'),
     check: (t) => assert.equal(t.desk.groups.find((group) => group.trackId === 'A').levelDb, -5),
   },
   'a timing nudge': {
@@ -1514,44 +1588,35 @@ const TOUCHES = {
   },
 };
 
-for (const view of ['suggestion', 'my mix']) {
+for (const view of ['idea', 'mine']) {
   for (const [name, spec] of Object.entries(TOUCHES)) {
-    test(`Approve keeps the suggestion plus ${name} the musician moved while hearing ${view}`, async () => {
+    test(`keeping while hearing ${view === 'idea' ? 'the suggestion' : 'my mix'} keeps exactly that, plus ${name} the musician moved`, async () => {
       const t = await twoTrackDesk();
+      handMix(t);
       t.ask.click();
       t.hear.click();
-      if (view === 'my mix') t.hear.click();
+      if (view === 'mine') t.hear.click();
+      const wasMuted = t.lane('A:bass').muted;
       spec.touch(t);
       t.approve.click();
-      spec.check(t);
-      // Everything the musician did not touch is the suggestion.
-      assert.equal(t.lane('A:vocals').muted, true);
-      assert.equal(t.lane('B:drums').muted, true);
-      assert.equal(t.lane('B:vocals').muted, false);
-      if (name !== 'the crossfader') assert.equal(t.desk.crossfaderPosition, 50);
-      assert.match(t.say(), /Proposal approved/);
-      assert.equal(t.hear.disabled, true);
-      assert.equal(t.approve.disabled, true);
-      assert.equal(t.desk.calls.some(([call]) => call === 'play'), false);
+      spec.check(t, wasMuted);
+      // Untouched controls are what the musician was hearing.
+      if (view === 'idea') {
+        assert.equal(t.lane('A:vocals').muted, true);
+        assert.equal(t.lane('B:drums').muted, true);
+        if (name !== 'the crossfader') assert.equal(t.desk.crossfaderPosition, 50);
+      } else {
+        assert.equal(t.lane('A:vocals').muted, false);
+        assert.equal(t.lane('B:drums').muted, false);
+        assert.equal(t.lane('B:drums').gainDb, -4);
+        if (name !== 'the crossfader') assert.equal(t.desk.crossfaderPosition, 30);
+      }
+      noPlay(t);
     });
   }
 }
 
-test('Approve after several flips and a tweak still keeps the suggestion and the tweak', async () => {
-  const t = await twoTrackDesk();
-  t.ask.click();
-  t.hear.click();
-  for (let i = 0; i < 3; i += 1) t.hear.click();
-  TOUCHES['a lane gain'].touch(t);
-  t.hear.click();
-  t.hear.click();
-  t.approve.click();
-  TOUCHES['a lane gain'].check(t);
-  assert.equal(t.lane('A:vocals').muted, true);
-  assert.equal(t.desk.crossfaderPosition, 50);
-});
-
-test('flips and Reject glide through the desk, and stay plain on a stand-in without it', async () => {
+test('every flip, keep and undo glides through the desk, and stays plain on a stand-in without it', async () => {
   const t = await twoTrackDesk();
   let glides = 0;
   t.desk.glide = (change) => { glides += 1; return change(); };
@@ -1561,28 +1626,16 @@ test('flips and Reject glide through the desk, and stay plain on a stand-in with
   t.hear.click(); // hear it
   t.reject.click(); // return
   assert.equal(glides, 4);
-  assert.equal(t.lane('A:vocals').muted, false);
   t.ask.click();
   t.hear.click();
-  t.hear.click(); // hear mine
-  t.approve.click(); // keeps the suggestion, also gliding
+  t.approve.click(); // keep it: already on the desk, no glide needed
+  assert.equal(glides, 5);
+  t.approve.click(); // undo
+  assert.equal(glides, 6);
+  t.ask.click();
+  t.preview.click();
+  t.approve.click(); // approve from Preview
   assert.equal(glides, 7);
-  assert.equal(t.lane('A:vocals').muted, true);
-});
-
-test('changing a track or asking again while hearing the suggestion returns to the original', async () => {
-  const t = await twoTrackDesk();
-  t.ask.click();
-  t.hear.click();
-  assert.equal(t.lane('A:vocals').muted, true);
-  t.ask.click();
-  assert.equal(t.lane('A:vocals').muted, false, 'asking again starts from the musician mix');
-  assert.equal(t.hear.textContent, 'Hear it');
-  t.hear.click();
-  assert.equal(t.lane('A:vocals').muted, true);
-  selectFor(t.container, 'A').dispatchEvent(new window.Event('change'));
-  assert.equal(t.lane('A:vocals').muted, false);
-  assert.equal(t.hear.disabled, true);
 });
 
 test('a complete imported quad is ready and never requests a separation', async () => {

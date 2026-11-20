@@ -108,6 +108,12 @@ try {
         (window.__gains ||= []).push(node);
         return node;
       };
+      window.__starts = 0;
+      const start = AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start = function patched(...args) {
+        window.__starts += 1;
+        return start.apply(this, args);
+      };
       const ramp = AudioParam.prototype.linearRampToValueAtTime;
       AudioParam.prototype.linearRampToValueAtTime = function patched(value, when) {
         window.__ramps.push({ value, seconds: when - (window.__ctx?.currentTime ?? 0) });
@@ -135,51 +141,56 @@ try {
 
     const ask = page.getByRole('button', { name: 'Ask for a proposal' });
     const hear = page.locator('.stem-desk__proposal button', { hasText: /^Hear (it|mine)$/ });
-    const approve = page.getByRole('button', { name: /^(Approve|Undo)$/ });
+    const keep = page.locator('.stem-desk__proposal button').nth(3); // Approve / Keep it / Keep mine / Undo
     const reject = page.getByRole('button', { name: 'Reject', exact: true });
+    const stop = page.getByRole('button', { name: 'Stop', exact: true });
     const proposalStatus = page.locator('.stem-desk__proposal-status');
     const crossfader = page.locator('input[aria-label="Crossfader A to B"]');
+    const setGain = (label, value) => page.locator(`input[aria-label="${label} gain"]`)
+      .evaluate((el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); }, value);
     const state = async () => ({
       crossfader: await crossfader.inputValue(),
       gains: await page.locator('.stem-desk__row input[aria-label$=" gain"]').evaluateAll((n) => n.map((e) => e.value)),
       mutes: await page.locator('.stem-desk__row button[aria-label^="Mute "]').evaluateAll((n) => n.map((e) => e.getAttribute('aria-pressed'))),
     });
+    const starts = () => page.evaluate(() => window.__starts);
+    const silentGains = () => page.evaluate(() => window.__gains.filter((node) => node.gain.value === 0).length);
+    const near = (value) => page.evaluate((v) => window.__gains.some((node) => Math.abs(node.gain.value - v) < 1e-3), value);
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const SUGGESTED = ['true', 'false', 'false', 'true', 'false', 'true', 'true', 'false'];
 
-    // The musician's own mix first, so a restore is distinguishable from defaults.
+    // The musician's own mix first, so a return is distinguishable from defaults.
     await crossfader.evaluate((el) => { el.value = '35'; el.dispatchEvent(new Event('input', { bubbles: true })); });
-    await page.locator('input[aria-label="A · Drums gain"]')
-      .evaluate((el) => { el.value = '-6'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    await setGain('A · Drums', '-6');
     const mine = await state();
 
     record('Hear it is not offered until there is a suggestion', await hear.isDisabled(), '');
     await ask.click();
-    record('asking changes nothing on the desk', JSON.stringify(await state()) === JSON.stringify(mine), '');
+    record('asking changes nothing on the desk', same(await state(), mine), '');
 
-    // 1. Hear it
+    // Idea → Hear
     await hear.click();
     const heard = await state();
-    const expectedMutes = ['true', 'false', 'false', 'true', 'false', 'true', 'true', 'false'];
     record('Hear it puts the suggestion on the desk',
-      JSON.stringify(heard.mutes) === JSON.stringify(expectedMutes) && heard.crossfader === '50', heard);
-    record('the button now says Hear mine and Approve is ready',
-      (await hear.innerText()) === 'Hear mine' && await approve.isEnabled(), '');
-    record('nothing started playing by itself',
-      !/Started 8 lanes/.test(await page.locator('.stem-desk__status').innerText()), '');
-    await page.screenshot({ path: path.join(outDir, 'hear-it-1280.png'), fullPage: true }).catch(() => {});
+      same(heard.mutes, SUGGESTED) && heard.crossfader === '50', heard);
+    record('the buttons read Hear mine and Keep it',
+      (await hear.innerText()) === 'Hear mine' && (await keep.innerText()) === 'Keep it', '');
+    record('nothing plays by itself when an idea is applied', (await starts()) === 0, '');
+    await page.screenshot({ path: path.join(outDir, 'desk-1280-hearing.png'), fullPage: true });
 
-    // 2. A fader move mid-audition is never put back
-    await page.locator('input[aria-label="A · Bass gain"]')
-      .evaluate((el) => { el.value = '-9'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    // Adjust, compare
+    await setGain('A · Bass', '-9');
     await hear.click(); // Hear mine
     const flipped = await state();
-    record('Hear mine brings back the musician mix except the fader they just moved',
-      flipped.crossfader === '35' && flipped.mutes[0] === 'false'
+    record('Hear mine brings back the musician mix and keeps the fader they just moved',
+      flipped.crossfader === '35' && flipped.mutes.every((m) => m === 'false')
         && flipped.gains[1] === '-6' && flipped.gains[2] === '-9', flipped);
-    record('on a stopped desk the flips are plain assignments, not ramps',
+    record('the keep button now reads Keep mine', (await keep.innerText()) === 'Keep mine', '');
+    record('on a stopped desk flips are plain assignments, not ramps',
       (await page.evaluate(() => window.__ramps.length)) === 0, '');
-    await hear.click(); // Hear it again
+    await hear.click(); // Hear it
 
-    // 3. Play, flip while playing, Stop
+    // Rapid A/B while playing
     const play = page.getByRole('button', { name: 'Play', exact: true });
     await play.click();
     let status = await page.locator('.stem-desk__status').innerText();
@@ -188,56 +199,102 @@ try {
       await sleep(600);
       status = await page.locator('.stem-desk__status').innerText();
     }
-    record('Play starts the eight lanes on one clock', /Started 8 lanes on one clock/.test(status), status);
+    record('Play (pressed by the musician) starts eight lanes on one clock', /Started 8 lanes on one clock/.test(status), status);
+    const startsWhilePlaying = await starts();
     await page.evaluate(() => { window.__ramps.length = 0; });
-    await hear.click();
+    const FLIPS = 6;
+    await page.evaluate((n) => {
+      const button = [...document.querySelectorAll('.stem-desk__proposal button')].find((b) => /^Hear (it|mine)$/.test(b.textContent));
+      for (let i = 0; i < n; i += 1) button.click(); // all inside one glide window
+    }, FLIPS);
     await sleep(300);
-    const flipRamps = await page.evaluate(() => window.__ramps.slice());
-    const silentAfterMine = await page.evaluate(() => window.__gains.filter((node) => node.gain.value === 0).length);
-    await hear.click();
+    const ramps = await page.evaluate(() => window.__ramps.slice());
+    record('rapid flipping while playing: every ramp is 40 ms of the audio clock, at most one per gain per flip',
+      ramps.length > 0 && ramps.length <= FLIPS * 10 && ramps.every((r) => Math.abs(r.seconds - 0.04) < 1e-6),
+      { flips: FLIPS, ramps: ramps.length, perFlip: ramps.length / FLIPS });
+    record('after rapid flipping the gains land on the suggestion (four muted lanes)',
+      (await silentGains()) === 4 && (await hear.innerText()) === 'Hear mine', { silent: await silentGains() });
+    record('flipping restarts no source', (await starts()) === startsWhilePlaying, '');
+
+    // A manual move during an unfinished glide wins
+    await page.evaluate(() => {
+      const button = [...document.querySelectorAll('.stem-desk__proposal button')].find((b) => /^Hear (it|mine)$/.test(b.textContent));
+      button.click(); // glide toward my mix …
+      const other = document.querySelector('input[aria-label="A · Other gain"]');
+      other.value = '-12'; // … and grab a fader before it finishes
+      other.dispatchEvent(new Event('input', { bubbles: true }));
+    });
     await sleep(300);
-    const silentAfterIdea = await page.evaluate(() => window.__gains.filter((node) => node.gain.value === 0).length);
-    record('after the glide the real gains land on the mix: nothing silent for mine, four muted lanes for the suggestion',
-      silentAfterMine === 0 && silentAfterIdea === 4, { silentAfterMine, silentAfterIdea });
-    record('flipping while playing glides every changed gain over 40 ms of the audio clock',
-      flipRamps.length > 0 && flipRamps.every((entry) => Math.abs(entry.seconds - 0.04) < 1e-6),
-      { ramps: flipRamps.length, seconds: [...new Set(flipRamps.map((entry) => entry.seconds))] });
-    record('flipping while playing does not stop or restart the desk',
-      !/Stem desk stopped/.test(await page.locator('.stem-desk__status').innerText()), '');
-    await page.getByRole('button', { name: 'Stop', exact: true }).click();
+    record('a fader moved mid-glide lands where the musician put it',
+      await near(10 ** (-12 / 20)), { expectedLinear: 10 ** (-12 / 20) });
+
+    // Stop during a transition
+    await page.evaluate(() => {
+      [...document.querySelectorAll('.stem-desk__proposal button')].find((b) => /^Hear (it|mine)$/.test(b.textContent)).click();
+      [...document.querySelectorAll('button')].find((b) => b.textContent === 'Stop').click();
+    });
     await waitForStatus(page, /Stem desk stopped/);
-    record('Stop still stops while a suggestion is on the desk', true, '');
+    record('Stop during a transition stops at once', (await hear.innerText()) === 'Hear mine', '');
+    // A stopped graph does not render, so its gains are not read here; the
+    // musician's next Play must sound exactly what the desk shows.
+    await play.click();
+    await sleep(400);
+    record('the next Play after that Stop sounds what is shown (four muted lanes)',
+      (await silentGains()) === 4, { silent: await silentGains() });
+    await stop.click();
+    await waitForStatus(page, /Stem desk stopped/);
+    const startsAfterStop = await starts();
 
-    // 4. Keep
-    await approve.click();
+    // Keep it → Undo
+    await keep.click();
     const kept = await state();
-    record('Approve keeps the suggestion and the musician tweak',
-      JSON.stringify(kept.mutes) === JSON.stringify(expectedMutes) && kept.gains[2] === '-9'
-        && /Proposal approved/.test(await proposalStatus.innerText()), kept);
-    record('after keeping, Hear it is spent', await hear.isDisabled(), '');
+    record('Keep it keeps the suggestion with both of the musician fader moves',
+      same(kept.mutes, SUGGESTED) && kept.gains[2] === '-9' && kept.gains[3] === '-12'
+        && /Kept the suggestion/.test(await proposalStatus.innerText()), kept);
+    record('the same button now offers Undo', (await keep.innerText()) === 'Undo' && await hear.isDisabled(), '');
+    await setGain('B · Vocals', '-4');
+    await keep.click(); // Undo
+    const undone = await state();
+    record('Undo returns the mix from before the idea and leaves every musician move',
+      undone.crossfader === '35' && undone.mutes.every((m) => m === 'false')
+        && undone.gains[1] === '-6' && undone.gains[2] === '-9' && undone.gains[3] === '-12' && undone.gains[4] === '-4',
+      undone);
+    record('keeping and undoing never start playback', (await starts()) === startsAfterStop, '');
 
-    // 5. A second idea, then return
-    await crossfader.evaluate((el) => { el.value = '20'; el.dispatchEvent(new Event('input', { bubbles: true })); });
-    const mine2 = await state();
+    // Hear mine → Keep mine never applies the unheard suggestion
+    const before = await state();
+    await ask.click();
+    await hear.click();
+    await hear.click(); // Hear mine
+    await keep.click(); // Keep mine
+    record('Keep mine keeps exactly the mix being heard',
+      same(await state(), before) && /Kept your mix/.test(await proposalStatus.innerText()), await state());
+    record('after Keep mine there is nothing to undo', (await keep.innerText()) === 'Approve' && await keep.isDisabled(), '');
+
+    // Reject
     await ask.click();
     await hear.click();
     await reject.click();
     record('Reject returns the mix exactly',
-      JSON.stringify(await state()) === JSON.stringify(mine2)
-        && /Back to your mix/.test(await proposalStatus.innerText()), await state());
+      same(await state(), before) && /Back to your mix/.test(await proposalStatus.innerText()), '');
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     record('no horizontal overflow at 1280x900', overflow <= 1, `${overflow}px`);
 
-    // Narrow viewport: the extra button must not break the Black Tie layout.
+    // Phone width: same journey, Black Tie layout intact.
     await page.setViewportSize({ width: 390, height: 844 });
     await ask.click();
     await hear.click();
-    await page.locator('.stem-desk__proposal').scrollIntoViewIfNeeded();
-    await page.screenshot({ path: path.join(outDir, 'hear-it-390.png'), fullPage: true }).catch(() => {});
+    await page.locator('.stem-desk__producer').scrollIntoViewIfNeeded();
+    await page.locator('.stem-desk__producer').screenshot({ path: path.join(outDir, 'producer-390-hearing.png') });
+    await keep.click();
+    await page.locator('.stem-desk__producer').screenshot({ path: path.join(outDir, 'producer-390-undo.png') });
     const narrowOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     record('no horizontal overflow at 390x844', narrowOverflow <= 1, `${narrowOverflow}px`);
-    await reject.click();
+    const tooSmall = await page.locator('.stem-desk__proposal button').evaluateAll((nodes) =>
+      nodes.filter((n) => n.getBoundingClientRect().height < 44).map((n) => n.textContent));
+    record('every Producer button keeps a 44 px touch target on a phone', tooSmall.length === 0, tooSmall.join(', '));
+    await keep.click(); // Undo
     record('no uncaught page errors', pageErrors.length === 0, pageErrors.join('; '));
     mkdirSync(outDir, { recursive: true });
     writeFileSync(path.join(outDir, 'hear-it-ux.json'), JSON.stringify({ base, results }, null, 2));

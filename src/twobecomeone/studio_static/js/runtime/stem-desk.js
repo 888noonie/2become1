@@ -208,7 +208,9 @@ export class StemDesk {
     this._now = now || (() => this._ctx.currentTime);
     this._glideSeconds = 0;
     this._glideUntil = 0;
-    this._glideTargets = new WeakMap();
+    this._gainTargets = new WeakMap();
+    this._deferGains = false;
+    this._gainsDirty = false;
     this._groups = [];
     this._lanes = [];
     this._master = null;
@@ -594,6 +596,12 @@ export class StemDesk {
   }
 
   _applyGains() {
+    // Inside glide() the setters only update the model; the gains are applied
+    // once when the batch ends, so each changed gain is scheduled once.
+    if (this._deferGains) {
+      this._gainsDirty = true;
+      return;
+    }
     const anySolo = this._lanes.some((lane) => lane.solo);
     for (const lane of this._lanes) {
       if (!lane.node) continue;
@@ -606,17 +614,28 @@ export class StemDesk {
   }
 
   /**
-   * Run `change` (a batch of the desk's own setters) so that, on a desk that is
-   * playing, every gain it sets glides over a few milliseconds with the
-   * AudioParam's own automation instead of jumping. Nothing else about the
-   * change differs, and the glide never moves a start time.
+   * Run `change` (a batch of the desk's own setters) as one musical move. The
+   * model updates at once; the gains are applied once at the end, and on a
+   * playing desk each gain that actually changes glides over
+   * STEM_DESK_GLIDE_SECONDS with the AudioParam's own automation instead of
+   * jumping. One ramp per changed gain; unchanged gains are not touched.
+   * Nothing else differs, and the glide never moves a start time.
    */
   glide(change, seconds = STEM_DESK_GLIDE_SECONDS) {
-    this._glideSeconds = this._status === 'playing' ? seconds : 0;
+    const gliding = this._status === 'playing';
+    this._deferGains = true;
+    this._gainsDirty = false;
     try {
       return change();
     } finally {
-      this._glideSeconds = 0;
+      this._deferGains = false;
+      this._glideSeconds = gliding ? seconds : 0;
+      try {
+        if (this._gainsDirty) this._applyGains();
+      } finally {
+        this._glideSeconds = 0;
+        this._gainsDirty = false;
+      }
     }
   }
 
@@ -626,26 +645,35 @@ export class StemDesk {
       && typeof param.setValueAtTime === 'function';
     if (!automated) {
       param.value = target;
+      this._gainTargets.set(param, target);
       return;
     }
     const now = this._ctx.currentTime;
     if (this._glideSeconds > 0) {
-      param.cancelScheduledValues(now);
-      param.setValueAtTime(param.value, now);
+      // Already at, or already gliding to, this value: leave it alone.
+      if (this._gainTargets.get(param) === target) return;
+      // Hold wherever the gain is right now (mid-glide included), then ramp.
+      if (typeof param.cancelAndHoldAtTime === 'function') {
+        param.cancelAndHoldAtTime(now);
+      } else {
+        const from = param.value;
+        param.cancelScheduledValues(now);
+        param.setValueAtTime(from, now);
+      }
       param.linearRampToValueAtTime(target, now + this._glideSeconds);
-      this._glideTargets.set(param, target);
+      this._gainTargets.set(param, target);
       this._glideUntil = Math.max(this._glideUntil, now + this._glideSeconds);
       return;
     }
-    // A manual move during a glide takes over at once: drop the pending ramp
-    // so it cannot pull the control back to the earlier target.
     if (now < this._glideUntil) {
       // A gain already gliding to this very value is left to finish.
-      if (this._glideTargets.get(param) === target) return;
+      if (this._gainTargets.get(param) === target) return;
+      // A manual move during a glide takes over at once: drop the pending
+      // ramp so it cannot pull the control back to the earlier target.
       param.cancelScheduledValues(now);
-      this._glideTargets.delete(param);
     }
     param.value = target;
+    this._gainTargets.set(param, target);
   }
 
   _xfadeValue(group) {
