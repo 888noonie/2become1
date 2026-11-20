@@ -68,6 +68,13 @@ export const STEM_DESK_LIMITS = Object.freeze({
  * 512 MiB, and eight fit in 1024 MiB. A longer recording still refuses.
  * Machine RAM is not this number.
  */
+/**
+ * Length of the gain glide used when a suggestion is flipped on a running desk
+ * (see StemDesk.glide). Long enough to avoid a click, far too short to be
+ * heard as a fade or to move any entry in time.
+ */
+export const STEM_DESK_GLIDE_SECONDS = 0.04;
+
 export const STEM_DESK_FULL_LIMITS = Object.freeze({
   ...STEM_DESK_LIMITS,
   maxStemBytes: 128 * 1024 * 1024,
@@ -199,6 +206,9 @@ export class StemDesk {
     this._ctx = audioContext;
     this._fetch = fetchImpl;
     this._now = now || (() => this._ctx.currentTime);
+    this._glideSeconds = 0;
+    this._glideUntil = 0;
+    this._glideTargets = new WeakMap();
     this._groups = [];
     this._lanes = [];
     this._master = null;
@@ -588,11 +598,54 @@ export class StemDesk {
     for (const lane of this._lanes) {
       if (!lane.node) continue;
       const audible = anySolo ? lane.solo : !lane.muted;
-      lane.node.gain.value = audible ? dbToLinear(lane.gainDb) : 0;
+      this._setGain(lane.node.gain, audible ? dbToLinear(lane.gainDb) : 0);
     }
     for (const group of this._groups) {
-      if (group.node) group.node.gain.value = this._groupGainValue(group);
+      if (group.node) this._setGain(group.node.gain, this._groupGainValue(group));
     }
+  }
+
+  /**
+   * Run `change` (a batch of the desk's own setters) so that, on a desk that is
+   * playing, every gain it sets glides over a few milliseconds with the
+   * AudioParam's own automation instead of jumping. Nothing else about the
+   * change differs, and the glide never moves a start time.
+   */
+  glide(change, seconds = STEM_DESK_GLIDE_SECONDS) {
+    this._glideSeconds = this._status === 'playing' ? seconds : 0;
+    try {
+      return change();
+    } finally {
+      this._glideSeconds = 0;
+    }
+  }
+
+  _setGain(param, target) {
+    const automated = typeof param.linearRampToValueAtTime === 'function'
+      && typeof param.cancelScheduledValues === 'function'
+      && typeof param.setValueAtTime === 'function';
+    if (!automated) {
+      param.value = target;
+      return;
+    }
+    const now = this._ctx.currentTime;
+    if (this._glideSeconds > 0) {
+      param.cancelScheduledValues(now);
+      param.setValueAtTime(param.value, now);
+      param.linearRampToValueAtTime(target, now + this._glideSeconds);
+      this._glideTargets.set(param, target);
+      this._glideUntil = Math.max(this._glideUntil, now + this._glideSeconds);
+      return;
+    }
+    // A manual move during a glide takes over at once: drop the pending ramp
+    // so it cannot pull the control back to the earlier target.
+    if (now < this._glideUntil) {
+      // A gain already gliding to this very value is left to finish.
+      if (this._glideTargets.get(param) === target) return;
+      param.cancelScheduledValues(now);
+      this._glideTargets.delete(param);
+    }
+    param.value = target;
   }
 
   _xfadeValue(group) {

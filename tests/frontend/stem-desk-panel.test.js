@@ -1483,6 +1483,93 @@ test('keeping the suggestion while listening to the original applies it', async 
   assert.equal(t.lane('B:drums').muted, true);
 });
 
+const TOUCHES = {
+  'a lane gain': {
+    touch: (t) => { const g = t.laneGain('A:drums'); g.value = '-7'; g.dispatchEvent(new window.Event('input', { bubbles: true })); },
+    check: (t) => assert.equal(t.lane('A:drums').gainDb, -7),
+  },
+  'a lane mute': {
+    touch: (t) => { t.container.querySelectorAll('.stem-desk__row')[2].querySelector('button[aria-label^="Mute "]').click(); },
+    check: (t) => assert.equal(t.lane('A:bass').muted, true),
+  },
+  'the crossfader': {
+    touch: (t) => {
+      const input = t.container.querySelector('input[aria-label="Crossfader A to B"]');
+      input.value = '80';
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    },
+    check: (t) => assert.equal(t.desk.crossfaderPosition, 80),
+  },
+  'a group level': {
+    touch: (t) => {
+      const input = t.container.querySelector('input[aria-label^="Group A"][aria-label$="level"]');
+      input.value = '-5';
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    },
+    check: (t) => assert.equal(t.desk.groups.find((group) => group.trackId === 'A').levelDb, -5),
+  },
+  'a timing nudge': {
+    touch: (t) => { t.container.querySelector('button[aria-label="Group A later"]').click(); },
+    check: (t) => assert.ok(t.desk.groups.find((group) => group.trackId === 'A').entryOffsetMs > 0),
+  },
+};
+
+for (const view of ['suggestion', 'my mix']) {
+  for (const [name, spec] of Object.entries(TOUCHES)) {
+    test(`Approve keeps the suggestion plus ${name} the musician moved while hearing ${view}`, async () => {
+      const t = await twoTrackDesk();
+      t.ask.click();
+      t.hear.click();
+      if (view === 'my mix') t.hear.click();
+      spec.touch(t);
+      t.approve.click();
+      spec.check(t);
+      // Everything the musician did not touch is the suggestion.
+      assert.equal(t.lane('A:vocals').muted, true);
+      assert.equal(t.lane('B:drums').muted, true);
+      assert.equal(t.lane('B:vocals').muted, false);
+      if (name !== 'the crossfader') assert.equal(t.desk.crossfaderPosition, 50);
+      assert.match(t.say(), /Proposal approved/);
+      assert.equal(t.hear.disabled, true);
+      assert.equal(t.approve.disabled, true);
+      assert.equal(t.desk.calls.some(([call]) => call === 'play'), false);
+    });
+  }
+}
+
+test('Approve after several flips and a tweak still keeps the suggestion and the tweak', async () => {
+  const t = await twoTrackDesk();
+  t.ask.click();
+  t.hear.click();
+  for (let i = 0; i < 3; i += 1) t.hear.click();
+  TOUCHES['a lane gain'].touch(t);
+  t.hear.click();
+  t.hear.click();
+  t.approve.click();
+  TOUCHES['a lane gain'].check(t);
+  assert.equal(t.lane('A:vocals').muted, true);
+  assert.equal(t.desk.crossfaderPosition, 50);
+});
+
+test('flips and Reject glide through the desk, and stay plain on a stand-in without it', async () => {
+  const t = await twoTrackDesk();
+  let glides = 0;
+  t.desk.glide = (change) => { glides += 1; return change(); };
+  t.ask.click();
+  t.hear.click(); // hear it
+  t.hear.click(); // hear mine
+  t.hear.click(); // hear it
+  t.reject.click(); // return
+  assert.equal(glides, 4);
+  assert.equal(t.lane('A:vocals').muted, false);
+  t.ask.click();
+  t.hear.click();
+  t.hear.click(); // hear mine
+  t.approve.click(); // keeps the suggestion, also gliding
+  assert.equal(glides, 7);
+  assert.equal(t.lane('A:vocals').muted, true);
+});
+
 test('changing a track or asking again while hearing the suggestion returns to the original', async () => {
   const t = await twoTrackDesk();
   t.ask.click();

@@ -443,11 +443,18 @@ export function mountStemDeskPanel({
 
   // Put the desk back to the mix from before Hear it, except for controls the
   // musician has moved since. Never plays anything.
+  // Flips on a playing desk glide over a few milliseconds (the desk's own
+  // AudioParam automation); on a stopped desk, or a stand-in without it, they
+  // are plain assignments.
+  function glide(change) {
+    return typeof desk?.glide === 'function' ? desk.glide(change) : change();
+  }
+
   function returnToMine() {
     const heard = audition;
     audition = null;
     try {
-      const state = applyStemDeskMix(heard.snapshot, desk, heard.touched).state;
+      const state = glide(() => applyStemDeskMix(heard.snapshot, desk, heard.touched)).state;
       renderLanes(state);
       refreshTransport(state);
     } catch {
@@ -1145,7 +1152,7 @@ export function mountStemDeskPanel({
       // transport. Controls the musician has touched are never moved.
       const next = audition.hearing === 'idea' ? 'mine' : 'idea';
       const mix = next === 'idea' ? audition.target : audition.snapshot;
-      const state = applyStemDeskMix(mix, desk, audition.touched).state;
+      const state = glide(() => applyStemDeskMix(mix, desk, audition.touched)).state;
       audition.hearing = next;
       renderLanes(state);
       refreshTransport(state);
@@ -1168,7 +1175,7 @@ export function mountStemDeskPanel({
     proposalPreviewed = true;
     let applied;
     try {
-      applied = applyStemDeskMix(checked.proposal, desk).state;
+      applied = glide(() => applyStemDeskMix(checked.proposal, desk)).state;
     } catch (error) {
       returnToMine();
       pendingProposal = null;
@@ -1193,7 +1200,7 @@ export function mountStemDeskPanel({
       pendingProposal = null;
       proposalPreviewed = false;
       if (heard.hearing === 'mine') {
-        const state = applyStemDeskMix(heard.target, desk, heard.touched).state;
+        const state = glide(() => applyStemDeskMix(heard.target, desk, heard.touched)).state;
         renderLanes(state);
         refreshTransport(state);
       }

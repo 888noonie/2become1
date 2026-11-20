@@ -97,6 +97,23 @@ try {
     const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
 
+    // Watch the real Web Audio automation the desk uses: how far ahead of the
+    // context clock each gain ramp ends, and whether any gain is ramped at all.
+    await page.addInitScript(() => {
+      window.__ramps = [];
+      const create = BaseAudioContext.prototype.createGain;
+      BaseAudioContext.prototype.createGain = function patched(...args) {
+        window.__ctx = this;
+        const node = create.apply(this, args);
+        (window.__gains ||= []).push(node);
+        return node;
+      };
+      const ramp = AudioParam.prototype.linearRampToValueAtTime;
+      AudioParam.prototype.linearRampToValueAtTime = function patched(value, when) {
+        window.__ramps.push({ value, seconds: when - (window.__ctx?.currentTime ?? 0) });
+        return ramp.call(this, value, when);
+      };
+    });
     await page.goto(`${base}/#/studio`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('.stem-desk', { timeout: 20_000 });
     const selectA = page.locator('.stem-desk select[aria-label="Track for group A"]');
@@ -158,6 +175,8 @@ try {
     record('Hear mine brings back the musician mix except the fader they just moved',
       flipped.crossfader === '35' && flipped.mutes[0] === 'false'
         && flipped.gains[1] === '-6' && flipped.gains[2] === '-9', flipped);
+    record('on a stopped desk the flips are plain assignments, not ramps',
+      (await page.evaluate(() => window.__ramps.length)) === 0, '');
     await hear.click(); // Hear it again
 
     // 3. Play, flip while playing, Stop
@@ -170,9 +189,19 @@ try {
       status = await page.locator('.stem-desk__status').innerText();
     }
     record('Play starts the eight lanes on one clock', /Started 8 lanes on one clock/.test(status), status);
+    await page.evaluate(() => { window.__ramps.length = 0; });
     await hear.click();
     await sleep(300);
+    const flipRamps = await page.evaluate(() => window.__ramps.slice());
+    const silentAfterMine = await page.evaluate(() => window.__gains.filter((node) => node.gain.value === 0).length);
     await hear.click();
+    await sleep(300);
+    const silentAfterIdea = await page.evaluate(() => window.__gains.filter((node) => node.gain.value === 0).length);
+    record('after the glide the real gains land on the mix: nothing silent for mine, four muted lanes for the suggestion',
+      silentAfterMine === 0 && silentAfterIdea === 4, { silentAfterMine, silentAfterIdea });
+    record('flipping while playing glides every changed gain over 40 ms of the audio clock',
+      flipRamps.length > 0 && flipRamps.every((entry) => Math.abs(entry.seconds - 0.04) < 1e-6),
+      { ramps: flipRamps.length, seconds: [...new Set(flipRamps.map((entry) => entry.seconds))] });
     record('flipping while playing does not stop or restart the desk',
       !/Stem desk stopped/.test(await page.locator('.stem-desk__status').innerText()), '');
     await page.getByRole('button', { name: 'Stop', exact: true }).click();

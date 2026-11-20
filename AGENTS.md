@@ -111,7 +111,8 @@ real view functions with `node --test tests/frontend/*.js`.
   second transport; a running desk is heard changing on the one clock, a
   stopped desk waits for Play. The same button then reads `Hear mine` and
   flips between the suggestion and the snapshot. Approve keeps the suggestion
-  (permanent); Reject, asking again, choosing another track or loading a group
+  (permanent), also when Hear mine is showing, apart from controls the
+  musician moved; Reject, asking again, choosing another track or loading a group
   returns to the snapshot. A control the musician moves while hearing the
   suggestion is theirs from then on: flipping, Reject and Approve never move
   it, and the idea survives the move. Without Hear it, `approveStemDeskProposal`
@@ -121,9 +122,14 @@ real view functions with `node --test tests/frontend/*.js`.
   including playback rate and pitch, reject the whole proposal and leave the
   mix unchanged. Outside Hear it, a nudge, mute, solo, gain, level, or
   crossfader move drops the pending proposal. An entry-offset nudge or a
-  proposed offset is heard on the next Play, as always. Gains still jump
-  rather than ramp; a click when flipping a running desk is a PM listening
-  check, not something this note claims is absent.
+  proposed offset is heard on the next Play, as always. On a playing desk the
+  flips (Hear it, Hear mine, Reject, Approve from Hear mine) run inside
+  `StemDesk.glide`, which uses the gains' own AudioParam automation to ramp
+  each changed gain over `STEM_DESK_GLIDE_SECONDS` (0.04 s of the audio clock)
+  instead of jumping; a stopped desk assigns directly. A manual move during a
+  glide cancels the pending ramp so it is never pulled back. Every other gain
+  change still assigns directly. Whether the 40 ms glide is click-free is a PM
+  listening check, not something this note claims is proven.
 - The Studio sidebar queue adds a track that is already in the library. It has
   no YouTube paste box. YouTube import stays in Choose Track. The queue is not
   persisted.
