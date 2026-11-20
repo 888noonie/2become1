@@ -79,6 +79,17 @@ export function clipSourceSpanSec(clip, asset, masterBpm) {
   return beatsToSourceSeconds(clip.durationBeats, clip, asset, masterBpm);
 }
 
+/**
+ * How far the clip's source in-point may move (source seconds). `min` is the
+ * start of the asset; `max` is the latest in-point at which the clip's current
+ * length (at its current rate) still ends inside the asset. A clip that already
+ * uses the whole stem has no room: trim it shorter first.
+ */
+export function slipLimitsSec(clip, asset, masterBpm) {
+  const span = clipSourceSpanSec(clip, asset, masterBpm);
+  return { min: 0, max: Math.max(0, asset.durationSec - span) };
+}
+
 /** Output seconds the clip occupies on the timeline. */
 export function clipTimelineDurationSec(clip, masterBpm) {
   return beatsToSeconds(clip.durationBeats, masterBpm);

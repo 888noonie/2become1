@@ -20,7 +20,9 @@ import {
   MAX_CLIP_GAIN_DB, MAX_EQ_GAIN_DB, MAX_PITCH_SEMITONES, MAX_VOLUME_DB,
   MIN_CLIP_GAIN_DB, MIN_EQ_GAIN_DB, MIN_PITCH_SEMITONES, MIN_VOLUME_DB,
 } from '../arrangement/project-state.js';
-import { MIN_CLIP_DURATION_BEATS, sourceAdvanceRate } from '../arrangement/time-math.js';
+import {
+  MIN_CLIP_DURATION_BEATS, beatsToSourceSeconds, slipLimitsSec, sourceAdvanceRate,
+} from '../arrangement/time-math.js';
 
 export const ZOOM_LEVELS = Object.freeze([6, 10, 16, 24, 36, 54, 80, 120]); // px per beat
 export const SNAP_CHOICES = Object.freeze([
@@ -40,6 +42,9 @@ function fmtBeats(b) {
   const r = Math.round(b * 1000) / 1000;
   return `${r} beat${r === 1 ? '' : 's'}`;
 }
+
+const clampTo = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const roundNs = (v) => Math.round(v * 1e9) / 1e9;
 
 /** bar · beat · tick (960 ticks per beat), 1-based like every DAW ruler. */
 export function formatPosition(beat, beatsPerBar) {
@@ -227,6 +232,9 @@ export function mountArrangementPanel(opts) {
   const timeline = h('div', { class: 'daw__timeline' }, [
     h('div', { class: 'daw__header-col' }, [headerCorner, headers]), scroller,
   ]);
+  // One quiet line under the timeline that names what the pointer is over.
+  const hintLine = h('p', { class: 'daw__tip', 'data-field': 'hint', role: 'note' });
+  const timelineWrap = h('div', { class: 'daw__timeline-wrap' }, [timeline, hintLine]);
 
   // Inspector + producer
   const inspector = h('aside', { class: 'daw__inspector', 'aria-label': 'Inspector' });
@@ -243,7 +251,7 @@ export function mountArrangementPanel(opts) {
     h('div', { class: 'daw__top' }, [transport]),
     projectRow,
     importBox,
-    h('div', { class: 'daw__body' }, [timeline, side]),
+    h('div', { class: 'daw__body' }, [timelineWrap, side]),
     honesty,
     messages,
   );
@@ -313,6 +321,18 @@ export function mountArrangementPanel(opts) {
     const srcStart = clip.sourceOffsetSec * SAMPLE_RATE;
     const srcSpan = clip.durationBeats * spb * rate * SAMPLE_RATE;
     const mid = hgt / 2;
+    const lin = 10 ** (clip.clipGainDb / 20);
+    const dur = clip.durationBeats;
+    // The drawn height is what will sound: clip gain times the linear fade
+    // envelope the engine and the bounce both apply.
+    const envAt = (frac) => {
+      const beat = frac * dur;
+      let e = 1;
+      if (clip.fadeInBeats > 0) e = Math.min(e, beat / clip.fadeInBeats);
+      if (clip.fadeOutBeats > 0) e = Math.min(e, (dur - beat) / clip.fadeOutBeats);
+      return clampTo(e, 0, 1);
+    };
+    const line = [];
     for (let px = 0; px < w; px += 1) {
       const a = Math.floor((srcStart + (px / w) * srcSpan) / peaks.bucketFrames);
       const b = Math.max(a + 1, Math.floor((srcStart + ((px + 1) / w) * srcSpan) / peaks.bucketFrames));
@@ -322,11 +342,26 @@ export function mountArrangementPanel(opts) {
         if (peaks.min[i] < lo) lo = peaks.min[i];
         if (peaks.max[i] > hi) hi = peaks.max[i];
       }
-      const gain = 10 ** (clip.clipGainDb / 20);
+      const gain = lin * envAt((px + 0.5) / w);
       const top = mid - Math.min(1, hi * gain) * mid;
       const bot = mid - Math.max(-1, lo * gain) * mid;
       g.fillRect(px, top, 1, Math.max(1, bot - top));
+      line.push(mid - Math.min(1, gain) * mid);
     }
+    // Envelope outline: the loudest a full-scale sample could be here.
+    g.globalAlpha = 0.85;
+    g.beginPath();
+    line.forEach((y, px) => { if (px === 0) g.moveTo(px, y + 0.5); else g.lineTo(px, y + 0.5); });
+    g.lineWidth = Math.max(1, ratio);
+    g.strokeStyle = g.fillStyle;
+    g.stroke();
+    g.globalAlpha = 1;
+  }
+
+  /** Redraw one clip's waveform from `clip` fields (a live gesture preview). */
+  function previewWave(el, clip) {
+    const canvas = el?.querySelector('canvas');
+    if (canvas) drawWaveform(canvas, clip, el.offsetWidth || 4);
   }
 
   function clipEl(clip) {
@@ -343,7 +378,7 @@ export function mountArrangementPanel(opts) {
     const badges = [
       stretched ? (clip.stretchMode === 'beat_sync' ? 'tempo' : `×${clip.customStretchRatio}`) : null,
       clip.pitchSemitones ? `${clip.pitchSemitones > 0 ? '+' : ''}${clip.pitchSemitones} st` : null,
-      clip.clipGainDb ? fmtDb(clip.clipGainDb) : null,
+      clip.clipGainDb && !(selected && width >= 96) ? fmtDb(clip.clipGainDb) : null, // the gain grip shows it when selected
     ].filter(Boolean).join(' · ');
     const el = h('div', {
       class: `daw__clip daw__clip--${group}${selected ? ' is-selected' : ''}`,
@@ -358,9 +393,12 @@ export function mountArrangementPanel(opts) {
       canvas, fadeIn, fadeOut,
       h('span', { class: 'daw__handle daw__handle--start', dataset: { grip: 'start' }, 'aria-hidden': 'true' }),
       h('span', { class: 'daw__handle daw__handle--end', dataset: { grip: 'end' }, 'aria-hidden': 'true' }),
-      h('span', { class: 'daw__fade-grip daw__fade-grip--in', dataset: { grip: 'fadeIn' }, title: 'Drag to set the fade in', 'aria-hidden': 'true' }),
-      h('span', { class: 'daw__fade-grip daw__fade-grip--out', dataset: { grip: 'fadeOut' }, title: 'Drag to set the fade out', 'aria-hidden': 'true' }),
+      h('span', { class: 'daw__fade-grip daw__fade-grip--in', dataset: { grip: 'fadeIn' }, title: 'Fade in: drag to set how long the sound takes to come in', 'aria-hidden': 'true' }),
+      h('span', { class: 'daw__fade-grip daw__fade-grip--out', dataset: { grip: 'fadeOut' }, title: 'Fade out: drag to set how long the sound takes to go', 'aria-hidden': 'true' }),
+      h('span', { class: 'daw__gain-grip', dataset: { grip: 'gain' }, title: 'Clip gain: drag up or down (Alt for fine). Track level is separate.', 'aria-hidden': 'true', text: fmtDb(clip.clipGainDb), hidden: width < 96 ? 'true' : undefined }),
+      h('span', { class: 'daw__slip-grip', dataset: { grip: 'slip' }, title: 'Slip: drag to choose which part of the stem plays here. The clip does not move.', 'aria-hidden': 'true' }),
     ]);
+    el.title = 'Drag to move this clip. Shift-drag slips the audio inside it. Drag its edges to trim.';
     win.requestAnimationFrame(() => drawWaveform(canvas, clip, width));
     return el;
   }
@@ -492,6 +530,8 @@ export function mountArrangementPanel(opts) {
     ]);
   }
 
+  const fmtFade = (v) => `${fmtBeats(v)} · ${(v * 60 / session.bpm).toFixed(2)} s`;
+
   function renderClipInspector(clip) {
     const asset = session.state.assets[clip.assetId];
     const group = trackGroup(clip.trackIndex);
@@ -523,6 +563,28 @@ export function mountArrangementPanel(opts) {
       const v = Number(tempoEntry.value);
       if (Number.isFinite(v) && v > 0) session.apply({ name: 'setAssetTempo', args: { assetId: clip.assetId, nativeBpm: v } });
     });
+    // Slip (source in-point): which part of the stem fills this clip.
+    const lim = asset ? slipLimitsSec(clip, asset, session.bpm) : { min: 0, max: 0 };
+    const inPoint = h('input', {
+      type: 'number', min: '0', max: String(lim.max), step: '0.001', value: clip.sourceOffsetSec.toFixed(3),
+      'aria-label': 'Source in-point (seconds)',
+    });
+    inPoint.addEventListener('change', () => {
+      const v = Number(inPoint.value);
+      if (!Number.isFinite(v)) render();
+      else if (Math.abs(v - (clipById(clip.id)?.sourceOffsetSec ?? v)) > 5e-10) session.apply({ name: 'slipClip', args: { clipId: clip.id, sourceOffsetSec: v } });
+    });
+    const slipEarlier = h('button', { type: 'button', class: 'button button--small', text: '◀ Earlier', 'aria-label': 'Slip source earlier', 'aria-keyshortcuts': ',', onclick: () => slipSelectedBy(-1) });
+    const slipLater = h('button', { type: 'button', class: 'button button--small', text: 'Later ▶', 'aria-label': 'Slip source later', 'aria-keyshortcuts': '.', onclick: () => slipSelectedBy(1) });
+    const stemBeats = tempoKnown ? (clip.sourceOffsetSec * asset.nativeBpm) / 60 : null;
+    const slipFacts = [
+      h('dt', { text: 'Plays from' }),
+      h('dd', { text: `${clip.sourceOffsetSec.toFixed(3)} s · frame ${Math.round(clip.sourceOffsetSec * SAMPLE_RATE)}` }),
+      h('dt', { text: 'In the stem' }),
+      h('dd', { text: stemBeats === null ? 'tempo unknown' : `bar ${formatPosition(stemBeats, bpb).split(' · ').slice(0, 2).join(' · beat ')} at ${asset.nativeBpm} BPM` }),
+      h('dt', { text: 'Room to slip' }),
+      h('dd', { text: lim.max <= 0 ? 'none: trim the end first' : `${clip.sourceOffsetSec.toFixed(2)} s earlier · ${(lim.max - clip.sourceOffsetSec).toFixed(2)} s later` }),
+    ];
     const formants = h('input', { type: 'checkbox', 'aria-label': 'Keep formants' });
     formants.checked = clip.preserveFormants;
     formants.addEventListener('change', () => session.apply({ name: 'setClipPitch', args: { clipId: clip.id, semitones: clip.pitchSemitones, preserveFormants: formants.checked } }));
@@ -538,16 +600,27 @@ export function mountArrangementPanel(opts) {
         h('dt', { text: 'Length' }), h('dd', { text: `${(clip.durationBeats / bpb).toFixed(2)} bars` }),
         h('dt', { text: 'Source tempo' }), h('dd', { text: tempoText }),
       ]),
+      h('fieldset', { class: 'daw__group daw__group--slip' }, [
+        h('legend', { text: 'Source in-point (slip)' }),
+        h('dl', { class: 'daw__facts' }, slipFacts),
+        lim.max > 0 ? rangeRow('Slip', {
+          min: 0, max: lim.max, step: 0.001, value: clip.sourceOffsetSec, format: (v) => `${v.toFixed(3)} s`,
+          key: `slip:${clip.id}`, build: (v) => ({ name: 'slipClip', args: { clipId: clip.id, sourceOffsetSec: v } }),
+        }) : null,
+        h('label', { class: 'daw__row' }, [h('span', { class: 'daw__row-label', text: 'In-point' }), inPoint, h('span', { class: 'daw__unit', text: 's' })]),
+        h('div', { class: 'daw__ins-actions' }, [slipEarlier, slipLater]),
+        h('p', { class: 'daw__hint', text: `Changes which audio plays. The clip stays at bar ${formatPosition(clip.timelineStartBeat, bpb).split(' · ')[0]} and keeps its length.` }),
+      ]),
       rangeRow('Gain', {
         min: MIN_CLIP_GAIN_DB, max: MAX_CLIP_GAIN_DB, step: 0.5, value: clip.clipGainDb, format: fmtDb,
         key: `gain:${clip.id}`, build: (v) => ({ name: 'setClipGain', args: { clipId: clip.id, gainDb: v } }),
       }),
       rangeRow('Fade in', {
-        min: 0, max: fadeMax / 2, step: 1 / 64, value: Math.min(clip.fadeInBeats, fadeMax / 2), format: (v) => fmtBeats(v),
+        min: 0, max: fadeMax / 2, step: 1 / 64, value: Math.min(clip.fadeInBeats, fadeMax / 2), format: fmtFade,
         key: `fadein:${clip.id}`, build: (v) => ({ name: 'setClipFades', args: { clipId: clip.id, fadeInBeats: v, fadeOutBeats: clipById(clip.id)?.fadeOutBeats ?? clip.fadeOutBeats } }),
       }),
       rangeRow('Fade out', {
-        min: 0, max: fadeMax / 2, step: 1 / 64, value: Math.min(clip.fadeOutBeats, fadeMax / 2), format: (v) => fmtBeats(v),
+        min: 0, max: fadeMax / 2, step: 1 / 64, value: Math.min(clip.fadeOutBeats, fadeMax / 2), format: fmtFade,
         key: `fadeout:${clip.id}`, build: (v) => ({ name: 'setClipFades', args: { clipId: clip.id, fadeInBeats: clipById(clip.id)?.fadeInBeats ?? clip.fadeInBeats, fadeOutBeats: v } }),
       }),
       h('fieldset', { class: 'daw__group' }, [
@@ -565,6 +638,7 @@ export function mountArrangementPanel(opts) {
         h('label', { class: 'daw__check' }, [formants, 'Keep formants (Signalsmith formant compensation)']),
       ]),
       h('div', { class: 'daw__ins-actions' }, [
+        h('button', { type: 'button', class: 'button', text: 'Cue at clip start', onclick: () => session.seek(clip.timelineStartBeat) }),
         h('button', { type: 'button', class: 'button', text: 'Split at playhead', 'aria-keyshortcuts': 'S', onclick: () => splitSelected() }),
         h('button', { type: 'button', class: 'button', text: 'Duplicate', 'aria-keyshortcuts': 'Control+D', onclick: () => duplicateSelected() }),
         h('button', { type: 'button', class: 'button button--danger', text: 'Delete', 'aria-keyshortcuts': 'Delete', onclick: () => deleteSelected() }),
@@ -574,7 +648,9 @@ export function mountArrangementPanel(opts) {
         h('dl', { class: 'daw__facts' }, [
           h('dt', { text: 'Start' }), h('dd', { text: `${clip.timelineStartBeat} beats` }),
           h('dt', { text: 'Duration' }), h('dd', { text: `${clip.durationBeats} beats` }),
-          h('dt', { text: 'Source offset' }), h('dd', { text: `${clip.sourceOffsetSec.toFixed(4)} s` }),
+          h('dt', { text: 'Source offset' }), h('dd', { text: `${clip.sourceOffsetSec.toFixed(4)} s (frame ${Math.round(clip.sourceOffsetSec * SAMPLE_RATE)})` }),
+          h('dt', { text: 'Clip gain' }), h('dd', { text: fmtDb(clip.clipGainDb) }),
+          h('dt', { text: 'Fades' }), h('dd', { text: `in ${clip.fadeInBeats} · out ${clip.fadeOutBeats} beats` }),
           h('dt', { text: 'Source rate' }), h('dd', { text: `${rate.toFixed(4)} (${clip.stretchMode})` }),
           h('dt', { text: 'Asset' }), h('dd', { text: asset?.bufferReference ?? '' }),
         ]),
@@ -666,6 +742,24 @@ export function mountArrangementPanel(opts) {
     session.apply({ name: 'moveClip', args: { clipId: clip.id, newTrackIndex: clip.trackIndex, newStartBeat: Math.max(0, clip.timelineStartBeat + direction * step) } });
   }
 
+  /**
+   * Keyboard/button slip: `direction` -1 hears earlier source material, +1
+   * later, by one snap step of timeline time (a quarter beat with Snap off).
+   */
+  function slipSelectedBy(direction) {
+    const clip = clipById(ui.selectedClipId);
+    if (!clip) return;
+    const asset = session.state.assets[clip.assetId];
+    const lim = slipLimitsSec(clip, asset, session.bpm);
+    if (lim.max <= 0) { session.say('refused', 'NO_SLIP_ROOM', 'This clip already uses the whole stem. Trim its end first to make room to slip.'); return; }
+    const step = snapBeats() || 0.25;
+    const wanted = clip.sourceOffsetSec + direction * beatsToSourceSeconds(step, clip, asset, session.bpm);
+    const target = roundNs(clampTo(wanted, lim.min, lim.max));
+    if (target === clip.sourceOffsetSec) return;
+    const outcome = session.apply({ name: 'slipClip', args: { clipId: clip.id, sourceOffsetSec: target } });
+    if (outcome.ok) onAnnounce(`Source in-point ${target.toFixed(3)} seconds.`);
+  }
+
   // ------------------------------------------------------------- pointer gestures
 
   const beatAt = (clientX) => (clientX - content.getBoundingClientRect().left) / pxPerBeat();
@@ -694,9 +788,10 @@ export function mountArrangementPanel(opts) {
     ev.preventDefault();
     if (ui.selectedClipId !== clip.id) select(clip.id);
     const live = lanes.querySelector(`[data-clip-id="${esc(clip.id)}"]`);
-    const grip = ev.target.dataset?.grip ?? 'move';
+    let grip = ev.target.dataset?.grip ?? 'move';
+    if (grip === 'move' && ev.shiftKey) grip = 'slip';
     ui.drag = {
-      grip, clip: { ...clip }, el: live, startX: ev.clientX, startY: ev.clientY,
+      grip, clip: { ...clip }, el: live, startX: ev.clientX, startY: ev.clientY, pointer0: beatAt(ev.clientX),
       grabOffset: beatAt(ev.clientX) - clip.timelineStartBeat, moved: false, pointerId: ev.pointerId,
     };
     try { live?.setPointerCapture?.(ev.pointerId); } catch { /* window listeners still follow */ }
@@ -730,6 +825,28 @@ export function mountArrangementPanel(opts) {
       const other = d.grip === 'fadeIn' ? c.fadeOutBeats : c.fadeInBeats;
       d.fade = Math.max(0, Math.min(c.durationBeats - other, Math.round(len * 64) / 64));
       d.el.querySelector(d.grip === 'fadeIn' ? '.daw__fade--in' : '.daw__fade--out').style.width = `${d.fade * ppb}px`;
+      d.el.dataset.live = `${d.grip === 'fadeIn' ? 'Fade in' : 'Fade out'} ${fmtBeats(d.fade)} · ${(d.fade * 60 / session.bpm).toFixed(2)} s`;
+      previewWave(d.el, { ...c, [d.grip === 'fadeIn' ? 'fadeInBeats' : 'fadeOutBeats']: d.fade });
+    } else if (d.grip === 'slip') {
+      const asset = session.state.assets[c.assetId];
+      const lim = slipLimitsSec(c, asset, session.bpm);
+      const g = snapBeats();
+      let deltaBeats = pointer - d.pointer0;
+      if (g && !ev.altKey) deltaBeats = Math.round(deltaBeats / g) * g;
+      // Dragging right shows earlier material (the audio moves with the pointer).
+      const wanted = c.sourceOffsetSec - beatsToSourceSeconds(deltaBeats, c, asset, session.bpm);
+      d.slip = lim.max <= 0 ? c.sourceOffsetSec : roundNs(clampTo(wanted, lim.min, lim.max));
+      d.el.dataset.live = lim.max <= 0
+        ? 'No room to slip: trim the clip shorter first'
+        : `Source in-point ${d.slip.toFixed(3)} s`;
+      previewWave(d.el, { ...c, sourceOffsetSec: d.slip });
+    } else if (d.grip === 'gain') {
+      const step = ev.altKey ? 0.1 : 0.5;
+      const raw = c.clipGainDb - (ev.clientY - d.startY) * 0.2;
+      d.gain = clampTo(Math.round(raw / step) * step, MIN_CLIP_GAIN_DB, MAX_CLIP_GAIN_DB);
+      d.el.dataset.live = `Clip gain ${fmtDb(d.gain)}`;
+      d.el.querySelector('.daw__gain-grip').textContent = fmtDb(d.gain);
+      previewWave(d.el, { ...c, clipGainDb: d.gain });
     }
   });
 
@@ -737,6 +854,7 @@ export function mountArrangementPanel(opts) {
     const d = ui.drag;
     if (!d || (ev && ev.pointerId !== d.pointerId)) return;
     ui.drag = null;
+    if (d.el) delete d.el.dataset.live;
     if (!d.moved) return;
     const c = d.clip;
     let outcome = null;
@@ -747,6 +865,15 @@ export function mountArrangementPanel(opts) {
       outcome = session.apply({ name: 'trimClip', args: { clipId: c.id, edge: 'start', deltaBeats: d.start - c.timelineStartBeat } });
     } else if (d.grip === 'end' && d.end !== undefined) {
       outcome = session.apply({ name: 'trimClip', args: { clipId: c.id, edge: 'end', deltaBeats: d.end - (c.timelineStartBeat + c.durationBeats) } });
+    } else if (d.grip === 'slip') {
+      if (d.slip !== undefined && d.slip !== c.sourceOffsetSec) {
+        outcome = session.apply({ name: 'slipClip', args: { clipId: c.id, sourceOffsetSec: d.slip } });
+        if (outcome.ok) onAnnounce(`Source in-point ${d.slip.toFixed(3)} seconds. The clip stayed at bar ${formatPosition(c.timelineStartBeat, beatsPerBar())}.`);
+      } else { render(); return; }
+    } else if (d.grip === 'gain') {
+      if (d.gain !== undefined && d.gain !== c.clipGainDb) {
+        outcome = session.apply({ name: 'setClipGain', args: { clipId: c.id, gainDb: d.gain } });
+      } else { render(); return; }
     } else if (d.fade !== undefined) {
       const fadeInBeats = d.grip === 'fadeIn' ? d.fade : c.fadeInBeats;
       const fadeOutBeats = d.grip === 'fadeOut' ? d.fade : c.fadeOutBeats;
@@ -756,6 +883,30 @@ export function mountArrangementPanel(opts) {
   };
   on(win, 'pointerup', endDrag);
   on(win, 'pointercancel', (ev) => { if (ui.drag) { ui.drag = null; render(); } void ev; });
+
+  // Contextual hint: one quiet line that names what the pointer is over.
+  const HINTS = {
+    idle: 'Click the ruler to put the play cue where Play should start. Select a clip to move, trim, slip, fade or change its gain.',
+    ruler: 'Play cue: click to choose where Play starts (no clip moves). Drag to set a loop.',
+    move: 'Move: drag to put this clip somewhere else. Shift-drag slips the audio inside it instead.',
+    start: 'Trim: drag the edge to change where the clip starts. The audio keeps its place on the timeline.',
+    end: 'Trim: drag the edge to change where the clip ends.',
+    fadeIn: 'Fade in: drag to set how long the sound takes to come in.',
+    fadeOut: 'Fade out: drag to set how long the sound takes to go.',
+    gain: 'Clip gain: drag up or down (Alt for fine). Track level is separate.',
+    slip: 'Slip: drag to choose which part of the stem plays here. The clip stays where it is.',
+  };
+  hintLine.textContent = HINTS.idle;
+  on(timeline, 'pointerover', (ev) => {
+    if (ui.drag) return;
+    const grip = ev.target.dataset?.grip;
+    let key = 'idle';
+    if (ev.target.closest?.('.daw__ruler')) key = 'ruler';
+    else if (grip && HINTS[grip]) key = grip;
+    else if (ev.target.closest?.('.daw__clip')) key = 'move';
+    hintLine.textContent = HINTS[key];
+  });
+  on(timeline, 'pointerleave', () => { if (!ui.drag) hintLine.textContent = HINTS.idle; });
 
   // Ruler: click cues, drag sets the loop.
   on(ruler, 'pointerdown', (ev) => {
@@ -1022,6 +1173,8 @@ export function mountArrangementPanel(opts) {
       ev.preventDefault(); deleteSelected();
     } else if (!mod && (ev.key === 's' || ev.key === 'S') && ui.selectedClipId) {
       ev.preventDefault(); splitSelected();
+    } else if (!mod && (ev.key === ',' || ev.key === '.') && ui.selectedClipId) {
+      ev.preventDefault(); slipSelectedBy(ev.key === ',' ? -1 : 1);
     } else if (!mod && (ev.key === 'l' || ev.key === 'L')) {
       toggleLoop();
     } else if (!mod && (ev.key === '+' || ev.key === '=')) {
@@ -1034,7 +1187,7 @@ export function mountArrangementPanel(opts) {
 
   // AI Producer mount point (Stage D): given the session, it proposes edits
   // through the same command path.
-  const producerDispose = opts.producer?.({ container: producerMount, session, onAnnounce, rerender: () => render() }) ?? null;
+  const producerDispose = opts.producer?.({ container: producerMount, session, onAnnounce, rerender: () => render(), selectedClipId: () => ui.selectedClipId }) ?? null;
 
   render();
 

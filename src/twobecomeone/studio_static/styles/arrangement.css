@@ -230,6 +230,28 @@
 .daw__fade-grip--in { left: 10px; }
 .daw__fade-grip--out { right: 10px; }
 .daw__clip.is-selected .daw__fade-grip, .daw__clip:hover .daw__fade-grip { opacity: 0.95; }
+.daw__gain-grip {
+  position: absolute; top: 2px; right: 28px; z-index: 3; cursor: ns-resize;
+  padding: 0 6px; border-radius: 4px; font: 11px var(--font-mono);
+  background: color-mix(in srgb, var(--color-action) 80%, transparent); color: var(--color-surface);
+  opacity: 0; white-space: nowrap;
+}
+.daw__gain-grip[hidden] { display: none; }
+.daw__slip-grip {
+  position: absolute; left: 12px; right: 12px; bottom: 0; height: 10px; z-index: 2; cursor: grab;
+  background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--color-action) 70%, transparent) 0 6px, transparent 6px 12px);
+  border-radius: 3px 3px 0 0; opacity: 0;
+}
+.daw__clip.is-selected .daw__gain-grip, .daw__clip:hover .daw__gain-grip,
+.daw__clip.is-selected .daw__slip-grip, .daw__clip:hover .daw__slip-grip { opacity: 0.95; }
+.daw__clip[data-live]::after {
+  content: attr(data-live); position: absolute; left: 50%; top: 20px; transform: translateX(-50%); z-index: 6;
+  padding: 2px 8px; border-radius: 4px; font: 12px var(--font-mono); white-space: nowrap; pointer-events: none;
+  background: var(--color-surface-raised); color: var(--color-text);
+  border: 1px solid var(--color-action);
+}
+.daw__timeline-wrap { min-width: 0; }
+.daw__tip { margin: var(--space-1) 0 0; font-size: 13px; color: var(--color-muted); min-height: 1.4em; }
 .daw__playhead, .daw__cue { position: absolute; top: 0; bottom: 0; left: 0; width: 0; pointer-events: none; z-index: 5; }
 .daw__playhead { border-left: 2px solid var(--color-text); box-shadow: 0 0 6px color-mix(in srgb, var(--color-text) 50%, transparent); }
 .daw__cue { border-left: 1px dashed var(--color-action); }

@@ -228,6 +228,31 @@ Evidence and the demo procedure: `docs/full-house-daw.md`.
 - Browser runs use `--disable-audio-output --mute-audio`. Headless measurements
   never replace the PM's listening acceptance.
 
+### Direct clip control (OPERATION FIRST CUT)
+
+Evidence and the demo: `docs/first-cut-direct-control.md`.
+
+- Three positions, never mixed up. **Play cue** (ruler click, `Cue at clip
+  start`) moves only where Play begins. **Move** changes `timelineStartBeat`.
+  **Slip** (`slipClip`, absolute source seconds) changes only
+  `sourceOffsetSec`; position, length, rate, pitch, fades and gain stay. Trim
+  moves a boundary and advances the in-point at the clip's own rate. Source
+  seconds, frames, output seconds and beats are converted only through
+  `time-math.js` (`beatsToSourceSeconds`, `slipLimitsSec`).
+- A clip that uses its whole stem has no slip room; the UI says to trim first.
+  The Producer's clip idea shortens the clip's end when a later in-point needs
+  it, and lists that change.
+- An edit that changes nothing is not an undo step (`EditEngine.run` returns
+  `noop`). A gain, fade or slip drag is one step; a pixel wobble is none.
+- Clip gain is the clip's, separate from track level. The waveform draws gain
+  times the linear fade envelope the engine and the bounce both apply.
+- A new engine parks at frame 0 while preparing; that must not reset a cue
+  chosen before the first Play (`DawSession` `onParked` ignores it).
+- A Producer clip idea is typed (`suggestClipIdea`: position, in-point or
+  phrase number, gain, fades), validated with `propose`, applied as one batch,
+  and reversible. Phrase starts are a loudness heuristic on decoded peaks. It
+  does not read free text.
+
 ## Static assets
 
 - There is no byte ceiling. Record the total uncompressed bytes under

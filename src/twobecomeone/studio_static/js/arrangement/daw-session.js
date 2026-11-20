@@ -340,6 +340,10 @@ export class DawSession {
         destination: this.monitor,
         onStateChange: () => this.#emit('transport'),
         onParked: (frame) => {
+          // A new engine parks at frame 0 while it prepares. That is not the
+          // musician moving the cue: Play from a cue chosen before the first
+          // Play must start there.
+          if (!this.engine) return;
           if (frame !== this.cueFrame) { this.cueFrame = frame; this.cueBeat = framesToBeats(frame, this.bpm); }
           try { this.edit.setPlayhead(this.cueBeat); } catch { /* bookkeeping only */ }
           this.#emit('transport');

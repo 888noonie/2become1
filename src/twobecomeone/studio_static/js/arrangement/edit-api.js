@@ -331,6 +331,23 @@ const COMMANDS = {
     return { clipId, pitchSemitones: semitones, preserveFormants, durationBeats: clip.durationBeats };
   },
 
+  /**
+   * Slip: choose which source audio fills the clip. The arrangement position,
+   * duration, rate, pitch, fades and gain are untouched; only the source
+   * in-point (source SECONDS, absolute) changes, and it must keep the whole
+   * clip inside the asset.
+   */
+  slipClip(draft, args) {
+    const { clipId, sourceOffsetSec } = args;
+    requireFinite(sourceOffsetSec, 'sourceOffsetSec');
+    const clip = requireClip(draft, clipId);
+    const asset = requireAsset(draft, clip);
+    const offset = roundTime(Math.max(0, sourceOffsetSec));
+    requireSourceBounds(draft, clip, asset, offset, clip.durationBeats);
+    clip.sourceOffsetSec = offset;
+    return { clipId, sourceOffsetSec: offset, timelineStartBeat: clip.timelineStartBeat, durationBeats: clip.durationBeats };
+  },
+
   setClipGain(draft, args) {
     const { clipId, gainDb } = args;
     requireRange(gainDb, MIN_CLIP_GAIN_DB, MAX_CLIP_GAIN_DB, 'gainDb');
@@ -629,6 +646,10 @@ export class EditEngine {
     if (!ok) {
       throw new InvalidEditError(`edit ${command.name} produced an invalid state`, 'INVALID_STATE', errors);
     }
+    // An edit that leaves the project exactly as it was (a value typed or
+    // dragged back to what it already is) is not a musical action: it adds
+    // no undo step and does not clear Redo.
+    if (JSON.stringify(draft) === JSON.stringify(previous)) return { result, warnings, noop: true };
     this._state = draft;
     this._past.push(previous);
     if (this._past.length > HISTORY_LIMIT) this._past.shift();
@@ -662,6 +683,10 @@ export class EditEngine {
 
   setClipPitch(clipId, semitones, preserveFormants) {
     return this.run({ name: 'setClipPitch', args: { clipId, semitones, preserveFormants } }).result;
+  }
+
+  slipClip(clipId, sourceOffsetSec) {
+    return this.run({ name: 'slipClip', args: { clipId, sourceOffsetSec } }).result;
   }
 
   setClipGain(clipId, gainDb) {
@@ -750,6 +775,7 @@ export class EditEngine {
     const continuing = Boolean(gestureKey) && this._gesture === gestureKey && this._past.length > 0;
     const base = continuing ? this._past[this._past.length - 1] : null;
     const outcome = this.run(command); // resets the gesture on commit
+    if (outcome.noop) return outcome.result; // nothing changed: the gesture continues untouched
     if (continuing) {
       // run() pushed the intermediate state; drop it so the gesture's base
       // (the state before the drag began) is the one undo returns to.
