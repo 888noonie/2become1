@@ -71,11 +71,45 @@ function rms(samples, from, to) {
   return Math.sqrt(sum / n);
 }
 
+function unscorable(boundary, threshold, reason) {
+  return {
+    boundary,
+    threshold,
+    scorability: 'unscorable',
+    unscorable: true,
+    unscorableReason: reason,
+    nonFinite: false,
+    envelope: null,
+    waveform: null,
+    index: null,
+    flagged: false,
+  };
+}
+
+/** True if any sample in [from, to) is NaN or Infinity. */
+function hasNonFinite(samples, from, to) {
+  const lo = Math.max(0, from);
+  const hi = Math.min(samples.length, to);
+  for (let i = lo; i < hi; i += 1) {
+    if (!Number.isFinite(samples[i])) return true;
+  }
+  return false;
+}
+
 /**
  * Score one boundary. `boundary` is the first sample of the incoming side,
  * i.e. the region's exclusive end / inclusive start frame in render-plan
  * terms. Clip-gain automation is sample-accurate, so a missing fade steps
  * exactly here; no search is needed or performed.
+ *
+ * Result contract (Gate 7):
+ *   - A boundary at frame 0 (or one with no before/after context) is
+ *     SCORABILITY 'unscorable' — this detector needs a neighbouring sample on
+ *     each side. It is reported, never silently treated as a pass.
+ *   - Non-finite input (NaN/Infinity) in the probe window is an INVALID
+ *     numerical result, not audio: it is FLAGGED (a defect), never converted
+ *     into an implicit pass. `index` is +Infinity and `nonFinite` is true.
+ *   - Otherwise a finite `index` compares the junction against local continuity.
  *
  * @param {Float32Array} samples mono render
  * @param {number} boundary junction sample
@@ -85,8 +119,34 @@ export function boundaryDiscontinuity(samples, boundary, options = {}) {
   const W = options.window ?? BDI_WINDOW;
   const K = options.contextPairs ?? BDI_CONTEXT_PAIRS;
   const threshold = options.threshold ?? BDI_THRESHOLD;
-  if (!Number.isInteger(boundary) || boundary < 1 || boundary > samples.length - 2) {
-    throw new RangeError(`boundary ${boundary} is out of range for ${samples.length} samples`);
+  if (!Number.isInteger(boundary)) {
+    throw new RangeError(`boundary ${boundary} must be an integer sample`);
+  }
+  // Frame 0 has no before-sample; a boundary at/after the penultimate sample has
+  // no after-sample. Both are unscorable rather than an error (Gate 7 / §G).
+  if (boundary < 1) return unscorable(boundary, threshold, 'frame-0 boundary has no before-sample');
+  if (boundary > samples.length - 2) {
+    return unscorable(boundary, threshold, 'boundary has no after-sample in the buffer');
+  }
+
+  // Non-finite probe window: any NaN/Infinity near the junction is a defect that
+  // must FLAG, never pass (Gate 7 — the click diagnostic must not convert an
+  // invalid numerical result into an implicit PASS).
+  const probeFrom = boundary - (K + 1) * W;
+  const probeTo = boundary + (K + 1) * W + 1;
+  if (hasNonFinite(samples, probeFrom, probeTo)) {
+    return {
+      boundary,
+      threshold,
+      scorability: 'scorable',
+      unscorable: false,
+      unscorableReason: null,
+      nonFinite: true,
+      envelope: null,
+      waveform: null,
+      index: Infinity,
+      flagged: true,
+    };
   }
 
   // Envelope windows: k = -1 is the last window before the junction, k = 0 the
@@ -133,9 +193,16 @@ export function boundaryDiscontinuity(samples, boundary, options = {}) {
   const waveRatio = junctionBreak / Math.max(waveRoughness, 1e-7);
 
   const index = Math.max(envRatio, waveRatio);
+  // The floors keep the ratios finite for finite input; belt-and-braces guard so
+  // a numerical surprise can never become an implicit pass (Gate 7).
+  const finite = Number.isFinite(index);
   return {
     boundary,
     threshold,
+    scorability: 'scorable',
+    unscorable: false,
+    unscorableReason: null,
+    nonFinite: !finite,
     envelope: {
       before: envBefore,
       after: envAfter,
@@ -150,32 +217,49 @@ export function boundaryDiscontinuity(samples, boundary, options = {}) {
       roughness: waveRoughness,
       ratio: waveRatio,
     },
-    index,
-    flagged: index > threshold,
+    index: finite ? index : Infinity,
+    flagged: !finite || index > threshold,
   };
 }
 
 /**
- * The ordinary acceptance gate: every boundary must be unflagged.
- * This same gate runs on deliberately broken renders as the negative control
- * that proves the detector remains effective.
+ * The ordinary acceptance gate: every SCORABLE boundary must be unflagged and
+ * finite. This same gate runs on deliberately broken renders as the negative
+ * control that proves the detector remains effective.
+ *
+ * Gate 7 contract: a non-finite boundary is always flagged (never an implicit
+ * pass). A frame-0 / no-context boundary is reported as `unscorable` and is NOT
+ * silently counted as a pass — the caller sees it in `unscorable` and can decide.
+ * `passed` is true only when there are no flagged (incl. non-finite) entries.
  *
  * @param {Array<ReturnType<typeof boundaryDiscontinuity>>} entries
  */
 export function boundaryGate(entries, threshold = BDI_THRESHOLD) {
-  const flagged = entries.filter((e) => e.index > threshold);
-  const worst = entries.reduce((w, e) => (e.index > (w?.index ?? -Infinity) ? e : w), null);
+  const nonFinite = entries.filter((e) => e.nonFinite);
+  const unscorable = entries.filter((e) => e.unscorable);
+  const flagged = entries.filter((e) => e.flagged || e.nonFinite);
+  const scorable = entries.filter((e) => !e.unscorable);
+  const worst = scorable.reduce(
+    (w, e) => (Number.isFinite(e.index) && e.index > (w?.index ?? -Infinity) ? e : w),
+    null,
+  );
   return {
-    passed: flagged.length === 0,
+    // A verdict of "pass" requires at least one SCORABLE boundary that passed;
+    // an all-unscorable set is not a silent pass (review finding 15).
+    passed: flagged.length === 0 && scorable.length > 0,
+    finite: nonFinite.length === 0,
     threshold,
     worstIndex: worst ? worst.index : 0,
     worstBoundary: worst ? worst.boundary : null,
+    scorableCount: scorable.length,
     flagged: flagged.map((e) => ({
       boundary: e.boundary,
       index: e.index,
-      envelopeStep: e.envelope.step,
-      waveBreak: e.waveform.junctionBreak,
+      envelopeStep: e.envelope ? e.envelope.step : null,
+      waveBreak: e.waveform ? e.waveform.junctionBreak : null,
+      nonFinite: !!e.nonFinite,
     })),
+    unscorable: unscorable.map((e) => ({ boundary: e.boundary, reason: e.unscorableReason })),
   };
 }
 

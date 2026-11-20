@@ -47,12 +47,32 @@ export class LookaheadLimiter {
     this.fSum = L; // running sum of fWindow
     this.minGain = 1;
     this.latencyFrames = L;
+    this.sampleCursor = 0;
+    /** Non-finite samples seen and zeroed (Gate 7). Reported through stats(). */
+    this.nonFiniteCount = 0;
+    this.firstNonFiniteIndex = -1;
   }
 
   /** Process one block of per-channel samples. Writes outL/outR in place. */
   processBlock(inL, inR, outL, outR) {
     const L = this.lookahead;
     for (let i = 0; i < inL.length; i += 1) {
+      // Non-finite guard (Gate 7): a NaN or Infinity in the chain is an invalid
+      // numerical result, not audio. Replace it with 0 BEFORE it can reach the
+      // output or poison the gain computer, count it, and remember the first
+      // index. This runs on the output path and is bounded (O(1) per sample).
+      let sL = inL[i];
+      let sR = inR[i];
+      if (!Number.isFinite(sL)) {
+        if (this.firstNonFiniteIndex < 0) this.firstNonFiniteIndex = this.sampleCursor + i;
+        this.nonFiniteCount += 1;
+        sL = 0;
+      }
+      if (!Number.isFinite(sR)) {
+        if (this.firstNonFiniteIndex < 0) this.firstNonFiniteIndex = this.sampleCursor + i;
+        this.nonFiniteCount += 1;
+        sR = 0;
+      }
       const p = this.pos;
       // Sliding peak of the window being pushed (O(L); L is 5 ms by default
       // and this stays deterministic across offline and real-time hosts).
@@ -66,10 +86,10 @@ export class LookaheadLimiter {
         if (v < 0) v = -v;
         if (v > peak) peak = v;
       }
-      let v = inL[i];
+      let v = sL;
       if (v < 0) v = -v;
       if (v > peak) peak = v;
-      v = inR[i];
+      v = sR;
       if (v < 0) v = -v;
       if (v > peak) peak = v;
 
@@ -86,10 +106,11 @@ export class LookaheadLimiter {
       // Output the delayed sample; every averaged f value already covers it.
       outL[i] = this.delayL[p] * gain;
       outR[i] = this.delayR[p] * gain;
-      this.delayL[p] = inL[i];
-      this.delayR[p] = inR[i];
+      this.delayL[p] = sL;
+      this.delayR[p] = sR;
       this.pos = (p + 1) % L;
     }
+    this.sampleCursor += inL.length;
   }
 
   stats() {
@@ -97,6 +118,8 @@ export class LookaheadLimiter {
       minGain: this.minGain,
       maxReductionDb: this.minGain < 1 ? 20 * Math.log10(this.minGain) : 0,
       latencyFrames: this.latencyFrames,
+      nonFiniteCount: this.nonFiniteCount,
+      firstNonFiniteIndex: this.firstNonFiniteIndex,
     };
   }
 }

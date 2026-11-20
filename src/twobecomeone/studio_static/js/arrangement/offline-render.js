@@ -1,13 +1,17 @@
 // js/arrangement/offline-render.js — arrangement graph builder + offline bounce.
 //
-// OPERATION THE LIVING DAYLIGHTS GATE 3/5. Builds the mandatory signal flow from a render
-// plan and executes it in an OfflineAudioContext (bounce) or a live
-// AudioContext (real-time proof). ONE builder serves both hosts so their
-// signal flow cannot diverge; the stretch DSP is the vendored Signalsmith
-// module in both, and the limiter is the single limiter-worklet.js.
+// OPERATION THE LIVING DAYLIGHTS GATE 3/5, extended by OPERATION CLOCKWORK (C1).
+// Builds the mandatory signal flow from a render plan and executes it in an
+// OfflineAudioContext (bounce) or a live AudioContext (real-time transport).
+// ONE shared downstream serves both hosts so their signal flow cannot diverge
+// (Milestone C1 GATE 6): the track EQ -> volume/pan/mute-solo -> master -> limiter
+// chain is built ONCE here and reused by the live engine. The stretch DSP is the
+// vendored Signalsmith module in both, and the limiter is the single
+// limiter-worklet.js.
 //
-// Flow per clip: Source Slice -> Stretch/Pitch DSP -> Clip Gain + Micro-Fade
-// -> 3-Band Track EQ -> Track Volume/Pan/Mute-Solo -> Master -> Limiter -> out.
+// Flow per clip: Source Slice -> Stretch/Pitch DSP (or bypass) -> Clip Gain +
+// Micro-Fade -> 3-Band Track EQ -> Track Volume/Pan/Mute-Solo -> Master -> Limiter
+// -> out.
 //
 // Latency: the lookahead limiter delays every sample by its lookahead window.
 // renderOffline renders that much extra and trims it from the head, so the
@@ -16,10 +20,12 @@
 //
 // Nothing here writes to ProjectState; the plan is the only input.
 
+import { clipNeedsDsp } from './time-math.js';
+
 const EQ_LOW_HZ = 250;
 const EQ_MID_HZ = 1000;
 const EQ_HIGH_HZ = 4000;
-/** Instance budget: one stretch WASM instance per rendered clip. */
+/** Instance budget: one stretch WASM instance per rendered clip/voice. */
 export const MAX_CLIPS_PER_GRAPH = 32;
 
 function limiterLookaheadFrames(plan) {
@@ -31,39 +37,26 @@ function limiterLookaheadFrames(plan) {
 export { limiterLookaheadFrames };
 
 /**
+ * Build the SHARED downstream (Milestone C1 GATE 6): the limiter, optional
+ * capture tap, master gain and the eight track chains (EQ -> volume -> pan).
+ * Both the offline bounce and the live engine build voices INTO this backbone,
+ * so gain, EQ, pan, summing and the limiter contracts are identical in both.
+ *
  * @param {BaseAudioContext} ctx OfflineAudioContext or AudioContext
  * @param {object} plan from compileRenderPlan
- * @param {Record<string, {channels: Float32Array[]}>} buffers bufferReference -> PCM at plan.sampleRate
  * @param {{StretchFactory: Function, limiterModuleUrl: string,
- *          captureModuleUrl?: string, capture?: boolean,
- *          startDelaySec?: number, timeOriginSec?: number,
- *          clipFilter?: (clip) => boolean}} options
+ *          captureModuleUrl?: string, capture?: boolean}} options
+ * @returns {Promise<{master, limiter, limiterStats, captureNode, trackInputs,
+ *   limiterLatencyFrames, dispose}>}
  */
-export async function buildArrangementGraph(ctx, plan, buffers, options) {
-  const {
-    StretchFactory,
-    limiterModuleUrl,
-    captureModuleUrl,
-    capture = false,
-    startDelaySec = 0,
-    timeOriginSec = 0,
-    clipFilter = null,
-  } = options;
-
+export async function buildBackbone(ctx, plan, options) {
+  const { limiterModuleUrl, captureModuleUrl, capture = false } = options;
   if (ctx.sampleRate !== plan.sampleRate) {
     throw new Error(
       `context sample rate ${ctx.sampleRate} does not match the plan (${plan.sampleRate}); `
       + 'feeding plan-domain PCM at another rate would change timing and pitch',
     );
   }
-  const clips = plan.clips.filter((c) => !clipFilter || clipFilter(c));
-  if (clips.length > MAX_CLIPS_PER_GRAPH) {
-    throw new Error(
-      `${clips.length} clips would construct ${clips.length} stretch instances; `
-      + `the bounded budget is ${MAX_CLIPS_PER_GRAPH}`,
-    );
-  }
-
   await ctx.audioWorklet.addModule(limiterModuleUrl);
   if (capture) await ctx.audioWorklet.addModule(captureModuleUrl);
 
@@ -82,16 +75,16 @@ export async function buildArrangementGraph(ctx, plan, buffers, options) {
     if (e.data && e.data.type === 'stats') limiterStats.push(e.data);
   };
 
-  let tail = limiter;
+  let tailNode = limiter;
   let captureNode = null;
   if (capture) {
     captureNode = new AudioWorkletNode(ctx, 'pcm-capture', {
       numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
     });
     limiter.connect(captureNode);
-    tail = captureNode;
+    tailNode = captureNode;
   }
-  tail.connect(ctx.destination);
+  tailNode.connect(ctx.destination);
 
   const master = ctx.createGain();
   master.gain.value = plan.master.gainLinear;
@@ -119,9 +112,131 @@ export async function buildArrangementGraph(ctx, plan, buffers, options) {
     panner.pan.value = track.pan;
     low.connect(mid).connect(high).connect(gain).connect(panner).connect(master);
     trackInputs[track.trackIndex] = low;
+    trackInputs[`gain-${track.trackIndex}`] = gain; // for ramped live mute/solo
+    trackInputs[`pan-${track.trackIndex}`] = panner;
   }
 
-  const sr = plan.sampleRate;
+  function dispose() {
+    limiter.disconnect();
+    master.disconnect();
+    captureNode?.disconnect();
+    if (captureNode) captureNode.port.onmessage = null;
+  }
+
+  return {
+    master,
+    limiter,
+    limiterStats,
+    captureNode,
+    tailNode,
+    trackInputs,
+    limiterLatencyFrames: limiterLookaheadFrames(plan),
+    dispose,
+  };
+}
+
+/**
+ * Build one clip's source -> DSP/bypass -> clipGain chain feeding `dest`.
+ * Shared by the offline per-clip build and the live per-occurrence voice so the
+ * bypass decision (clipNeedsDsp) and the clip-gain law are identical.
+ *
+ * `dspBypass` selects whether a no-stretch/no-pitch clip uses a sample-exact
+ * AudioBufferSourceNode (true) or the stretch path (false). The accepted offline
+ * bounce passes dspBypass:false (all-stretch, byte-compatible with the audited
+ * artifact); the live engine passes dspBypass:true to exploit the shared
+ * predicate. clipNeedsDsp is the single decision in both.
+ */
+export async function buildClipVoice(ctx, clip, source, options) {
+  const {
+    StretchFactory, dspBypass = false, startDelaySec = 0, timeOriginSec = 0,
+  } = options;
+  const sr = clip.sampleRate ?? options.sampleRate ?? 48000;
+  const l = source.channels[0].slice(clip.sourceStartFrame, clip.sourceEndFrame);
+  const r = (source.channels[1] ?? source.channels[0]).slice(clip.sourceStartFrame, clip.sourceEndFrame);
+
+  const t0 = clip.timelineStartFrame / sr + startDelaySec + timeOriginSec;
+  const durSec = clip.timelineDurationFrames / sr;
+  const t1 = t0 + durSec;
+
+  // Clip gain + fades: half-open region [t0, t1). Zero from the origin (no
+  // pre-ring before the region), ramps over the fade, exactly zero at the end.
+  const clipGain = ctx.createGain();
+  const lin = clip.clipGainLinear;
+  const fadeInSec = clip.fadeInFrames / sr;
+  const fadeOutSec = clip.fadeOutFrames / sr;
+  clipGain.gain.setValueAtTime(0, 0);
+  if (fadeInSec > 0) {
+    clipGain.gain.setValueAtTime(0, t0);
+    clipGain.gain.linearRampToValueAtTime(lin, t0 + fadeInSec);
+  } else {
+    clipGain.gain.setValueAtTime(lin, t0);
+  }
+  if (fadeOutSec > 0) {
+    let fadeDownStart = t1 - fadeOutSec;
+    const fadeUpEnd = t0 + fadeInSec;
+    if (fadeDownStart < fadeUpEnd) fadeDownStart = fadeUpEnd;
+    clipGain.gain.setValueAtTime(lin, fadeDownStart);
+    clipGain.gain.linearRampToValueAtTime(0, t1);
+  } else {
+    clipGain.gain.setValueAtTime(0, t1);
+  }
+
+  const needsDsp = clipNeedsDsp(clip.rate, clip.pitchSemitones);
+  let head;
+  let stretch = null;
+  if (dspBypass && !needsDsp) {
+    // Bypass: sample-exact AudioBufferSourceNode (no algorithmic latency/priming).
+    const buf = ctx.createBuffer(2, l.length, sr);
+    buf.copyToChannel(l, 0);
+    buf.copyToChannel(r, 1);
+    head = ctx.createBufferSource();
+    head.buffer = buf;
+    head.start(t0, 0);
+  } else {
+    // Stretch/pitch path (the vendored Signalsmith node).
+    stretch = await StretchFactory(ctx, { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+    await stretch.addBuffers([l, r]);
+    stretch.schedule({
+      output: t0,
+      active: true,
+      input: 0,
+      rate: clip.rate,
+      semitones: clip.pitchSemitones,
+      formantCompensation: clip.preserveFormants,
+      formantBaseHz: 0,
+    });
+    head = stretch;
+  }
+  head.connect(clipGain);
+  return { head, stretch, clipGain, needsDsp, t0, t1 };
+}
+
+/**
+ * @param {BaseAudioContext} ctx OfflineAudioContext or AudioContext
+ * @param {object} plan from compileRenderPlan
+ * @param {Record<string, {channels: Float32Array[]}>} buffers bufferReference -> PCM at plan.sampleRate
+ * @param {{StretchFactory: Function, limiterModuleUrl: string,
+ *          captureModuleUrl?: string, capture?: boolean,
+ *          startDelaySec?: number, timeOriginSec?: number,
+ *          clipFilter?: (clip) => boolean, dspBypass?: boolean}} options
+ */
+export async function buildArrangementGraph(ctx, plan, buffers, options) {
+  const {
+    StretchFactory, startDelaySec = 0, timeOriginSec = 0, clipFilter = null,
+    dspBypass = false,
+  } = options;
+
+  const clips = plan.clips.filter((c) => !clipFilter || clipFilter(c));
+  if (clips.length > MAX_CLIPS_PER_GRAPH) {
+    throw new Error(
+      `${clips.length} clips would construct ${clips.length} stretch instances; `
+      + `the bounded budget is ${MAX_CLIPS_PER_GRAPH}`,
+    );
+  }
+
+  const backbone = await buildBackbone(ctx, plan, options);
+  const { trackInputs, limiterLatencyFrames } = backbone;
+
   const stretchNodes = [];
   try {
     for (const clip of clips) {
@@ -136,56 +251,11 @@ export async function buildArrangementGraph(ctx, plan, buffers, options) {
           );
         }
       }
-      // Copied slices: a short slice must not retain (or ship) the full
-      // backing buffer of a long source.
-      const l = source.channels[0].slice(clip.sourceStartFrame, clip.sourceEndFrame);
-      const r = (source.channels[1] ?? source.channels[0]).slice(clip.sourceStartFrame, clip.sourceEndFrame);
-
-      const stretch = await StretchFactory(ctx, {
-        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+      const voice = await buildClipVoice(ctx, { ...clip, sampleRate: plan.sampleRate }, source, {
+        StretchFactory, dspBypass, startDelaySec, timeOriginSec, sampleRate: plan.sampleRate,
       });
-      stretchNodes.push(stretch);
-      await stretch.addBuffers([l, r]);
-
-      const t0 = clip.timelineStartFrame / sr + startDelaySec + timeOriginSec;
-      const durSec = clip.timelineDurationFrames / sr;
-      const t1 = t0 + durSec;
-      stretch.schedule({
-        output: t0,
-        active: true,
-        input: 0,
-        rate: clip.rate,
-        semitones: clip.pitchSemitones,
-        formantCompensation: clip.preserveFormants,
-        formantBaseHz: 0,
-      });
-
-      // Clip gain + fades: half-open region [t0, t1). The gain is zero from
-      // the origin (so no pre-ring can leak before the region), ramps over the
-      // fade, and is exactly zero at the exclusive end (no one-sample overlap
-      // into a neighbour).
-      const clipGain = ctx.createGain();
-      const lin = clip.clipGainLinear;
-      const fadeInSec = clip.fadeInFrames / sr;
-      const fadeOutSec = clip.fadeOutFrames / sr;
-      clipGain.gain.setValueAtTime(0, 0);
-      if (fadeInSec > 0) {
-        clipGain.gain.setValueAtTime(0, t0);
-        clipGain.gain.linearRampToValueAtTime(lin, t0 + fadeInSec);
-      } else {
-        clipGain.gain.setValueAtTime(lin, t0);
-      }
-      if (fadeOutSec > 0) {
-        let fadeDownStart = t1 - fadeOutSec;
-        const fadeUpEnd = t0 + fadeInSec;
-        if (fadeDownStart < fadeUpEnd) fadeDownStart = fadeUpEnd;
-        clipGain.gain.setValueAtTime(lin, fadeDownStart);
-        clipGain.gain.linearRampToValueAtTime(0, t1);
-      } else {
-        clipGain.gain.setValueAtTime(0, t1);
-      }
-
-      stretch.connect(clipGain).connect(trackInputs[clip.trackIndex]);
+      if (voice.stretch) stretchNodes.push(voice.stretch);
+      voice.clipGain.connect(trackInputs[clip.trackIndex]);
     }
   } catch (err) {
     // A partially built graph must not leak instances or buffers.
@@ -193,19 +263,18 @@ export async function buildArrangementGraph(ctx, plan, buffers, options) {
       node.disconnect();
       node.dropBuffers?.();
     }
-    limiter.disconnect();
-    master.disconnect();
-    captureNode?.disconnect();
+    backbone.dispose();
     throw err;
   }
 
   return {
-    master,
-    limiter,
-    limiterStats,
-    captureNode,
+    master: backbone.master,
+    limiter: backbone.limiter,
+    limiterStats: backbone.limiterStats,
+    captureNode: backbone.captureNode,
     stretchNodes,
-    limiterLatencyFrames: limiterLookaheadFrames(plan),
+    trackInputs,
+    limiterLatencyFrames,
   };
 }
 
@@ -227,7 +296,7 @@ function disposeGraph(graph) {
  */
 export async function renderOffline(plan, buffers, options) {
   const frames = plan.output.totalFrames;
-  const latency = Math.max(2, Math.round((plan.limiter.lookaheadMs / 1000) * plan.sampleRate));
+  const latency = limiterLookaheadFrames(plan);
   const ctx = new OfflineAudioContext(plan.output.channels, frames + latency, plan.sampleRate);
   const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
   const graph = await buildArrangementGraph(ctx, plan, buffers, options);
@@ -246,7 +315,7 @@ export async function renderOffline(plan, buffers, options) {
 /**
  * Minimal real-time proof (GATE 5): the same builder on a live AudioContext,
  * captured at the master output. Schedules against the context's own clock
- * (timeOriginSec = ctx.currentTime). Transport/looping stay Milestone C.
+ * (timeOriginSec = ctx.currentTime). Transport/looping live in realtime-engine.js.
  */
 export async function startRealtime(plan, buffers, options) {
   const { ctx, listenSeconds = 4, startDelaySec = 0.25 } = options;

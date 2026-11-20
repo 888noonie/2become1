@@ -90,6 +90,26 @@ export function semitoneFactor(semitones) {
 }
 
 /**
+ * The ONE shared bypass predicate (Milestone C1, GATE 6). A clip needs the
+ * Signalsmith stretch/pitch DSP iff it is time-stretched (source-advance rate
+ * not exactly 1) OR pitch-shifted (semitones not exactly 0). A clip with rate 1
+ * and 0 semitones is a pure playback of its source and BYPASSES the DSP so it
+ * stays sample-exact with no algorithmic latency or priming.
+ *
+ * This predicate and its semantics are used identically by the offline bounce
+ * and real-time playback (both route through buildArrangementGraph); there is
+ * deliberately no second implementation. Waveform equality is claimed only for
+ * bypass clips (<= 1e-6). Stretched clips are judged by onset timing and
+ * envelope tolerances, never by waveform equality (the phase vocoder's analysis
+ * grid is anchored to processor state, not content).
+ */
+export function clipNeedsDsp(rate, pitchSemitones) {
+  // Exact comparisons: rate 1 and 0 semitones are the only bypass cases. Any
+  // other rate (including 0.9999) or any pitch keeps the clip in the DSP path.
+  return !(rate === 1 && pitchSemitones === 0);
+}
+
+/**
  * Clamp the default micro-fade pair for a clip of `durationBeats`.
  * Short clips get proportionally shorter fades so fade-in + fade-out never
  * exceeds the clip. Deterministic and side-effect free.
