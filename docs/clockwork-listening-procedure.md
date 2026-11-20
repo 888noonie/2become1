@@ -64,7 +64,7 @@ Then open **http://127.0.0.1:8777/tools/clockwork-audition/** in your browser.
 | **Stop (Esc)** button / **Esc** key | fades out over 10 ms and returns to the cue; works from anywhere on the page, including while preparing |
 | **Space** | Play ⇄ Stop, exactly one action per press (it never also clicks a focused button) |
 | **Jump to 2 s / Jump to 6 s** | seek: two-voice handover at the new position, about 115 ms after the press |
-| **Loop 2 s–4 s** | loop on/off; while playing, the change is a seamless handover |
+| **Loop 2 s–4 s** | loop on/off, before or during playback. While it is on, Play or a Jump from outside 2–4 s starts at 2 s (the page lists a `LOOP_ENTRY` notice); from inside, playback starts where it is. Switching it off continues forward and stops at the 8 s end |
 | **Monitor level** | −48 … −6 dB, applied as a 50 ms ramp |
 | **Release audio device** | closes the audio context entirely (closing the tab does the same) |
 | State line | phase (`audio off` / `preparing` / `starting` / `playing` / `seeking` / `stopping` / `stopped` / `failed`), position, loop |
@@ -88,10 +88,12 @@ no shell command that stops browser audio; the earlier `pkill` advice was wrong.
 | 2 | **Esc** after a few seconds | a clean fade to silence; the state reads `stopped` |
 | 3 | **Space** (play), then **Space** (stop) | a clean restart from the cue, then a clean stop |
 | 4 | **Play**, then **Jump to 6 s** while the pad sustains | the old audio is gone within ~5 ms of the handover, with no doubled audio, click or gap |
-| 5 | **Jump to 2 s**, then **Loop 2 s–4 s** | the loop repeats at 4 s → 2 s; the drum hit at the seam lands on time; the pad does not dip or click |
-| 6 | Let the loop run several passes | no drift, no stutter, no repeated stale audio |
-| 7 | **Esc** | silence |
-| 8 | **Release audio device** | the device is released |
+| 5 | **Loop 2 s–4 s** (it turns on wherever you are) | playback moves to 2 s within ~0.1 s, then repeats 4 s → 2 s; Position stays between 2.00 and 4.00 |
+| 6 | Let the loop run at least 5 passes (≥ 10 s, past the 8 s end) | it does not stop; the drum hit at each seam lands on time; the pad does not dip, click or double; no stale audio |
+| 7 | **Jump to 6 s** while looping | it stays in the loop (re-enters at 2 s) |
+| 8 | **Esc**, then **Play** (loop still on) | silence; then playback starts at 2 s and loops again |
+| 9 | **Loop 2 s–4 s** off while playing | playback carries on forward past 4 s and stops by itself at 8 s |
+| 10 | **Release audio device** | the device is released |
 
 Stop at any time if anything is too loud or wrong.
 
@@ -99,7 +101,7 @@ Stop at any time if anything is too loud or wrong.
 
 This *reads* your sink's monitor and writes one WAV under `~/.local/state`. It
 changes no audio configuration. Run it in a second terminal **before step 1**,
-and press `Ctrl-C` after step 8:
+and press `Ctrl-C` after step 10:
 
 ```bash
 pw-record --target alsa_output.pci-0000_35_00.6.HiFi__Headphones__sink.monitor --rate 48000 --channels 2 ~/.local/state/clockwork/audition-loopback.wav
@@ -120,6 +122,15 @@ Until then the C1 transport is **not** accepted by ear, and no "click-free" or
 ---
 
 ## 7. What has been verified without your speakers (so you know what is new)
+
+- **Loop repair (THE BROKEN RECORD).** Your verdict on `1fb993f` was: Play,
+  Stop and Seek work; Loop 2–4 s does not. Cause: a loop only took effect when
+  playback started before 4 s, so from 6 s it ran to the 8 s end and stopped;
+  and a Loop pressed before the first Play never reached the engine. Both are
+  fixed and covered by tests that fail on `1fb993f`. Real Chromium (output
+  disabled): the page loops 2–4 s with 3 wraps in 7 s past the 8 s end, no
+  deadline miss; offline PCM from outside the loop equals the ideal loop to
+  1.3e-7 with every seam transient on its exact frame.
 
 - Engine-level tests on the actual `RealtimeEngine` (simulated device clock):
   Stop completes and parks once; seek handovers leave no old audio; loop seams are

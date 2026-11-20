@@ -399,3 +399,69 @@ to 1,097,975 bytes / 90 files at `06331d1` (+38,168 B, +3.6%; `c44a8de` was 1,09
 5. `resume()` after `pause()`.
 6. Moving the bounce to `bypass-unity` after sign-off, with a new artifact baseline.
 7. A preset sweep for Signalsmith qualification.
+
+---
+
+## 14. Addendum — OPERATION CLOCKWORK: THE BROKEN RECORD (loop repair)
+
+**PM audible verdict on `1fb993f`:** Play, Stop and Seek work; Loop 2–4 s does
+not. The page showed `stopped · 6.00 s · loop 2–4 s on · voices 0/28 · peak 8 ·
+misses 0`.
+
+**Root cause (two defects, both reproduced before fixing):**
+
+1. `createTransportMap` only builds a loop when the start frame is before the
+   loop end (`s0 < loop[1]`). The engine passed the requested position through
+   unchanged, so Play, Seek or a live Loop switch from at or past 4 s (the page's
+   Jump to 6 s, or simply pressing Loop after 4 s) built a map with **no loop**:
+   it played to the 8 s arrangement end and stopped at the 6 s cue, exactly the
+   PM's display. A start before 2 s did reach the loop, but via an unasked-for
+   lead-in.
+2. The audition page kept `loopOn` in its own state. A Loop pressed while audio
+   was off (before the first Play, or after Release) was shown as on but never
+   given to the engine created at Play.
+
+**Correction (minimal):** `RealtimeEngine.#loopEntry` — with a loop set, a Play,
+Seek or live loop-change position outside `[a, b)` enters at `a`; a position
+inside is kept. The move is reported as a `LOOP_ENTRY` notice (`onNotice`) only
+after admission succeeds, and counted in `diagnostics().loopEntries`. The page
+applies its loop to a newly prepared engine (and turns the button off if the
+engine refuses it) and lists notices. No change to TransportMap, the voice
+scheduler, gate envelopes, Signalsmith arming or the pool.
+
+**Regressions** (`tests/frontend/arrangement/realtime-engine-live.test.js`,
+`BROKEN RECORD:` tests; `tests/frontend/clockwork-audition.test.js`): on
+`1fb993f` five fail — loop from 6 s, loop from 0 s, loop switched on past 4 s,
+Seek to 6 s while looping, and the page's Loop-before-Play — and the in-range
+cases pass, matching the verdict. After the fix all pass. Each loop test drives
+the actual engine for 12 s of device clock (past the 8 s end): at least four
+4→2 s wraps, heard position always in `[2 s, 4 s)`, per-track gate sum ≤ 1 (no
+doubled audio), no deadline miss, Stop completes with 0 processors and 0 slots,
+forward-only voice lifecycles. Also covered: Play inside the loop keeps the
+position; loop-off continues forward (strictly increasing) past 4 s and stops at
+the end; a loop shorter than the horizon is refused; pool exhaustion at a loop
+handover refuses without touching current audio. Two earlier tests that started
+before the loop were moved inside it (their lead-in is no longer the behaviour).
+
+**Real Chromium** (`run.mjs`, output disabled and muted, PipeWire stream count
+never rose above its baseline):
+- offline PCM, Play from 5 s with loop [1 s, 2 s): equals the ideal loop from
+  1 s — interior error 1.5e-8, seams 1.3e-7, all 4 seam transients on their
+  exact frame, still playing; the inside-start N6 check is unchanged (1.07e-7);
+- page: Loop switched on at ~6.5 s → 3 wraps in 7 s of real clock, heard
+  position always in 2–4 s, still playing after the 8 s end, Jump to 6 s
+  re-enters the loop, 0 deadline misses, **high-water 8 connected processors /
+  8 pool slots (capacity 28)**, back to 0/0 after Stop;
+- live:audition and live:worst: unchanged PASS (min supplied Signalsmith lead
+  84.7–89.4 ms, 0 misses); seek/stop/non-finite and the bounce (≤ 1 ULP of C1)
+  unchanged.
+
+`npm test`: 785 tests, 784 pass, 0 fail, 1 pre-existing skip. Python untouched
+(not re-run). Static assets: 1,097,975 → 1,099,378 B (+1,403 B, the loop-entry
+rule and its notice), 90 files.
+
+**Remaining audible limitations:** the loop-entry jump (e.g. from 6 s to 2 s) is
+a seek handover, so it carries the documented ~2 dB dip of the 5 ms crossfade on
+unrelated material; the playhead shows the target during the ~104 ms handover
+lead; Stop returns to the cue (2 s after a Play that entered the loop). The
+loop seams themselves remain complementary (sum exactly 1). Not verified by ear.

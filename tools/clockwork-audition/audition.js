@@ -38,6 +38,7 @@ export function mountAudition(root, deps) {
   const setT = deps.setTimeout ?? ((f, ms) => globalThis.setTimeout(f, ms));
   const clearT = deps.clearTimeout ?? ((id) => globalThis.clearTimeout(id));
   const SR = 48000;
+  const LOOP_RANGE = [2 * SR, 4 * SR];
 
   const el = (tag, attrs = {}, text = '') => {
     const n = doc.createElement(tag);
@@ -158,9 +159,16 @@ export function mountAudition(root, deps) {
       onFail: (e) => { report('error', e.code, e.message); render(); },
       onWarn: (e) => { report('warning', e.code, e.message); render(); },
       onCapacityError: (e) => { report('refused', e.code, e.message); render(); },
+      onNotice: (e) => { report('notice', e.code, e.message); render(); },
       ...(deps.engineOptions ?? {}),
     });
     await engine.prepare();
+    // THE BROKEN RECORD: a Loop pressed while audio was off (or before a
+    // Release) must reach the engine, or the page shows a loop nobody plays.
+    if (state.loopOn) {
+      engine.setLoop(LOOP_RANGE);
+      if (!engine.state().loop) setLoopUi(false); // refused: the reason is in the list
+    }
     state.engine = engine;
     return engine;
   }
@@ -226,16 +234,19 @@ export function mountAudition(root, deps) {
   stopBtn.addEventListener('click', () => stop());
   seekA.addEventListener('click', () => { state.engine?.seek(2 * SR); render(); });
   seekB.addEventListener('click', () => { state.engine?.seek(6 * SR); render(); });
-  loopBtn.addEventListener('click', () => {
-    const on = !state.loopOn;
-    if (state.engine) {
-      state.engine.setLoop(on ? [2 * SR, 4 * SR] : null);
-      // Reflect the ENGINE's loop, so a refused change (either way) is never shown as done.
-      if (!!state.engine.state().loop !== on) return render(); // refused; the reason is in the error list
-    }
+  function setLoopUi(on) {
     state.loopOn = on;
     loopBtn.setAttribute('aria-pressed', String(on));
     loopBtn.textContent = `Loop 2 s–4 s: ${on ? 'on' : 'off'}`;
+  }
+  loopBtn.addEventListener('click', () => {
+    const on = !state.loopOn;
+    if (state.engine) {
+      state.engine.setLoop(on ? LOOP_RANGE : null);
+      // Reflect the ENGINE's loop, so a refused change (either way) is never shown as done.
+      if (!!state.engine.state().loop !== on) return render(); // refused; the reason is in the error list
+    }
+    setLoopUi(on);
     render();
   });
   level.addEventListener('input', () => applyLevel(Number(level.value)));

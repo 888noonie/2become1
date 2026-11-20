@@ -153,6 +153,24 @@ async function runPage(browser, port) {
     await page.waitForTimeout(500);
     const mid = await page.evaluate(() => { const d = window.__audition.state.engine.diagnostics(); return { phase: d.state.phase, loop: d.state.loop, misses: d.deadlineMisses, lead: d.timing.suppliedDspLeadMs, starts: d.startDelaysMs }; });
     check('page: Space -> playing; seek and loop keep playing with no deadline miss', mid.phase === 'playing' && mid.misses === 0 && mid.loop, mid);
+    // THE BROKEN RECORD: Loop was switched on at ~6.5 s (outside 2-4 s). Sample
+    // the heard position for 7 s of real clock: it must stay in [2 s, 4 s),
+    // wrap repeatedly and outlive the 8 s arrangement end.
+    const trace = [];
+    for (let i = 0; i < 70; i += 1) {
+      trace.push(await page.evaluate(() => { const e = window.__audition.state.engine; return { f: e.playhead(), phase: e.state().phase, live: e.pool.stats().live, conn: e.diagnostics().connectedProcessors }; }));
+      await page.waitForTimeout(100);
+    }
+    const inLoop = trace.filter((x) => x.phase === 'playing');
+    const wraps = trace.filter((x, i) => i && x.f < trace[i - 1].f).length;
+    const loopDiag = await page.evaluate(() => { const d = window.__audition.state.engine.diagnostics(); return { misses: d.deadlineMisses, loopEntries: d.loopEntries, peakConnected: d.peakConnected, poolPeak: d.pool.peakConcurrent }; });
+    check('page: loop 2-4 s repeats (>=3 wraps in 7 s), stays in range, outlives the arrangement end',
+      trace.at(-1).phase === 'playing' && wraps >= 3 && inLoop.every((x) => x.f >= 96000 && x.f < 192000) && loopDiag.misses === 0,
+      { wraps, samples: trace.length, maxLive: Math.max(...trace.map((x) => x.live)), maxConnected: Math.max(...trace.map((x) => x.conn)), ...loopDiag });
+    await page.click('button[aria-label="Jump to 6 s"]');
+    await page.waitForTimeout(1500);
+    const afterSeek = await page.evaluate(() => { const e = window.__audition.state.engine; return { f: e.playhead(), phase: e.state().phase }; });
+    check('page: Jump to 6 s while looping re-enters the loop', afterSeek.phase === 'playing' && afterSeek.f >= 96000 && afterSeek.f < 192000, afterSeek);
     await page.keyboard.press('Space');
     await waitPhase('stopped');
     const end = await page.evaluate(() => { const d = window.__audition.state.engine.diagnostics(); return { connected: d.connectedProcessors, live: d.pool.live, errors: [...document.querySelectorAll('.errors li')].map((li) => li.textContent) }; });

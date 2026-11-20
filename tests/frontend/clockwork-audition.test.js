@@ -195,3 +195,21 @@ test('N3: a Play after Stop disarms that Stop\'s watchdog (it never suspends the
   assert.doesNotMatch(api.elements.errList.textContent, /STOP_WATCHDOG/);
   api.unmount(); teardownDom(dom);
 });
+
+test('BROKEN RECORD: Loop pressed before the first Play reaches the engine, and Play from 6 s loops 2–4 s', async () => {
+  const { api, dom } = mount();
+  api.elements.loopBtn.click(); // audio off: no engine yet
+  api.elements.playBtn.click();
+  await api.state.preparing; await flush(); await api.state.engine.settle();
+  assert.deepEqual(api.state.engine.state().loop, [2 * 48000, 4 * 48000], 'the engine has the loop the page shows');
+  await advance(api, 3);
+  api.elements.seekB.click(); // Jump to 6 s while looping
+  await advance(api, 9);
+  assert.equal(phase(api), 'playing', 'still playing past the 8 s arrangement end');
+  const f = api.state.engine.playhead();
+  assert.ok(f >= 2 * 48000 && f < 4 * 48000, `heard position inside the loop (${f})`);
+  key('Escape');
+  await advance(api, 0.3);
+  assert.equal(phase(api), 'stopped');
+  api.unmount(); teardownDom(dom);
+});

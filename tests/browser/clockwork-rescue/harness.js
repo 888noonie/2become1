@@ -168,8 +168,8 @@ async function stopScenario(engineUrl) {
   };
 }
 
-async function loopScenario() {
-  // Loop [1 s, 2 s) from 0.5 s: phase-continuous pad + beat-periodic drums, so
+async function loopScenario(requested = Math.round(1.5 * SR)) {
+  // Loop [1 s, 2 s) from 1.5 s (inside the loop; a start outside it enters at 1 s): phase-continuous pad + beat-periodic drums, so
   // the ideal looped output is known sample-for-sample.
   const seconds = 4.6;
   const plan = flatPlan([
@@ -179,17 +179,17 @@ async function loopScenario() {
   const padSrc = fx.pad(6.5); const drumSrc = fx.drums(6.5);
   const r = await renderEngine({
     plan, buffers: { pad: padSrc, drums: drumSrc }, seconds,
-    actions: [{ at: 0, run: (e) => { e.setLoop([SR, 2 * SR]); e.play(Math.round(0.5 * SR)); } }],
+    actions: [{ at: 0, run: (e) => { e.setLoop([SR, 2 * SR]); e.play(requested); } }],
   });
   const origin = 0.104;
   const o = Math.round(origin * SR);
-  const a = SR; const b = 2 * SR; const start = Math.round(0.5 * SR);
+  const a = SR; const b = 2 * SR; const start = requested >= SR && requested < 2 * SR ? requested : SR; // outside the loop enters at a
   const ideal = (d) => {
     const f = d < b - start ? start + d : a + ((d - (b - start)) % (b - a));
     return padSrc.channels[0][f] + drumSrc.channels[0][f];
   };
   const seams = [];
-  for (let p = 0; p < 3; p += 1) seams.push((b - start) + p * (b - a));
+  for (let p = 0; p < 4; p += 1) seams.push((b - start) + p * (b - a));
   let maxSeamErr = 0; let maxInteriorErr = 0;
   for (let d = 2000; d < Math.round((seconds - 0.2) * SR) - o; d += 1) {
     const err = Math.abs(r.out[o + d + latency] - ideal(d));
@@ -245,6 +245,12 @@ async function offline() {
   check('N6 loop: seam windows equal the ideal (complementary handover, <= 1e-4)', lp.maxSeamErr <= 1e-4, lp);
   check('N6 loop: each pass transient lands on its exact frame (0 frames)', lp.onsetErr.every((e) => e === 0), lp);
   check('N6 loop: no deadline miss, still playing', lp.misses === 0 && lp.final === 'playing', lp);
+  // THE BROKEN RECORD (PM verdict on 1fb993f): Play from OUTSIDE the loop (the
+  // page's 6 s) must play the loop, not run on to the arrangement end.
+  const lpOut = await loopScenario(Math.round(5 * SR));
+  report.measurements.loopFromOutside = lpOut;
+  check('BROKEN RECORD loop from outside (5 s): output equals the ideal loop from its start (<= 1e-5 interior, 1e-4 seams)', lpOut.maxInteriorErr <= 1e-5 && lpOut.maxSeamErr <= 1e-4, lpOut);
+  check('BROKEN RECORD loop from outside: transients exact, still playing after 4 passes, no miss', lpOut.onsetErr.every((e) => e === 0) && lpOut.final === 'playing' && lpOut.misses === 0, lpOut);
 
   const nf = await nonFiniteScenario();
   report.measurements.nonFinite = nf;

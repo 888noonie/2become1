@@ -396,7 +396,7 @@ test('N6: loop wraps hand over with complementary seam envelopes on the exact lo
     planClip({ clipId: 'hits', trackIndex: 1, start: 0, length: 6 * SR, rate: 1.2 }),
   ] });
   engine.setLoop([a, b]);
-  engine.play(Math.round(0.5 * SR));
+  engine.play(Math.round(1.5 * SR)); // inside the loop (a start outside it now enters at a)
   const seen = new Map();
   await advance(ctx, engine, 4.5, 0.025, () => {
     for (const v of engine.voices.values()) if (v.armed) seen.set(v.key, v);
@@ -405,8 +405,8 @@ test('N6: loop wraps hand over with complementary seam envelopes on the exact lo
   const half = LOOP_XFADE_FRAMES / 2;
   for (const clipId of ['pad', 'hits']) {
     const passes = [...seen.values()].filter((v) => v.clipId === clipId).sort((x, y) => x.pass - y.pass);
-    assert.deepEqual(passes.map((v) => v.pass), [0, 1, 2, 3, 4], `${clipId}: every pass exactly once`);
-    assert.equal(passes[0].occ.outStart, Math.round(0.5 * SR));
+    assert.deepEqual(passes.map((v) => v.pass), [0, 1, 2, 3, 4, 5], `${clipId}: every pass exactly once`);
+    assert.equal(passes[0].occ.outStart, Math.round(1.5 * SR));
     for (let p = 1; p < passes.length; p += 1) {
       const out = passes[p - 1]; const inc = passes[p];
       assert.equal(inc.occ.outStart, a, 'each repeat starts at the loop start sample');
@@ -727,9 +727,9 @@ test('review 3: 8 tracks — a seek 50 ms before a loop seam is accepted', async
   const clips = Array.from({ length: 8 }, (_, i) => planClip({ clipId: `c${i}`, trackIndex: i, start: 0, length: 20 * SR }));
   const { ctx, engine, log } = await makeEngine({ clips });
   engine.setLoop([SR, 4 * SR]);
-  engine.play();
+  engine.play(); // from 0 s: enters the loop at 1 s (BROKEN RECORD loop-entry rule)
   await engine.settle();
-  await advance(ctx, engine, engine.active.originSec + 4.0 - 0.05);
+  await advance(ctx, engine, engine.active.originSec + 3.0 - 0.05); // heard 3.95 s: 50 ms before the seam
   engine.seek(2 * SR);
   await engine.settle();
   assert.deepEqual(log.capacity, [], 'no refusal');
@@ -741,9 +741,9 @@ test('review 3 (documented limit): two retargets within ~25 ms next to a seam on
   const clips = Array.from({ length: 8 }, (_, i) => planClip({ clipId: `c${i}`, trackIndex: i, start: 0, length: 20 * SR }));
   const { ctx, engine, log } = await makeEngine({ clips });
   engine.setLoop([SR, 4 * SR]);
-  engine.play();
+  engine.play(); // from 0 s: enters the loop at 1 s (BROKEN RECORD loop-entry rule)
   await engine.settle();
-  await advance(ctx, engine, engine.active.originSec + 4.0 - 0.05);
+  await advance(ctx, engine, engine.active.originSec + 3.0 - 0.05); // heard 3.95 s: 50 ms before the seam
   engine.seek(2 * SR);
   await flush();
   const epoch = engine.state().epoch;
@@ -767,4 +767,113 @@ test('review 4: a seam extension that reaches the clip start keeps the clip fade
   const g = (t) => gateAt(inc, t) * inc.clipGain.gain.valueAt(t);
   assert.ok(g(inc.t0 + 1 / SR) < 0.01, `onset is faded, not hard (${g(inc.t0 + 1 / SR)})`);
   engine.dispose();
+});
+
+// ------------------------------------------------- THE BROKEN RECORD (loop)
+//
+// PM audible verdict on 1fb993f: Play/Stop/Seek work, Loop 2–4 s does not. The
+// page showed "stopped · 6.00 s · loop 2–4 s on": Play from 6 s (outside the
+// loop) built a map with no loop at all, ran to the 8 s arrangement end and
+// stopped. These tests drive the ACTUAL engine over many wraps.
+
+const LA = 2 * SR; const LB = 4 * SR;
+const loopClips = () => [
+  planClip({ clipId: 'pad', trackIndex: 0, start: 0, length: 8 * SR }),
+  planClip({ clipId: 'drm', trackIndex: 1, start: 0, length: 8 * SR }),
+  planClip({ clipId: 'arp', trackIndex: 3, start: 0, length: 8 * SR, rate: 1.2 }),
+];
+
+/** Run to `toSec`, recording the heard frame each wake and the max per-track gate sum. */
+async function runLoop(ctx, engine, toSec) {
+  const heard = []; let maxSum = 0; let peakVoices = 0;
+  await advance(ctx, engine, toSec, 0.025, () => {
+    heard.push({ t: ctx.currentTime, f: engine.playhead(), phase: engine.state().phase });
+    for (const tr of [0, 1, 3]) maxSum = Math.max(maxSum, trackSum(engine, ctx.currentTime, tr));
+    peakVoices = Math.max(peakVoices, engine.pool.stats().live);
+  });
+  return { heard, maxSum, peakVoices };
+}
+const wrapsIn = (heard) => heard.filter((h, i) => i && h.f < heard[i - 1].f).length;
+
+for (const [label, setup] of [
+  ['loop enabled while stopped at 6 s (outside), then Play', async (e) => { e.seek(6 * SR); e.setLoop([LA, LB]); e.play(); }],
+  ['loop enabled while stopped at 2 s, then Play', async (e) => { e.seek(LA); e.setLoop([LA, LB]); e.play(); }],
+  ['Play inside the loop at 3 s', async (e) => { e.setLoop([LA, LB]); e.play(3 * SR); }],
+  ['loop enabled while stopped at 0 s (before the loop), then Play', async (e) => { e.setLoop([LA, LB]); e.play(); }],
+]) {
+  test(`BROKEN RECORD: ${label} — wraps 4→2 s repeatedly, never stops at the arrangement end`, async () => {
+    const { ctx, engine, log } = await makeEngine({ clips: loopClips(), capacity: 28 });
+    await setup(engine);
+    const startFrame = engine.active?.startFrame;
+    assert.ok(startFrame >= LA && startFrame < LB, `playback starts inside the loop (got ${startFrame})`);
+    const { heard, maxSum, peakVoices } = await runLoop(ctx, engine, 12);
+    const playing = heard.filter((h) => h.phase === 'playing');
+    assert.equal(heard.at(-1).phase, 'playing', 'still playing after 12 s (past the 8 s arrangement end)');
+    for (const h of playing) assert.ok(h.f >= LA && h.f < LB, `heard ${h.f} inside [2 s, 4 s)`);
+    assert.ok(wrapsIn(heard) >= 4, `at least four 4→2 s wraps (${wrapsIn(heard)})`);
+    assert.ok(maxSum <= 1 + 1e-6, `no doubled audio (max gate sum ${maxSum})`);
+    assert.ok(peakVoices <= 28, `bounded voices (${peakVoices})`);
+    assert.equal(log.fail.length, 0);
+    assert.equal(engine.diagnostics().deadlineMisses, 0);
+    engine.stop();
+    await advance(ctx, engine, 12.3);
+    assert.equal(engine.state().phase, 'stopped', 'Stop during looping completes');
+    assert.equal(ctx.connectedProcessors(), 0);
+    assert.equal(engine.pool.stats().live, 0);
+    assertLifecycleHistories(engine);
+    engine.dispose();
+  });
+}
+
+test('BROKEN RECORD: loop enabled during playback past 4 s re-enters at 2 s; disabling resumes forward play', async () => {
+  const { ctx, engine } = await makeEngine({ clips: loopClips(), capacity: 28 });
+  engine.play(5 * SR);
+  await advance(ctx, engine, 0.4);
+  engine.setLoop([LA, LB]);
+  const r = await runLoop(ctx, engine, 6.5);
+  const late = r.heard.filter((h) => h.t > 0.75 && h.phase === 'playing');
+  assert.ok(late.length && late.every((h) => h.f >= LA && h.f < LB), 'heard position follows the loop');
+  assert.ok(wrapsIn(r.heard) >= 2, `wraps (${wrapsIn(r.heard)})`);
+  assert.ok(r.maxSum <= 1 + 1e-6, `no doubled audio across the loop-entry handover (${r.maxSum})`);
+  // Disable: forward playback from the heard position, then the arrangement end.
+  engine.setLoop(null); // handover at the position heard at now + lead (may already have wrapped)
+  const off = await runLoop(ctx, engine, 6.5 + 2.5);
+  const fwd = off.heard.filter((h) => h.phase === 'playing');
+  for (let i = 1; i < fwd.length; i += 1) assert.ok(fwd[i].f > fwd[i - 1].f, 'strictly forward after disabling (no wrap)');
+  assert.ok(fwd.at(-1).f >= LB, `plays on past the old loop end (${fwd.at(-1).f})`);
+  assert.ok(off.maxSum <= 1 + 1e-6, `no doubled audio on loop-off (${off.maxSum})`);
+  await advance(ctx, engine, 8 + 7);
+  assert.equal(engine.state().phase, 'stopped', 'without the loop the arrangement end stops');
+  assert.equal(ctx.connectedProcessors(), 0);
+  engine.dispose();
+});
+
+test('BROKEN RECORD: Seek to 6 s while looping stays in the loop (re-enters at 2 s)', async () => {
+  const { ctx, engine } = await makeEngine({ clips: loopClips(), capacity: 28 });
+  engine.setLoop([LA, LB]);
+  engine.play();
+  await advance(ctx, engine, 2.5);
+  engine.seek(6 * SR);
+  const r = await runLoop(ctx, engine, 9);
+  assert.equal(engine.state().phase, 'playing');
+  const late = r.heard.filter((h) => h.t > 2.8 && h.phase === 'playing');
+  assert.ok(late.every((h) => h.f >= LA && h.f < LB), 'seek target outside the loop enters the loop');
+  assert.ok(wrapsIn(r.heard) >= 3);
+  assert.ok(r.maxSum <= 1 + 1e-6);
+  engine.dispose();
+});
+
+test('BROKEN RECORD: a loop shorter than the scheduling horizon is refused; pool exhaustion at a loop handover refuses safely', async () => {
+  const { ctx, engine, log } = await makeEngine({ clips: loopClips(), capacity: 28 });
+  engine.setLoop([LA, LA + Math.round(0.05 * SR)]);
+  assert.equal(log.capacity.at(-1).code, 'LOOP_TOO_SHORT');
+  assert.equal(engine.state().loop, null);
+  const small = await makeEngine({ clips: loopClips(), capacity: 3 });
+  small.engine.play(5 * SR);
+  await advance(small.ctx, small.engine, 0.4);
+  small.engine.setLoop([LA, LB]);
+  assert.equal(small.log.capacity.at(-1).code, 'POOL_EXHAUSTED');
+  assert.equal(small.engine.state().loop, null, 'refused loop is not shown as on');
+  assert.equal(small.engine.state().phase, 'playing', 'current audio untouched');
+  engine.dispose(); small.engine.dispose();
 });

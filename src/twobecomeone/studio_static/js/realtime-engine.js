@@ -180,6 +180,7 @@ export class RealtimeEngine {
     this._disposed = false;
 
     this.deadlineMisses = 0;
+    this.loopEntries = 0;
     this.lateVoices = [];
     this.startDelays = [];
     this.clockCatchUpMaxSec = 0;
@@ -310,9 +311,11 @@ export class RealtimeEngine {
     }
     const p = this.transport.phase;
     if (p !== Phase.STOPPED && p !== Phase.STOPPING) return this.#reduce({ type: 'play', fromFrame });
-    const startFrame = Number.isFinite(fromFrame) ? Math.max(0, Math.round(fromFrame)) : this.transport.cueFrame;
+    const requested = Number.isFinite(fromFrame) ? Math.max(0, Math.round(fromFrame)) : this.transport.cueFrame;
+    const startFrame = this.#loopEntry(requested, this.transport.loop);
     const refusal = this.#admissionCheck(startFrame, this.transport.loop);
     if (refusal) return this.#refuse(refusal);
+    this.#noteLoopEntry(requested, startFrame, this.transport.loop);
     this.#reduce({ type: 'play', fromFrame: startFrame });
     this.#kick();
     return this.transport;
@@ -335,11 +338,13 @@ export class RealtimeEngine {
   /** Seek: while stopped moves the cue; while playing, a two-voice handover. */
   seek(frame) {
     if (!Number.isFinite(frame)) return this.transport;
-    const target = Math.max(0, Math.round(frame));
+    const requested = Math.max(0, Math.round(frame));
+    const target = this.#loopEntry(requested, this.transport.loop);
     if (ACTIVE_PHASES.has(this.transport.phase)) {
       const refusal = this.#admissionCheck(target, this.transport.loop);
       if (refusal) return this.#refuse(refusal);
     }
+    this.#noteLoopEntry(requested, target, this.transport.loop);
     this.#reduce({ type: 'seek', frame: target });
     this.#kick();
     return this.transport;
@@ -361,9 +366,11 @@ export class RealtimeEngine {
     const playing = ACTIVE_PHASES.has(this.transport.phase) && this.active;
     let seam = null;
     if (playing) {
-      seam = this.#frameAtCtx(this.ctx.currentTime + this.startLeadFrames / this.sr);
+      const heard = this.#frameAtCtx(this.ctx.currentTime + this.startLeadFrames / this.sr);
+      seam = this.#loopEntry(heard, loop);
       const refusal = this.#admissionCheck(seam, loop);
       if (refusal) return this.#refuse(refusal);
+      this.#noteLoopEntry(heard, seam, loop);
     }
     this.#reduce({ type: 'setLoop', loop });
     if (playing) {
@@ -380,6 +387,28 @@ export class RealtimeEngine {
   seekDone() { return this.#reduce({ type: 'seekDone' }); }
 
   stopped(parkedFrame) { return this.#reduce({ type: 'stopped', parkedFrame }); }
+
+  /**
+   * Loop entry (THE BROKEN RECORD). A TransportMap built from a frame at or past
+   * the loop end has no loop at all, so Play / Seek / a live loop change from
+   * outside [a, b) used to run on to the arrangement end and stop. With a loop
+   * set, a position outside it enters the loop at its start; a position inside
+   * it is kept. Reported as a notice, never silently.
+   */
+  #loopEntry(frame, loop) {
+    return !loop || (frame >= loop[0] && frame < loop[1]) ? frame : loop[0];
+  }
+
+  /** Report an accepted loop entry (called only once the move is admitted). */
+  #noteLoopEntry(from, to, loop) {
+    if (from === to) return;
+    this.#log('loopEntry', { from, to });
+    this.loopEntries += 1;
+    this.options.onNotice?.({
+      code: 'LOOP_ENTRY',
+      message: `${(from / this.sr).toFixed(2)} s is outside the loop ${(loop[0] / this.sr).toFixed(2)}–${(loop[1] / this.sr).toFixed(2)} s; playing from ${(to / this.sr).toFixed(2)} s`,
+    });
+  }
 
   #refuse({ code, message }) {
     this.#log('refused', { code });
@@ -1122,6 +1151,7 @@ export class RealtimeEngine {
         suppliedBypassLeadMs: byp.length ? { min: Math.min(...byp), max: Math.max(...byp), count: byp.length } : null,
       },
       deadlineMisses: this.deadlineMisses,
+      loopEntries: this.loopEntries,
       lateVoices: this.lateVoices.slice(-16),
       stretchWarmupMs: this.warmupMs ?? null,
       startDelaysMs: this.startDelays.slice(-16),
