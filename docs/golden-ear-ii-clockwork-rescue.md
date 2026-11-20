@@ -345,14 +345,14 @@ scripts and the full suites (§12). A second independent pass has not been run.
 ## 11. Static assets
 
 `src/twobecomeone/studio_static` went from 1,059,807 bytes / 90 files (`ec74085`)
-to 1,095,661 bytes / 90 files (+35,854 B, +3.4%).
+to 1,097,975 bytes / 90 files at `06331d1` (+38,168 B, +3.6%; `c44a8de` was 1,095,661).
 
-- **Growth** is almost all `js/realtime-engine.js`, now 50,375 B. It is the rewrite
+- **Growth** is almost all `js/realtime-engine.js`, now 52,689 B. It is the rewrite
   with its ledger, handover, re-anchor and diagnostics code, plus
   `voice-pool.js`, `offline-render.js` and `time-math.js`.
 - **Largest files:** `vendor/signalsmith-stretch/SignalsmithStretch.mjs` 113,867 B;
   `js/components/stem-desk-panel.js` 59,185 B; `js/runtime/ghost-controller.js`
-  55,945 B; `js/realtime-engine.js` 50,375 B.
+  55,945 B; `js/realtime-engine.js` 52,689 B.
 - **Audition tool:** 22.7 KB in `tools/clockwork-audition/`, outside
   `studio_static`; the Studio does not serve it.
 
