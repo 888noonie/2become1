@@ -1,0 +1,166 @@
+<!doctype html>
+<!-- OPERATION THE GOLDEN EAR — static arrangement-view concept (design study, not product code).
+     Uses the accepted Black Tie tokens from styles/studio.css. Waveform shapes are SYNTHETIC
+     placeholders drawn by the script below; the product must draw cached peaks of real audio. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arrangement concept</title>
+<style>
+:root{
+  --color-background:#0a1314; --color-surface:#152325; --color-surface-raised:#213235; --color-well:#0d191b;
+  --color-border:#394e50; --color-control-border:#738584; --color-text:#faf4e9; --color-muted:#b9c9c6;
+  --color-action:#f3d299; --color-focus:#f9d798; --color-ghost:#e8c887; --color-anchor:#ffaf86; --color-lead:#78ddd2;
+  --color-danger:#ffa0a5; --font-mono:ui-monospace,"Cascadia Mono",monospace;
+  --font-sans:Inter,ui-sans-serif,system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--color-background);color:var(--color-text);font:14px/1.4 var(--font-sans)}
+.frame{width:1440px;border:1px solid var(--color-border)}
+header{display:flex;align-items:center;gap:28px;padding:18px 28px;border-bottom:1px solid var(--color-border);
+  background:radial-gradient(circle at 92% 20%,#1d3133 0,transparent 45%),var(--color-surface)}
+h1{font:normal 44px/1 Georgia,serif;letter-spacing:-.045em;margin:0}
+.modes{display:flex;border:1px solid var(--color-control-border);border-radius:8px;overflow:hidden}
+.modes span{padding:8px 16px;color:var(--color-muted)} .modes .on{background:var(--color-action);color:#0a1314;font-weight:600}
+.proj{margin-left:auto;font-family:var(--font-mono);color:var(--color-muted);font-size:12px}
+.transport{display:flex;align-items:center;gap:12px;padding:10px 28px;border-bottom:1px solid var(--color-border);background:var(--color-surface)}
+.btn{border:1px solid var(--color-control-border);border-radius:6px;padding:8px 16px;background:var(--color-surface-raised);color:var(--color-text);font-weight:600}
+.btn.primary{background:var(--color-action);color:#0a1314;border-color:var(--color-action)}
+.pos{font-family:var(--font-mono);font-size:20px;padding:4px 12px;background:var(--color-well);border-radius:6px;border:1px solid var(--color-border)}
+.pos small{display:block;font-size:11px;color:var(--color-muted)}
+.chip{font-family:var(--font-mono);font-size:12px;border:1px solid var(--color-border);border-radius:999px;padding:5px 10px;color:var(--color-muted)}
+.chip.on{border-color:var(--color-action);color:var(--color-action)}
+.honest{font-size:12px;color:var(--color-muted);margin-left:auto;max-width:330px}
+.main{display:grid;grid-template-columns:1fr 340px}
+.arr{display:grid;grid-template-columns:200px 1fr;position:relative}
+.ruler-h{height:34px;border-bottom:1px solid var(--color-border);background:var(--color-surface)}
+.ruler{height:34px;border-bottom:1px solid var(--color-border);background:var(--color-surface);position:relative;font-family:var(--font-mono);font-size:11px;color:var(--color-muted)}
+.ruler i{position:absolute;top:0;bottom:0;border-left:1px solid var(--color-border);padding:3px 4px;font-style:normal}
+.loopband{position:absolute;top:0;height:8px;background:rgb(243 210 153 / 35%);border:1px solid var(--color-action)}
+.cue{position:absolute;top:0;bottom:0;width:0;border-left:2px dashed var(--color-muted)}
+.lanehead{height:62px;border-bottom:1px solid var(--color-border);padding:6px 10px;display:grid;grid-template-columns:1fr auto;gap:2px 6px;background:var(--color-surface);border-left:4px solid var(--channel-color)}
+.lanehead b{font-weight:600} .lanehead .g{font-family:var(--font-mono);font-size:10px;color:var(--channel-color);letter-spacing:.08em}
+.ms{display:flex;gap:4px;grid-row:span 2;align-items:center}
+.ms span{width:28px;height:28px;border:1px solid var(--color-control-border);border-radius:5px;display:grid;place-items:center;font-size:11px;font-weight:700}
+.ms .on{background:var(--color-action);color:#0a1314}
+.meter{height:5px;background:var(--color-well);border-radius:3px;overflow:hidden;align-self:center}
+.meter u{display:block;height:100%;background:linear-gradient(90deg,var(--channel-color),var(--channel-color) 80%,var(--color-action))}
+.lane{height:62px;border-bottom:1px solid var(--color-border);position:relative;background:var(--color-well)}
+.A{--channel-color:var(--color-anchor)} .B{--channel-color:var(--color-lead)}
+.clip{position:absolute;top:6px;bottom:6px;border-radius:5px;border:1px solid var(--channel-color);background:color-mix(in srgb,var(--channel-color) 16%,transparent);overflow:hidden}
+.clip em{position:absolute;left:6px;top:2px;font-size:10px;font-style:normal;color:var(--color-text);font-family:var(--font-mono)}
+.clip svg{position:absolute;inset:14px 0 0 0;width:100%;height:calc(100% - 14px)}
+.clip.sel{outline:2px solid var(--color-focus);outline-offset:2px}
+.clip.sel::before,.clip.sel::after{content:"";position:absolute;top:0;bottom:0;width:6px;background:var(--color-focus);opacity:.8}
+.clip.sel::before{left:0} .clip.sel::after{right:0}
+.clip.ghost{border:2px dashed var(--color-ghost);background:rgb(232 200 135 / 8%)}
+.clip.ghost em{color:var(--color-ghost)}
+.fade{position:absolute;top:0;bottom:0;background:linear-gradient(90deg,rgb(10 19 20 / 70%),transparent)}
+.playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--color-text);box-shadow:0 0 6px var(--color-text)}
+.side{border-left:1px solid var(--color-border);background:var(--color-surface);padding:16px}
+.side h2{font:normal 26px/1.1 Georgia,serif;letter-spacing:-.03em;margin:0 0 4px}
+.side h3{font:normal 22px/1.1 Georgia,serif;margin:22px 0 6px;color:var(--color-action)}
+.row{display:grid;grid-template-columns:110px 1fr;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--color-border)}
+.row span:first-child{color:var(--color-muted);font-size:12px}
+.row span:last-child{font-family:var(--font-mono)}
+.note{font-size:12px;color:var(--color-muted)}
+.prop{border:2px dashed var(--color-ghost);border-radius:8px;padding:10px;margin-top:6px}
+.btns{display:flex;gap:6px;margin-top:8px} .btns .btn{padding:6px 10px;font-size:12px}
+.badge{position:absolute;width:24px;height:24px;border-radius:50%;background:var(--color-danger);color:#0a1314;font:700 12px/24px var(--font-sans);text-align:center;z-index:5;box-shadow:0 0 0 3px #0a1314}
+.legend{padding:18px 28px;columns:2;column-gap:40px;font-size:13px;border-top:1px solid var(--color-border)}
+.legend p{margin:0 0 8px;break-inside:avoid} .legend b{color:var(--color-danger)}
+</style>
+</head>
+<body>
+<div class="frame" id="frame">
+  <header>
+    <h1>Arrangement</h1>
+    <div class="modes" role="tablist" aria-label="Studio mode"><span role="tab">Performance</span><span role="tab" class="on" aria-selected="true">Arrangement</span></div>
+    <div class="proj">Paper Lanterns × Midnight Circuit · 120 BPM · 4/4 · all edits saved · undo 14</div>
+  </header>
+  <div class="transport" style="position:relative">
+    <span class="badge" style="left:6px;top:-6px">1</span>
+    <span class="btn primary">Play</span><span class="btn">Stop</span>
+    <div class="pos">9 · 3 · 240 <small>0:17.25 heard</small></div>
+    <span class="chip on">Loop 9 – 13</span><span class="chip on">Snap ¼ beat</span><span class="chip">Click off</span>
+    <span class="chip">Zoom: 16 bars</span>
+    <span class="honest">Tracks start on one clock. Beat-synced clips follow the project tempo only where their tempo was measured.</span>
+  </div>
+  <div class="main">
+    <div class="arr" id="arr">
+      <div class="ruler-h"></div>
+      <div class="ruler" id="ruler"><div class="loopband" id="loopband"></div></div>
+    </div>
+    <aside class="side" style="position:relative">
+      <span class="badge" style="left:-12px;top:10px">6</span>
+      <h2>Clip · B Vocals</h2>
+      <div class="note">Midnight Circuit · imported · 705cf616 · track 5</div>
+      <div class="row"><span>Starts</span><span>bar 9 · beat 1</span></div>
+      <div class="row"><span>Length</span><span>4 bars</span></div>
+      <div class="row"><span>Gain</span><span>−3.0 dB</span></div>
+      <div class="row"><span>Fade in / out</span><span>¼ beat / 1 beat</span></div>
+      <div class="row"><span>Pitch</span><span>0 st · formants kept</span></div>
+      <div class="row"><span>Tempo</span><span>Beat-synced · 100 → 120</span></div>
+      <details><summary class="note">Exact values</summary>
+        <div class="row"><span>Timeline</span><span>768,000 – 1,152,000 fr</span></div>
+        <div class="row"><span>Source</span><span>12.400 s · rate 0.8333</span></div>
+      </details>
+      <h3>AI Producer</h3>
+      <span class="badge" style="left:-12px;top:362px">7</span>
+      <div class="prop">
+        <b>Proposal</b> · bring in A Other from bar 13, −6 dB, 1-beat fade in.
+        <div class="note">Shown as a dashed clip on track 4. Nothing changes until you approve.</div>
+        <div class="btns"><span class="btn">Audition</span><span class="btn primary">Approve</span><span class="btn">Reject</span></div>
+      </div>
+    </aside>
+  </div>
+  <div class="legend">
+    <p><b>1 Transport.</b> One transport for the whole studio. The large readout is the position you are hearing (bar · beat · tick, then time). Space plays and stops; Stop is fast, Play starts about a tenth of a second later because the stretch engine must prime.</p>
+    <p><b>2 Ruler.</b> Click or drag to cue. The dashed cue line moves immediately; the solid playhead follows when the sound does. The loop band is drawn here and edited by dragging its ends.</p>
+    <p><b>3 Lane headers.</b> Eight lanes in two banks: copper A (tracks 1–4) and aqua B (tracks 5–8), labelled with the stem role and bank letter as well as colour. Each header carries Mute, Solo and a peak meter; full faders stay on the Performance desk.</p>
+    <p><b>4 Clips.</b> Region boxes in the bank colour, with cached waveform peaks of the real audio (synthetic here). Fade ramps darken the clip edges. The selected clip has the focus ring and two trim handles with 44 px hit zones.</p>
+    <p><b>5 Proposal.</b> A Producer suggestion draws as a dashed, gold, unfilled clip labelled "Proposed". It is never mixed until approved, so committed music always looks solid.</p>
+    <p><b>6 Inspector.</b> Opens when a clip is selected. Musical values first; "Exact values" reveals frames, source seconds and stretch rate for engineers.</p>
+    <p><b>7 Producer.</b> Stays in the right column under the inspector, as on the Performance desk. Approve applies through the same validated edit path as a hand edit.</p>
+    <p><b>8 Playhead.</b> Drawn from the audio clock at the moment the sound leaves the device, not from a timer. It never runs ahead of what you hear.</p>
+  </div>
+</div>
+<script>
+// Synthetic, deterministic layout for the concept image only.
+const arr = document.getElementById('arr'), ruler = document.getElementById('ruler');
+const BARS = 16, W = 900, px = W / BARS;
+for (let b = 0; b < BARS; b += 1) { const i = document.createElement('i'); i.style.left = (b * px) + 'px'; i.textContent = b + 1; ruler.append(i); }
+const lb = document.getElementById('loopband'); lb.style.left = (8 * px) + 'px'; lb.style.width = (4 * px) + 'px';
+const lanes = [
+  ['A', 'Vocals', 1, [[4, 8]]], ['A', 'Drums', 2, [[0, 7], [8, 16]]], ['A', 'Bass', 3, [[0, 12]]], ['A', 'Other', 4, [[0, 8]], [[12, 16]]],
+  ['B', 'Vocals', 5, [[8, 12]]], ['B', 'Drums', 6, [[12, 16]]], ['B', 'Bass', 7, [[12, 16]]], ['B', 'Other', 8, [[2, 10]]],
+];
+let seed = 3; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+function wave(w, dense) { let d = 'M0 50'; const n = Math.round(w / 3); for (let k = 0; k <= n; k += 1) { const a = (dense ? 0.35 : 0.15) + rnd() * (dense ? 0.6 : 0.5); d += ` L${k * 3} ${50 - a * 45} L${k * 3 + 1.5} ${50 + a * 45}`; } return d; }
+lanes.forEach(([bank, role, n, clips, ghosts], idx) => {
+  const h = document.createElement('div'); h.className = 'lanehead ' + bank;
+  h.innerHTML = `<span class="g">TRACK ${n} · ${bank}</span><span class="ms"><span class="${role === 'Bass' && bank === 'B' ? 'on' : ''}">M</span><span>S</span></span><b>${bank} ${role}</b><span class="meter"><u style="width:${role === 'Bass' && bank === 'B' ? 0 : 30 + (idx * 37) % 55}%"></u></span>`;
+  if (idx === 0) h.insertAdjacentHTML('afterbegin', '<span class="badge" style="right:-12px;top:34px">3</span>'), h.style.position = 'relative';
+  const lane = document.createElement('div'); lane.className = 'lane ' + bank;
+  for (const [s, e] of clips) {
+    const c = document.createElement('div'); c.className = 'clip'; c.style.left = (s * px) + 'px'; c.style.width = ((e - s) * px - 2) + 'px';
+    if (bank === 'B' && role === 'Vocals') c.classList.add('sel');
+    c.innerHTML = `<em>${bank} ${role}</em><svg viewBox="0 0 ${(e - s) * px} 100" preserveAspectRatio="none"><path d="${wave((e - s) * px, role === 'Drums')}" stroke="var(--channel-color)" stroke-width="1" fill="none" opacity=".75"/></svg><span class="fade" style="left:0;width:${role === 'Other' ? 40 : 6}px"></span>`;
+    lane.append(c);
+  }
+  for (const [s, e] of ghosts || []) {
+    const c = document.createElement('div'); c.className = 'clip ghost'; c.style.left = (s * px) + 'px'; c.style.width = ((e - s) * px - 2) + 'px';
+    c.innerHTML = '<em>Proposed · A Other · −6 dB</em>'; lane.append(c);
+  }
+  arr.append(h, lane);
+});
+const area = document.createElement('div'); area.style.cssText = 'position:absolute;left:200px;top:0;bottom:0;width:' + W + 'px;pointer-events:none';
+area.innerHTML = `<div class="cue" style="left:${8.5 * px}px"></div><div class="playhead" style="left:${8.56 * px}px"></div>`
+  + `<span class="badge" style="left:${2.45 * px}px;top:5px">2</span><span class="badge" style="left:${7.55 * px}px;top:${34 + 30}px">4</span>`
+  + `<span class="badge" style="left:${15.45 * px}px;top:${34 + 62 * 3 + 30}px">5</span><span class="badge" style="left:${8.56 * px + 8}px;top:${34 + 62 * 5 + 20}px">8</span>`;
+arr.append(area);
+document.querySelector('.arr').style.width = (200 + W) + 'px';
+</script>
+</body>
+</html>
