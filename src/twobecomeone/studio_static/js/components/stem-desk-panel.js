@@ -25,6 +25,8 @@ import {
   validateStemDeskProposal,
 } from '../runtime/stem-desk-proposal.js';
 
+/** Fired by whichever Studio instrument starts playing; the others stop. */
+export const EXCLUSIVE_PLAY_EVENT = 'twobecomeone:exclusive-play';
 const STEM_ORDER = ['vocals', 'drums', 'bass', 'other', 'center', 'sides'];
 const QUAD_NAMES = ['vocals', 'drums', 'bass', 'other'];
 const GROUP_IDS = ['A', 'B'];
@@ -1067,6 +1069,8 @@ export function mountStemDeskPanel({
       // because looping unequal-length tracks would wrap them out of phase.
       const groups = desk.state().groups || [];
       const loop = groups.length <= 1;
+      // One instrument sounds at a time: the arrangement stops when the desk plays.
+      window.dispatchEvent(new CustomEvent(EXCLUSIVE_PLAY_EVENT, { detail: { owner: 'desk' } }));
       const state = desk.play({ loop });
       renderLanes(state);
       refreshTransport(state);
@@ -1089,6 +1093,12 @@ export function mountStemDeskPanel({
       say(err?.message || 'The stem desk could not start.');
     }
   });
+
+  const onExclusivePlay = (event) => {
+    if (event?.detail?.owner === 'desk' || !desk || desk.state().status !== 'playing') return;
+    stopButton.click();
+  };
+  window.addEventListener(EXCLUSIVE_PLAY_EVENT, onExclusivePlay);
 
   stopButton.addEventListener('click', () => {
     if (!desk) return;
@@ -1575,6 +1585,7 @@ export function mountStemDeskPanel({
   return function dispose() {
     if (disposed) return;
     disposed = true;
+    window.removeEventListener(EXCLUSIVE_PLAY_EVENT, onExclusivePlay);
     unsubscribeNames();
     for (const groupId of GROUP_IDS) stopSeparationWatch(groupId);
     for (const controller of aborts.values()) controller.abort();

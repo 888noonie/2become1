@@ -23,6 +23,11 @@ import { openSourcePicker } from '../components/source-picker.js';
 import { mountLiveCrossfader } from '../components/live-crossfader.js';
 import { mountUrlQueuePanel } from '../components/url-queue-panel.js';
 import { mountDawCommandBar } from '../components/daw-command-bar.js';
+import { mountArrangementPanel } from '../components/arrangement-panel.js';
+import { mountArrangementProducer } from '../components/arrangement-producer.js';
+import { RealtimeEngine } from '../realtime-engine.js';
+import { renderOffline } from '../arrangement/offline-render.js';
+import { listStems, listTracks } from '../api.js';
 import { startMashupSession } from '../mashup/session.js';
 import {
   checkGhostPreconditions,
@@ -201,23 +206,83 @@ export function mountStudio({ container }) {
   decksContainer.appendChild(anchorDeckMount);
   decksContainer.appendChild(leadDeckMount);
 
+  // OPERATION FULL HOUSE: two surfaces share the Studio. Performance is the
+  // accepted eight-channel desk; Arrangement is the non-linear editor. The
+  // choice is remembered, and #/studio/arrangement opens the editor directly.
+  const performanceView = createElement('div', { class: 'studio__surface studio__surface--performance' });
+  const arrangementView = createElement('div', { class: 'studio__surface studio__surface--arrangement', hidden: 'true' });
+  const surfaceButtons = {};
+  const surfaceSwitch = createElement('div', { class: 'surface-switch', role: 'group', 'aria-label': 'Studio surface' },
+    [['performance', 'Performance'], ['arrangement', 'Arrangement']].map(([key, label]) => {
+      const button = createElement('button', {
+        type: 'button', class: 'surface-switch__button', 'aria-pressed': 'false', text: label,
+        dataset: { surface: key },
+      });
+      button.addEventListener('click', () => showSurface(key, true));
+      surfaceButtons[key] = button;
+      return button;
+    }));
+  let arrangementApi = null;
+  function showSurface(key, remember = false) {
+    const surface = key === 'arrangement' ? 'arrangement' : 'performance';
+    performanceView.hidden = surface !== 'performance';
+    arrangementView.hidden = surface !== 'arrangement';
+    for (const [k, b] of Object.entries(surfaceButtons)) b.setAttribute('aria-pressed', String(k === surface));
+    studioRoot.dataset.surface = surface;
+    if (surface === 'arrangement' && !arrangementApi) {
+      arrangementApi = mountArrangementPanel({
+        container: arrangementView,
+        onAnnounce,
+        listTracks,
+        listStems,
+        producer: mountArrangementProducer,
+        sessionDeps: {
+          fetchImpl: (url, init) => window.fetch(url, init),
+          // Created ONLY by the Play button (a user gesture), never on load.
+          createContext: () => new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' }),
+          RealtimeEngine,
+          renderOffline,
+          StretchFactory: async (ctx, opts) => {
+            const { default: SignalsmithStretch } = await import('../../vendor/signalsmith-stretch/SignalsmithStretch.mjs');
+            return SignalsmithStretch(ctx, opts);
+          },
+          modules: { limiterModuleUrl: '/assets/js/arrangement/limiter-worklet.js' },
+        },
+      });
+      window.__arrangement = arrangementApi;
+    }
+    if (surface === 'arrangement') arrangementApi?.render();
+    if (remember) {
+      try { window.localStorage.setItem('twobecomeone.studio.surface', surface); } catch { /* private mode */ }
+    }
+  }
+
   studioRoot.appendChild(headerContainer);
+  studioRoot.appendChild(surfaceSwitch);
   studioRoot.appendChild(liveAnnouncer);
   studioRoot.appendChild(retryContainer);
-  studioRoot.appendChild(stemDeskMount);
+  studioRoot.appendChild(performanceView);
+  studioRoot.appendChild(arrangementView);
+  performanceView.appendChild(stemDeskMount);
   const arrangement = createElement('details', { class: 'workspace-drawer' }, [
     createElement('summary', { text: 'Arrangement & rendering' }),
     performanceDeckContainer, crateMount, swapBar, crossfaderContainer, decksContainer,
     ghostCardContainer, committedLayersContainer, planContainer, renderActionsContainer,
   ]);
-  studioRoot.appendChild(arrangement);
+  performanceView.appendChild(arrangement);
   const mashupSide = createElement('aside', { class: 'studio__mashup-side' });
   const queueMount = createElement('div', { class: 'studio__mashup-queue' });
   const dawMount = createElement('div', { class: 'studio__mashup-daw' });
   mashupSide.append(queueMount, dawMount);
-  studioRoot.appendChild(createElement('details', { class: 'workspace-drawer' }, [
+  performanceView.appendChild(createElement('details', { class: 'workspace-drawer' }, [
     createElement('summary', { text: 'Queue & advanced mixing' }), mashupSide,
   ]));
+  {
+    const hashSurface = (window.location.hash.replace(/^#\/?/, '').split('/')[1] || '').trim();
+    let stored = null;
+    try { stored = window.localStorage.getItem('twobecomeone.studio.surface'); } catch { /* private mode */ }
+    showSurface(hashSurface || stored || 'performance');
+  }
 
   function updateHeader() {
     replaceChildren(headerContainer, [projectHeader()]);
@@ -403,6 +468,7 @@ export function mountStudio({ container }) {
     if (liveCrossfaderDisposer) liveCrossfaderDisposer();
     if (queueDisposer) queueDisposer();
     if (dawDisposer) dawDisposer();
+    if (arrangementApi) { arrangementApi.dispose(); if (window.__arrangement === arrangementApi) delete window.__arrangement; }
     if (mashupSession) mashupSession.stop();
     projectManager.flushNow();
   };
