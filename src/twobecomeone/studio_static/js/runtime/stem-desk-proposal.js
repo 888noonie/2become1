@@ -180,17 +180,48 @@ export function validateStemDeskProposal(raw, deskState) {
 export function approveStemDeskProposal(raw, desk) {
   const checked = validateStemDeskProposal(raw, desk.state());
   if (!checked.ok) return checked;
-  const proposal = checked.proposal;
-  desk.setCrossfader(proposal.crossfader);
-  for (const [trackId, group] of Object.entries(proposal.groups)) {
-    desk.setTrackLevel(trackId, group.levelDb);
-    desk.setGroupEntryOffset(trackId, group.entryOffsetMs);
+  return applyStemDeskMix(checked.proposal, desk);
+}
+
+/** Names one control, so a musician's own move can be left alone. */
+export const mixControl = Object.freeze({
+  crossfader: 'crossfader',
+  level: (trackId) => `group:${trackId}:level`,
+  offset: (trackId) => `group:${trackId}:offset`,
+  gain: (laneKey) => `lane:${laneKey}:gain`,
+  mute: (laneKey) => `lane:${laneKey}:mute`,
+});
+
+/**
+ * Set the crossfader, group level and entry offset, lane gain and mute from a
+ * mix (a validated proposal or a captured mix) using the desk's own setters.
+ * Controls named in `skip` are left exactly where the musician put them.
+ * Does not start playback.
+ */
+export function applyStemDeskMix(mix, desk, skip = new Set()) {
+  if (!skip.has(mixControl.crossfader)) desk.setCrossfader(mix.crossfader);
+  for (const [trackId, group] of Object.entries(mix.groups)) {
+    if (!skip.has(mixControl.level(trackId))) desk.setTrackLevel(trackId, group.levelDb);
+    if (!skip.has(mixControl.offset(trackId))) desk.setGroupEntryOffset(trackId, group.entryOffsetMs);
   }
-  for (const [key, lane] of Object.entries(proposal.lanes)) {
-    desk.setGain(key, lane.gainDb);
-    desk.setMuted(key, lane.muted);
+  for (const [key, lane] of Object.entries(mix.lanes)) {
+    if (!skip.has(mixControl.gain(key))) desk.setGain(key, lane.gainDb);
+    if (!skip.has(mixControl.mute(key))) desk.setMuted(key, lane.muted);
   }
   return { ok: true, state: desk.state() };
+}
+
+/** The current mix in the same shape a proposal uses, to return to later. */
+export function captureStemDeskMix(deskState) {
+  return {
+    crossfader: deskState.crossfader.position,
+    groups: Object.fromEntries(deskState.groups.map((group) => [
+      group.trackId, { levelDb: group.levelDb, entryOffsetMs: group.entryOffsetMs },
+    ])),
+    lanes: Object.fromEntries(deskState.lanes.map((lane) => [
+      lane.key, { gainDb: lane.gainDb, muted: lane.muted },
+    ])),
+  };
 }
 
 function measureOf(lane) {

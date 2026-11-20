@@ -1310,7 +1310,7 @@ test('ask, preview, reject, and approve do not apply a proposal before approval'
   selectFor(container, 'B').value = 'track-2';
   await loadGroup(container, 'A');
   const buttons = [...container.querySelectorAll('.stem-desk__proposal button')];
-  const [askButton, previewButton, approveButton, rejectButton] = buttons;
+  const [askButton, previewButton, , approveButton, rejectButton] = buttons;
   assert.equal(askButton.textContent, 'Ask for a proposal');
   askButton.click();
   assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /Proposal incomplete/);
@@ -1351,14 +1351,151 @@ test('ask, preview, reject, and approve do not apply a proposal before approval'
   askButton.click();
   container.querySelector('button[aria-label="Group A earlier"]').click();
   assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /Proposal not approved/);
-  assert.equal(container.querySelector('.stem-desk__proposal button:nth-child(3)').disabled, true);
+  assert.equal(container.querySelector('.stem-desk__proposal button:nth-child(4)').disabled, true);
 
   desk.setSolo('B:vocals', true);
   const soloCalls = desk.calls.length;
   askButton.click();
   assert.match(container.querySelector('.stem-desk__proposal-status').textContent, /clear solo/);
   assert.equal(desk.calls.length, soloCalls);
-  assert.equal(container.querySelector('.stem-desk__proposal button:nth-child(3)').disabled, true);
+  assert.equal(container.querySelector('.stem-desk__proposal button:nth-child(4)').disabled, true);
+});
+
+async function twoTrackDesk() {
+  const ctx = mount({
+    tracks: [
+      { id: 'track-1', name: 'night-drive.wav' },
+      { id: 'track-2', name: 'slow-burn.wav' },
+    ],
+    variantsByTrack: {
+      'track-1': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-aaa' })),
+      'track-2': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-bbb' })),
+    },
+  });
+  await flush();
+  selectFor(ctx.container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  selectFor(ctx.container, 'A').value = 'track-1';
+  selectFor(ctx.container, 'B').value = 'track-2';
+  await loadGroup(ctx.container, 'A');
+  await loadGroup(ctx.container, 'B');
+  const [ask, preview, hear, approve, reject] = [...ctx.container.querySelectorAll('.stem-desk__proposal button')];
+  const lane = (key) => ctx.desk.state().lanes.find((entry) => entry.key === key);
+  const say = () => ctx.container.querySelector('.stem-desk__proposal-status').textContent;
+  const laneGain = (key) => ctx.container.querySelectorAll('.stem-desk__row')[
+    ctx.desk.state().lanes.findIndex((entry) => entry.key === key)
+  ].querySelector('input[type="range"]');
+  return { ...ctx, ask, preview, hear, approve, reject, lane, say, laneGain };
+}
+
+test('Hear it puts the suggestion on the live desk, Hear mine flips back, and nothing plays by itself', async () => {
+  const t = await twoTrackDesk();
+  t.desk.setCrossfader(30);
+  t.desk.setGain('B:drums', -4);
+  assert.equal(t.hear.textContent, 'Hear it');
+  assert.equal(t.hear.disabled, true, 'no suggestion yet, nothing to hear');
+
+  t.ask.click();
+  assert.equal(t.hear.disabled, false);
+  assert.equal(t.lane('A:vocals').muted, false, 'asking applies nothing');
+
+  t.hear.click();
+  assert.equal(t.lane('A:vocals').muted, true);
+  assert.equal(t.lane('B:drums').muted, true);
+  assert.equal(t.hear.textContent, 'Hear mine');
+  assert.equal(t.approve.disabled, false);
+  assert.equal(t.preview.disabled, true, 'Preview stays display-only and is not offered mid-audition');
+  assert.match(t.say(), /Hearing the suggestion/);
+
+  t.hear.click();
+  assert.equal(t.hear.textContent, 'Hear it');
+  assert.equal(t.lane('A:vocals').muted, false);
+  assert.equal(t.lane('B:drums').muted, false);
+  assert.equal(t.lane('B:drums').gainDb, -4, 'the musician mix comes back exactly');
+  assert.equal(t.desk.crossfaderPosition, 30);
+  assert.match(t.say(), /Hearing your mix/);
+
+  t.hear.click();
+  assert.equal(t.lane('A:vocals').muted, true);
+
+  t.reject.click();
+  assert.equal(t.lane('A:vocals').muted, false);
+  assert.equal(t.lane('B:drums').gainDb, -4);
+  assert.equal(t.desk.crossfaderPosition, 30);
+  assert.match(t.say(), /Back to your mix\. Nothing was kept/);
+  assert.equal(t.approve.disabled, true);
+  assert.equal(t.hear.disabled, true);
+  assert.equal(t.hear.textContent, 'Hear it');
+  assert.equal(t.desk.calls.some(([name]) => name === 'play'), false);
+});
+
+test('a fader the musician moves while hearing the suggestion is never put back', async () => {
+  const t = await twoTrackDesk();
+  t.ask.click();
+  t.hear.click();
+  assert.equal(t.lane('A:drums').gainDb, 0);
+
+  const gain = t.laneGain('A:drums');
+  gain.value = '-6';
+  gain.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.equal(t.lane('A:drums').gainDb, -6);
+  assert.equal(t.hear.textContent, 'Hear mine', 'the idea survives the move');
+  assert.equal(t.approve.disabled, false);
+
+  t.hear.click(); // hear mine
+  assert.equal(t.lane('A:drums').gainDb, -6, 'their tweak stays when comparing');
+  assert.equal(t.lane('A:vocals').muted, false, 'untouched controls do go back');
+  t.hear.click(); // hear it again
+  assert.equal(t.lane('A:drums').gainDb, -6);
+  assert.equal(t.lane('A:vocals').muted, true);
+
+  t.approve.click();
+  assert.equal(t.lane('A:drums').gainDb, -6, 'keeping the idea keeps the tweak');
+  assert.equal(t.lane('A:vocals').muted, true);
+  assert.equal(t.lane('B:drums').muted, true);
+  assert.match(t.say(), /Proposal approved/);
+  assert.equal(t.approve.disabled, true);
+  assert.equal(t.hear.disabled, true);
+  assert.equal(t.desk.calls.some(([name]) => name === 'play'), false);
+});
+
+test('returning to the original after a tweak leaves the tweak and restores the rest', async () => {
+  const t = await twoTrackDesk();
+  t.ask.click();
+  t.hear.click();
+  const gain = t.laneGain('B:vocals');
+  gain.value = '-3';
+  gain.dispatchEvent(new window.Event('input', { bubbles: true }));
+  t.reject.click();
+  assert.equal(t.lane('B:vocals').gainDb, -3);
+  assert.equal(t.lane('A:vocals').muted, false);
+  assert.equal(t.lane('B:drums').muted, false);
+});
+
+test('keeping the suggestion while listening to the original applies it', async () => {
+  const t = await twoTrackDesk();
+  t.ask.click();
+  t.hear.click();
+  t.hear.click(); // hear mine
+  assert.equal(t.lane('A:vocals').muted, false);
+  t.approve.click();
+  assert.equal(t.lane('A:vocals').muted, true);
+  assert.equal(t.lane('B:drums').muted, true);
+});
+
+test('changing a track or asking again while hearing the suggestion returns to the original', async () => {
+  const t = await twoTrackDesk();
+  t.ask.click();
+  t.hear.click();
+  assert.equal(t.lane('A:vocals').muted, true);
+  t.ask.click();
+  assert.equal(t.lane('A:vocals').muted, false, 'asking again starts from the musician mix');
+  assert.equal(t.hear.textContent, 'Hear it');
+  t.hear.click();
+  assert.equal(t.lane('A:vocals').muted, true);
+  selectFor(t.container, 'A').dispatchEvent(new window.Event('change'));
+  assert.equal(t.lane('A:vocals').muted, false);
+  assert.equal(t.hear.disabled, true);
 });
 
 test('a complete imported quad is ready and never requests a separation', async () => {
@@ -1451,7 +1588,7 @@ test('a proposal arranges imported and Demucs groups without swapping their meth
     selectFor(container, 'B').value = 'track-2';
     await loadGroup(container, 'A');
     await loadGroup(container, 'B');
-    const [askButton, previewButton, approveButton, rejectButton] = [
+    const [askButton, previewButton, , approveButton, rejectButton] = [
       ...container.querySelectorAll('.stem-desk__proposal button'),
     ];
     const before = desk.calls.length;

@@ -24,7 +24,7 @@ summary { cursor:pointer; }
 .stem-desk__producer h3 { font-size:34px; line-height:1.12; color:var(--color-action); }
 .producer-guide { font-size:.9rem; color:var(--console-parchment); }
 .stem-desk__proposal { display:grid; grid-template-columns:1fr 1fr; }
-.stem-desk__proposal button:nth-child(-n+2) { grid-column:1/-1; }
+.stem-desk__proposal button:nth-child(-n+3) { grid-column:1/-1; }
 .stem-desk__proposal button:first-child { background:var(--color-action); color:var(--color-well); }
 .stem-desk__master { background:linear-gradient(var(--console-bridge-light),var(--console-bridge-dark)); }
 .stem-desk__master input { accent-color:var(--color-action); }

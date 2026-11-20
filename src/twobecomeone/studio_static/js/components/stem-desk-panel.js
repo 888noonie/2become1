@@ -17,7 +17,10 @@ import {
 } from '../api.js';
 import { StemDesk, STEM_DESK_FULL_LIMITS, STEM_DESK_LIMITS } from '../runtime/stem-desk.js';
 import {
+  applyStemDeskMix,
   approveStemDeskProposal,
+  captureStemDeskMix,
+  mixControl,
   suggestStemDeskProposal,
   validateStemDeskProposal,
 } from '../runtime/stem-desk-proposal.js';
@@ -296,6 +299,12 @@ export function mountStemDeskPanel({
   const previewButton = createElement('button', {
     class: 'button button--sm', type: 'button', text: 'Preview', disabled: 'true',
   });
+  // Hear it applies the suggestion to the live desk so it can be heard, and
+  // flips to Hear mine to compare. Approve keeps it; Reject returns to the
+  // mix as it was. Preview stays display-only.
+  const hearButton = createElement('button', {
+    class: 'button button--sm', type: 'button', text: 'Hear it', disabled: 'true',
+  });
   const approveButton = createElement('button', {
     class: 'button button--primary', type: 'button', text: 'Approve', disabled: 'true',
   });
@@ -304,7 +313,7 @@ export function mountStemDeskPanel({
   });
   const proposalRow = createElement('div', {
     class: 'stem-desk__proposal', role: 'group', 'aria-label': 'Stem proposal',
-  }, [askButton, previewButton, approveButton, rejectButton]);
+  }, [askButton, previewButton, hearButton, approveButton, rejectButton]);
   const proposalStatus = createElement('p', { class: 'stem-desk__proposal-status', role: 'status' });
   const proposalDetails = createElement('div', { class: 'stem-desk__proposal-details', hidden: 'true' });
   const PROPOSAL_UNAPPROVED = 'Proposal not approved. Groups A and B stay on the stem desk. Entry offsets take effect on the next Play.';
@@ -347,7 +356,7 @@ export function mountStemDeskPanel({
     'aria-label': 'AI Producer',
   }, [
     createElement('h3', { text: 'AI Producer' }),
-    createElement('p', { class: 'producer-guide', text: 'Build an arrangement from your loaded stems. Preview the suggested mix, then approve or reject it.' }),
+    createElement('p', { class: 'producer-guide', text: 'Build an arrangement from your loaded stems. Hear the suggested mix, compare it with yours, then keep it or go back.' }),
     proposalRow,
     proposalStatus,
     proposalDetails,
@@ -384,13 +393,19 @@ export function mountStemDeskPanel({
   let loadingCount = 0;
   let pendingProposal = null;
   let proposalPreviewed = false;
+  // While a suggestion is being heard: the mix to return to, the controls the
+  // musician has touched since (flipping never moves those), and which mix is
+  // currently on the desk.
+  let audition = null;
   const rowViews = new Map();
   const groupViews = new Map();
 
   function syncProposalButtons() {
     const groups = desk?.state()?.groups?.length || 0;
     askButton.disabled = loadingCount > 0 || groups < 1 ? 'true' : undefined;
-    previewButton.disabled = pendingProposal ? undefined : 'true';
+    previewButton.disabled = pendingProposal && !audition ? undefined : 'true';
+    hearButton.disabled = pendingProposal ? undefined : 'true';
+    hearButton.textContent = audition?.hearing === 'idea' ? 'Hear mine' : 'Hear it';
     approveButton.disabled = pendingProposal && proposalPreviewed ? undefined : 'true';
     rejectButton.disabled = pendingProposal ? undefined : 'true';
   }
@@ -415,11 +430,40 @@ export function mountStemDeskPanel({
     }
   }
 
+  // A live move by the musician. While a suggestion is being heard the idea
+  // survives the move and that control is simply theirs from then on;
+  // otherwise it ends the pending proposal as before.
+  function humanMove(control) {
+    if (!audition) {
+      dropPendingProposal();
+      return;
+    }
+    if (control) audition.touched.add(control);
+  }
+
+  // Put the desk back to the mix from before Hear it, except for controls the
+  // musician has moved since. Never plays anything.
+  function returnToMine() {
+    const heard = audition;
+    audition = null;
+    try {
+      const state = applyStemDeskMix(heard.snapshot, desk, heard.touched).state;
+      renderLanes(state);
+      refreshTransport(state);
+    } catch {
+      // The desk changed under the audition (a group was replaced); there is
+      // nothing of the old mix left to restore.
+    }
+  }
+
   function dropPendingProposal() {
     const had = pendingProposal !== null || proposalPreviewed;
+    const wasHearing = audition !== null;
+    if (wasHearing) returnToMine();
     pendingProposal = null;
     proposalPreviewed = false;
-    if (had) sayProposal(PROPOSAL_UNAPPROVED);
+    if (wasHearing) sayProposal('Back to your mix. Nothing was kept.');
+    else if (had) sayProposal(PROPOSAL_UNAPPROVED);
     if (producer.dataset.phase === 'approved') {
       sayProposal('Last proposal approved. The mix has since been edited.');
     }
@@ -819,7 +863,7 @@ export function mountStemDeskPanel({
 
     mute.addEventListener('click', () => {
       if (!view.lane) return;
-      dropPendingProposal();
+      humanMove(mixControl.mute(view.lane.key));
       const label = `${groupLabel(view.lane.trackId)} · ${stemLabel(view.lane.name)}`;
       const next = !view.lane.muted;
       const nextState = desk.setMuted(view.lane.key, next);
@@ -828,7 +872,7 @@ export function mountStemDeskPanel({
     });
     solo.addEventListener('click', () => {
       if (!view.lane) return;
-      dropPendingProposal();
+      humanMove(null);
       const label = `${groupLabel(view.lane.trackId)} · ${stemLabel(view.lane.name)}`;
       const next = !view.lane.solo;
       const nextState = desk.setSolo(view.lane.key, next);
@@ -841,7 +885,7 @@ export function mountStemDeskPanel({
     });
     gain.addEventListener('input', (event) => {
       if (!view.lane) return;
-      dropPendingProposal();
+      humanMove(mixControl.gain(view.lane.key));
       const nextState = desk.setGain(view.lane.key, event.target.value);
       const stateLane = nextState.lanes.find((entry) => entry.key === view.key);
       if (stateLane) view.lane = stateLane;
@@ -896,14 +940,14 @@ export function mountStemDeskPanel({
         const rows = createElement('div', { class: 'stem-desk__group-rows' });
         const level = groupLevelRow(group.trackId, (value) => {
           if (!desk) return;
-          dropPendingProposal();
+          humanMove(mixControl.level(group.trackId));
           const next = desk.setTrackLevel(group.trackId, value);
           refreshTransport(next);
           say(`Group ${group.trackId} level ${value} dB.`);
         });
         const timing = groupTimingRow(group.trackId, (delta) => {
           if (!desk) return;
-          dropPendingProposal();
+          humanMove(mixControl.offset(group.trackId));
           const current = desk.state().groups
             .find((entry) => entry.trackId === group.trackId)?.entryOffsetMs ?? 0;
           const nextMs = delta == null ? 0 : current + delta;
@@ -1036,6 +1080,7 @@ export function mountStemDeskPanel({
 
   askButton.addEventListener('click', () => {
     if (!desk || loadingCount > 0) return;
+    if (audition) dropPendingProposal();
     const groups = desk.state().groups || [];
     if (groups.length < 2) {
       dropPendingProposal();
@@ -1054,18 +1099,7 @@ export function mountStemDeskPanel({
     syncProposalButtons();
   });
 
-  previewButton.addEventListener('click', () => {
-    if (!desk || !pendingProposal) return;
-    const state = desk.state();
-    const checked = validateStemDeskProposal(pendingProposal, state);
-    if (!checked.ok) {
-      pendingProposal = null;
-      proposalPreviewed = false;
-      sayProposal(checked.message);
-      syncProposalButtons();
-      return;
-    }
-    const target = checked.proposal;
+  function showProposalDetails(target, state) {
     const targetsByGroup = GROUP_IDS.map((id) => {
       const group = target.groups[id];
       const lanes = state.lanes.filter((lane) => lane.trackId === id);
@@ -1082,13 +1116,93 @@ export function mountStemDeskPanel({
       createElement('p', { text: `Crossfader at ${target.crossfader}% toward B` }),
       createElement('ul', {}, targetsByGroup),
     ]);
+  }
+
+  previewButton.addEventListener('click', () => {
+    if (!desk || !pendingProposal) return;
+    const state = desk.state();
+    const checked = validateStemDeskProposal(pendingProposal, state);
+    if (!checked.ok) {
+      pendingProposal = null;
+      proposalPreviewed = false;
+      sayProposal(checked.message);
+      syncProposalButtons();
+      return;
+    }
+    showProposalDetails(checked.proposal, state);
     proposalPreviewed = true;
     sayProposal(`Preview only. ${pendingProposal.rationale} Nothing is applied until Approve.`, 'preview');
     syncProposalButtons();
   });
 
+  const HEARING_IDEA = 'Hearing the suggestion. Hear mine to compare, Approve to keep it, Reject to go back.';
+  const HEARING_MINE = 'Hearing your mix. Hear it to go back to the suggestion, Approve to keep it, Reject to stay.';
+
+  hearButton.addEventListener('click', () => {
+    if (!desk || !pendingProposal) return;
+    if (audition) {
+      // Flip between the suggestion and the musician's mix on the one
+      // transport. Controls the musician has touched are never moved.
+      const next = audition.hearing === 'idea' ? 'mine' : 'idea';
+      const mix = next === 'idea' ? audition.target : audition.snapshot;
+      const state = applyStemDeskMix(mix, desk, audition.touched).state;
+      audition.hearing = next;
+      renderLanes(state);
+      refreshTransport(state);
+      sayProposal(next === 'idea' ? HEARING_IDEA : HEARING_MINE, 'preview');
+      syncProposalButtons();
+      return;
+    }
+    const state = desk.state();
+    const checked = validateStemDeskProposal(pendingProposal, state);
+    if (!checked.ok) {
+      pendingProposal = null;
+      proposalPreviewed = false;
+      sayProposal(checked.message);
+      syncProposalButtons();
+      return;
+    }
+    const snapshot = captureStemDeskMix(state);
+    audition = { target: checked.proposal, snapshot, touched: new Set(), hearing: 'idea' };
+    showProposalDetails(checked.proposal, state);
+    proposalPreviewed = true;
+    let applied;
+    try {
+      applied = applyStemDeskMix(checked.proposal, desk).state;
+    } catch (error) {
+      returnToMine();
+      pendingProposal = null;
+      proposalPreviewed = false;
+      sayProposal(`Could not try the suggestion: ${error?.message || 'the desk refused it'}. Your mix is unchanged.`);
+      syncProposalButtons();
+      return;
+    }
+    renderLanes(applied);
+    refreshTransport(applied);
+    sayProposal(HEARING_IDEA, 'preview');
+    syncProposalButtons();
+  });
+
   approveButton.addEventListener('click', () => {
-    if (!desk || !pendingProposal || !proposalPreviewed) return;
+    if (!desk) return;
+    if (audition) {
+      // Keep: the suggestion is already on the desk (re-apply it if the
+      // musician was listening to their own mix), minus anything they moved.
+      const heard = audition;
+      audition = null;
+      pendingProposal = null;
+      proposalPreviewed = false;
+      if (heard.hearing === 'mine') {
+        const state = applyStemDeskMix(heard.target, desk, heard.touched).state;
+        renderLanes(state);
+        refreshTransport(state);
+      }
+      syncProposalButtons();
+      sayProposal(PROPOSAL_APPROVED, 'approved');
+      if (document.activeElement === approveButton) askButton.focus();
+      return;
+    }
+    if (!pendingProposal || !proposalPreviewed) return;
     const result = approveStemDeskProposal(pendingProposal, desk);
     pendingProposal = null;
     proposalPreviewed = false;
@@ -1111,7 +1225,7 @@ export function mountStemDeskPanel({
 
   crossfaderInput.addEventListener('input', (event) => {
     if (!desk) return;
-    dropPendingProposal();
+    humanMove(mixControl.crossfader);
     const state = desk.setCrossfader(event.target.value);
     updateCrossfader(state);
     say(`Crossfader A ${state.crossfader.gainA.toFixed(2)} / B ${state.crossfader.gainB.toFixed(2)}.`);

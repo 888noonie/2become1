@@ -102,14 +102,28 @@ real view functions with `node --test tests/frontend/*.js`.
 - A stem-desk proposal is `stem-desk-proposal/v1`.
   `suggestStemDeskProposal` only returns data: A keeps drums and bass, B keeps
   vocals and other, silent lanes stay muted, and both entry offsets stay 0.
-  The desk buttons are Ask for a proposal, Preview, Approve, and Reject.
-  Preview only displays the suggestion. `approveStemDeskProposal` is the only
-  function that may apply one, and only after it matches the loaded stem-set
-  ids and lane measurements and names every loaded group. Any soloed lane
-  blocks it, including a lane on a group the proposal does not name. It does
-  not call `play`. Unknown fields, including playback rate and pitch, reject
-  the whole proposal and leave the mix unchanged. A nudge, mute, solo, gain,
-  level, or crossfader move drops the pending proposal.
+  The desk buttons are Ask for a proposal, Preview, Hear it, Approve, and
+  Reject. Preview only displays the suggestion. `Hear it` (trial, 2026-11-20)
+  is the one deliberate way to hear a suggestion before keeping it: it
+  validates the proposal exactly as Approve does, snapshots the current mix,
+  and sets the proposal values through the desk's own setters
+  (`applyStemDeskMix`). It never calls `play`, starts no source and adds no
+  second transport; a running desk is heard changing on the one clock, a
+  stopped desk waits for Play. The same button then reads `Hear mine` and
+  flips between the suggestion and the snapshot. Approve keeps the suggestion
+  (permanent); Reject, asking again, choosing another track or loading a group
+  returns to the snapshot. A control the musician moves while hearing the
+  suggestion is theirs from then on: flipping, Reject and Approve never move
+  it, and the idea survives the move. Without Hear it, `approveStemDeskProposal`
+  still applies a proposal only after it matches the loaded stem-set ids and
+  lane measurements and names every loaded group. Any soloed lane blocks it,
+  including a lane on a group the proposal does not name. Unknown fields,
+  including playback rate and pitch, reject the whole proposal and leave the
+  mix unchanged. Outside Hear it, a nudge, mute, solo, gain, level, or
+  crossfader move drops the pending proposal. An entry-offset nudge or a
+  proposed offset is heard on the next Play, as always. Gains still jump
+  rather than ramp; a click when flipping a running desk is a PM listening
+  check, not something this note claims is absent.
 - The Studio sidebar queue adds a track that is already in the library. It has
   no YouTube paste box. YouTube import stays in Choose Track. The queue is not
   persisted.

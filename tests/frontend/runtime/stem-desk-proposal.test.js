@@ -3,7 +3,10 @@ import test from 'node:test';
 
 import { equalPowerGains } from '../../../src/twobecomeone/studio_static/js/runtime/crossfader.js';
 import {
+  applyStemDeskMix,
   approveStemDeskProposal,
+  captureStemDeskMix,
+  mixControl,
   suggestStemDeskProposal,
   validateStemDeskProposal,
 } from '../../../src/twobecomeone/studio_static/js/runtime/stem-desk-proposal.js';
@@ -272,4 +275,47 @@ test('a proposal for an unloaded track or a soloed lane is refused', async () =>
   const soloed = legalProposal(desk.state());
   assert.equal(approveStemDeskProposal(soloed, desk).code, 'SOLO_HELD');
   assert.equal(desk.state().lanes.find((lane) => lane.key === 'B:drums').gainDb, 0);
+});
+
+test('flipping a suggestion and the musician mix on the real desk restores it exactly and starts no source', async () => {
+  const { ctx, desk } = await loadedDesk();
+  desk.setCrossfader(70);
+  desk.setGain('A:drums', -5);
+  desk.setTrackLevel('B', -2);
+  const mine = snapshot(desk);
+  const mineMix = captureStemDeskMix(desk.state());
+  const checked = validateStemDeskProposal(legalProposal(desk.state()), desk.state());
+  assert.equal(checked.ok, true);
+
+  desk.play();
+  const sources = ctx.createdSources.length;
+  applyStemDeskMix(checked.proposal, desk);
+  assert.notDeepEqual(snapshot(desk), mine);
+  assert.equal(desk.state().lanes.find((lane) => lane.key === 'A:vocals').effectiveGain, 0);
+  applyStemDeskMix(mineMix, desk);
+  assert.deepEqual(snapshot(desk), mine, 'the flip back is exact');
+  assert.equal(ctx.createdSources.length, sources, 'flipping reuses the one transport and starts nothing');
+  assert.equal(desk.state().status, 'playing');
+});
+
+test('controls the musician touched are skipped in both directions', async () => {
+  const { desk } = await loadedDesk();
+  const mineMix = captureStemDeskMix(desk.state());
+  const checked = validateStemDeskProposal(legalProposal(desk.state()), desk.state());
+  const skip = new Set([mixControl.crossfader, mixControl.gain('B:drums'), mixControl.offset('A')]);
+  desk.setCrossfader(90);
+  desk.setGain('B:drums', -2);
+  desk.setGroupEntryOffset('A', 15);
+  applyStemDeskMix(checked.proposal, desk, skip);
+  let state = desk.state();
+  assert.equal(state.crossfader.position, 90);
+  assert.equal(state.lanes.find((lane) => lane.key === 'B:drums').gainDb, -2);
+  assert.equal(state.groups.find((group) => group.trackId === 'A').entryOffsetMs, 15);
+  assert.equal(state.lanes.find((lane) => lane.key === 'A:vocals').muted, true);
+  assert.equal(state.groups.find((group) => group.trackId === 'B').entryOffsetMs, 80);
+  applyStemDeskMix(mineMix, desk, skip);
+  state = desk.state();
+  assert.equal(state.crossfader.position, 90);
+  assert.equal(state.lanes.find((lane) => lane.key === 'A:vocals').muted, false);
+  assert.equal(state.groups.find((group) => group.trackId === 'B').entryOffsetMs, 0);
 });
