@@ -110,6 +110,35 @@ export function clipNeedsDsp(rate, pitchSemitones) {
 }
 
 /**
+ * Host routing policy (OPERATION THE GOLDEN EAR II, shared live/offline
+ * contract). ONE decision function, two declared host policies:
+ *
+ *   offline : 'stretch-all'  — every clip through Signalsmith. This is the
+ *             ACCEPTED Milestone B bounce (byte-compatible with the audited
+ *             artifact); it is deliberately not changed here.
+ *   live    : 'bypass-unity' — a clip at rate 1 and 0 semitones plays through a
+ *             sample-exact AudioBufferSourceNode (no priming, no latency).
+ *
+ * Measured consequence (Chromium, rate-1 clip, recorded in
+ * docs/golden-ear-ii-clockwork-rescue.md): equal level (|dB| < 0.1), transient
+ * envelopes aligned (correlation 0.999) with the stretch path 64 frames
+ * (1.3 ms) late, waveforms NOT identical (residual ~1.1x RMS). Live playback
+ * and the bounce of an unstretched clip therefore match in level and timing
+ * to ~1.3 ms, not sample-for-sample. Migration (not done): move the bounce to
+ * 'bypass-unity' after the PM's listening sign-off, re-baselining the audited
+ * bounce artifact in the same change.
+ */
+export const HOST_ROUTING = Object.freeze({ offline: 'stretch-all', live: 'bypass-unity' });
+
+/** 'bypass' | 'stretch' for a clip on a host ('offline' | 'live'). */
+export function clipRoute(rate, pitchSemitones, host) {
+  const policy = HOST_ROUTING[host];
+  if (!policy) throw new RangeError(`unknown host ${host}`);
+  if (policy === 'bypass-unity' && !clipNeedsDsp(rate, pitchSemitones)) return 'bypass';
+  return 'stretch';
+}
+
+/**
  * Clamp the default micro-fade pair for a clip of `durationBeats`.
  * Short clips get proportionally shorter fades so fade-in + fade-out never
  * exceeds the clip. Deterministic and side-effect free.

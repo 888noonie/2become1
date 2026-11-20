@@ -104,3 +104,16 @@ test('stretch ratio bounds are documented constants', () => {
   assert.equal(MIN_STRETCH_RATIO, 0.05);
   assert.equal(MAX_STRETCH_RATIO, 20);
 });
+
+test('Golden Ear II: one routing decision with two declared host policies', async () => {
+  const { clipRoute, HOST_ROUTING } = await import('../../../src/twobecomeone/studio_static/js/arrangement/time-math.js');
+  assert.deepEqual({ ...HOST_ROUTING }, { offline: 'stretch-all', live: 'bypass-unity' });
+  // Live: only an exact unity clip bypasses.
+  assert.equal(clipRoute(1, 0, 'live'), 'bypass');
+  assert.equal(clipRoute(0.9999, 0, 'live'), 'stretch');
+  assert.equal(clipRoute(1, 1, 'live'), 'stretch');
+  // Offline (accepted bounce, unchanged): everything through the stretch path.
+  assert.equal(clipRoute(1, 0, 'offline'), 'stretch');
+  assert.equal(clipRoute(1.2, 0, 'offline'), 'stretch');
+  assert.throws(() => clipRoute(1, 0, 'speaker'), RangeError);
+});

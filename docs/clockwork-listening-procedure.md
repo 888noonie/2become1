@@ -1,110 +1,135 @@
-# OPERATION CLOCKWORK — Owner-Controlled Listening Procedure (Gate 9 / PM audition)
+# Clockwork — Owner-Controlled Listening Procedure (C1 audition)
 
-**Status: PREPARED — DO NOT RUN until the PM explicitly approves.** No audible
-playback is started by this document. Gate 9 (real speaker latency, glitch-free
-playback) and the PM's audible acceptance of the transport are both **deferred**
-and remain **INCONCLUSIVE** until this procedure is executed under owner control.
+**Status: READY FOR THE OWNER — NOT RUN.** Revised by OPERATION THE GOLDEN EAR II
+after the controls it describes were built and tested. Nothing in this document
+has been played on the owner's speakers or headphones. The owner decides whether
+and when to run it. No audible PASS exists until the owner writes one (§6).
 
-This is the short, owner-controlled audition and loopback-measurement procedure
-for Milestone C1. It is deliberately conservative: low volume, short duration,
-an immediate stop, and no configuration changes.
-
----
-
-## 1. Preconditions (verified present on this machine)
-
-| Item | Value |
-| --- | --- |
-| Audio server | PipeWire (active), `pw-record` / `pw-cat` / `pw-cli` / `pactl` installed |
-| Output device | **Headphones** sink: `alsa_output.pci-0000_35_00.6.HiFi__Headphones__sink` |
-| Loopback capture source | its monitor: `alsa_output.pci-0000_35_00.6.HiFi__Headphones__sink.monitor` |
-| Content | the C1 demo arrangement (eight stems, all originally synthesised — no licensed media) |
-| Files touched | **none** — playback is non-destructive; original source files are never modified |
-
-No audio-device configuration is changed by this procedure. It only *reads* the
-existing monitor source and plays through the existing default sink.
+The earlier version of this file described a demo page, Space/Esc bindings and a
+`pkill` stop that did not exist (Grok N3). This version describes only controls
+that exist on branch `fix/clockwork-rescue` and pass tests (see §7).
 
 ---
 
-## 2. Before you begin (owner safety steps)
+## 1. What you will hear
 
-1. **Put on the headphones** (or confirm the intended output) so you know what
-   will sound and to avoid surprising anyone nearby.
-2. **Set a low, safe system volume first** — about **30 % (≈ −18 dBFS master)**.
-   The test tones are quiet (a −40 dBFS pilot); raise only if you cannot hear it.
-3. Confirm you can reach the **stop mechanism** in §5 instantly (a key and a
-   terminal command are both given).
+8 seconds of **synthesised** material, generated in the page itself (no library
+media is read, written or changed):
 
----
+| Track | Material | Path |
+| --- | --- | --- |
+| 1 | sustained pad (220/275/330 Hz) | unstretched: sample-exact bypass |
+| 2 | drum-like clicks + noise bursts on every beat | unstretched: sample-exact bypass |
+| 3 | bass, 110 Hz, per-beat envelope | unstretched: sample-exact bypass |
+| 4 | arpeggio, stretched ×1.2 | Signalsmith (inside the measured 0.857–1.2 range) |
 
-## 3. Test duration and sequence (≈ 60–90 seconds total)
-
-| # | Step | What you should hear | ≈ duration |
-| --- | --- | --- | --- |
-| 1 | **Play** the eight-stem arrangement | the full mashup (drums, bass, chords, vocal, pad, arp, perc, texture) | 10 s |
-| 2 | **Stop**, then **restart** (Space) | clean stop to the cue, clean restart — **no click or pop** | 5 s |
-| 3 | **Seek within a sustained pad** | the pad continues smoothly from the new spot — **no click** | 10 s |
-| 4 | **Loop a short vocal phrase** | the phrase repeats with an even, brief crossfade — **no seam click, no dip/bump** | 15 s |
-| 5 | **Seek across drum transients** | old audio drops out fast, new material at full level at once | 10 s |
-| 6 | **Pilot-tone phase check** (auto) | a steady −40 dBFS pilot tone — should be continuous, no tick | 10 s |
-| 7 | **Stop** | silence | — |
-
-**Listen for (acceptance criteria):** no click/pop at Play, Stop, seek or loop;
-the loop seam is an even crossfade (gains sum to unity — no level dip or bump);
-a sustained pad never stutters or clicks on any transition; a deliberate
-clip-attack still speaks (the transport start ramp is ≤ 2.5 ms attenuation).
+All four tracks start together on one clock. **This is not beat matching** and
+makes no tempo or phrase-alignment claim.
 
 ---
 
-## 4. Measurement method (Gate 9 loopback)
+## 2. Start the page (no sound yet)
 
-While the sequence plays, capture the sink monitor to measure real speaker
-latency and seam behaviour. Run this in a terminal **before** step 1 (it records
-for the whole sequence):
+In a terminal, from the repair worktree:
 
 ```bash
-pw-record --target alsa_output.pci-0000_35_00.6.HiFi__Headphones__sink.monitor \
-  --rate 48000 --channels 2 ~/.local/state/clockwork/gate9-loopback.wav
+cd ~/MISIX-worktrees/clockwork-rescue && node tools/clockwork-audition/serve.mjs
 ```
 
-Then measure from `gate9-loopback.wav`:
+Then open **http://127.0.0.1:8777/tools/clockwork-audition/** in your browser.
 
-- **Play-to-speaker latency:** the wall gap between issuing Play and the first
-  transient appearing in the capture (cross-reference the in-graph tap timestamp).
-- **Stop-to-speaker latency:** the gap between Stop and the captured signal
-  reaching silence.
-- **Seek response:** the captured seam; old material ≤ −40 dB within 10 ms, new
-  material full-level within the 5 ms crossfade.
-- **Loop discontinuity:** back-to-back loop seams; the pilot tone must show **no
-  phase discontinuity** across a wrap (this is the glitch-free probe).
-- **Underruns / glitches:** audible ticks and pilot-phase jumps count as failures.
-
-**No glitch-free or speaker-latency number is claimed until this capture is
-taken and measured.** Headless Chromium results do **not** substitute for it.
+- The server listens on loopback only and serves files read-only. It does not
+  touch the Studio on port 8765 or `~/.local/share/2become1`.
+- **Loading the page plays nothing and opens no audio device.** The page says
+  "Audio is off". An audio context is created only when you press **Play**.
+- No pilot tone and no automatic sequence: every sound follows your key or click.
 
 ---
 
-## 5. Stop mechanism (immediate, at any moment)
+## 3. Before you press Play
 
-Any ONE of these stops playback at once:
-
-- Press **Space** (Play/Stop toggle — stops and returns to the cue).
-- Press **Esc** in the demo page (aborts the transport).
-- In a terminal: `pkill -f realtime-engine` (or close the browser tab).
-- Hardware: the headphones output mute / volume-down on the keyboard.
-
-To stop the loopback recording: `Ctrl-C` in the `pw-record` terminal.
+1. Choose the output first (headphones recommended) and set the **system volume
+   low**, about 30 %.
+2. The page's **Monitor level** starts at **−24 dB** and cannot go above −6 dB.
+   Leave it at −24 dB for the first listen.
+3. Find **Stop** (the red button) and remember **Esc**. Either stops at any time.
 
 ---
 
-## 6. After the audition (owner/PM verdict)
+## 4. Controls (all of them exist and are tested)
 
-Record against each §3 step: **PASS / FAIL / note**. Then:
+| Control | Action |
+| --- | --- |
+| **Play** button | prepares on first use (silent), then plays from the cue |
+| **Stop (Esc)** button / **Esc** key | fades out over 10 ms and returns to the cue; works from anywhere on the page, including while preparing |
+| **Space** | Play ⇄ Stop, exactly one action per press (it never also clicks a focused button) |
+| **Jump to 2 s / Jump to 6 s** | seek: two-voice handover at the new position, about 115 ms after the press |
+| **Loop 2 s–4 s** | loop on/off; while playing, the change is a seamless handover |
+| **Monitor level** | −48 … −6 dB, applied as a 50 ms ramp |
+| **Release audio device** | closes the audio context entirely (closing the tab does the same) |
+| State line | phase (`audio off` / `preparing` / `starting` / `playing` / `seeking` / `stopping` / `stopped` / `failed`), position, loop |
+| Errors and warnings | every refusal, warning or failure the engine reports |
+| Engine diagnostics | timing terms with their provenance, voice counts, supplied Signalsmith lead |
 
-1. Fill the Gate 9 measurements (§4) into `docs/all-the-time-milestone-c1.md` §9
-   and set its status from INCONCLUSIVE to measured.
-2. Record the PM's audible acceptance (or findings) in the C1 evidence doc.
-   **No audible PASS is claimed until this verdict is written.**
+**Second stop path.** If the transport has not reached `stopped` 600 ms after a
+Stop, the page suspends the whole audio context and says `STOP_WATCHDOG`. A later
+Play disarms that watchdog.
 
-Nothing in this procedure mutates state, media or configuration. It is read-only
-apart from writing one capture WAV under `~/.local/state/clockwork`.
+**Last resort.** Close the browser tab, or use your keyboard's mute key. There is
+no shell command that stops browser audio; the earlier `pkill` advice was wrong.
+
+---
+
+## 5. Suggested sequence (about 60–90 s, your pace)
+
+| # | Do | Listen for |
+| --- | --- | --- |
+| 1 | **Play** | all four tracks start together; no click at the start |
+| 2 | **Esc** after a few seconds | a clean fade to silence; the state reads `stopped` |
+| 3 | **Space** (play), then **Space** (stop) | a clean restart from the cue, then a clean stop |
+| 4 | **Play**, then **Jump to 6 s** while the pad sustains | the old audio is gone within ~5 ms of the handover, with no doubled audio, click or gap |
+| 5 | **Jump to 2 s**, then **Loop 2 s–4 s** | the loop repeats at 4 s → 2 s; the drum hit at the seam lands on time; the pad does not dip or click |
+| 6 | Let the loop run several passes | no drift, no stutter, no repeated stale audio |
+| 7 | **Esc** | silence |
+| 8 | **Release audio device** | the device is released |
+
+Stop at any time if anything is too loud or wrong.
+
+### Optional loopback capture (only if you want speaker-path numbers)
+
+This *reads* your sink's monitor and writes one WAV under `~/.local/state`. It
+changes no audio configuration. Run it in a second terminal **before step 1**,
+and press `Ctrl-C` after step 8:
+
+```bash
+pw-record --target alsa_output.pci-0000_35_00.6.HiFi__Headphones__sink.monitor --rate 48000 --channels 2 ~/.local/state/clockwork/audition-loopback.wav
+```
+
+Use the `__Speaker__sink.monitor` target instead if you listen on the speakers.
+`pactl info` shows which sink is the default.
+
+---
+
+## 6. After the audition (the owner's verdict)
+
+Record **PASS / FAIL / note** for each step in §5, plus anything the page listed
+under Errors and warnings. Only that written verdict is an audible acceptance.
+Until then the C1 transport is **not** accepted by ear, and no "click-free" or
+"glitch-free" claim is made.
+
+---
+
+## 7. What has been verified without your speakers (so you know what is new)
+
+- Engine-level tests on the actual `RealtimeEngine` (simulated device clock):
+  Stop completes and parks once; seek handovers leave no old audio; loop seams are
+  complementary; the voice ledger matches the real graph; late scheduling is
+  detected.
+- Real Chromium AudioWorklets, offline render: after a seek the old audio is at
+  −166 dB (bypass) and −70 dB (Signalsmith) 10 ms after the handover. After Stop
+  the output is exactly 0. Loop seams match the ideal looped signal to 1.1e-7.
+- Real Chromium, live clock, **with audio output disabled and muted** (PipeWire
+  verified: no playback stream ever appeared): this page's Play, Esc, Space, seek,
+  loop and Release flow; 16 of 16 repeated runs with no deadline miss.
+- **Not verified:** your device's real output latency, behaviour under your own
+  system load, and anything a human ear would judge. That is this procedure's job.

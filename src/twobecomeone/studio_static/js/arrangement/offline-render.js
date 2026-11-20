@@ -20,7 +20,7 @@
 //
 // Nothing here writes to ProjectState; the plan is the only input.
 
-import { clipNeedsDsp } from './time-math.js';
+import { clipNeedsDsp, clipRoute } from './time-math.js';
 
 const EQ_LOW_HZ = 250;
 const EQ_MID_HZ = 1000;
@@ -50,7 +50,9 @@ export { limiterLookaheadFrames };
  *   limiterLatencyFrames, dispose}>}
  */
 export async function buildBackbone(ctx, plan, options) {
-  const { limiterModuleUrl, captureModuleUrl, capture = false } = options;
+  const {
+    limiterModuleUrl, captureModuleUrl, capture = false, destination = null,
+  } = options;
   if (ctx.sampleRate !== plan.sampleRate) {
     throw new Error(
       `context sample rate ${ctx.sampleRate} does not match the plan (${plan.sampleRate}); `
@@ -84,7 +86,9 @@ export async function buildBackbone(ctx, plan, options) {
     limiter.connect(captureNode);
     tailNode = captureNode;
   }
-  tailNode.connect(ctx.destination);
+  // `destination` lets a live host insert its own monitor-level stage (the
+  // audition page's conservative output level). Offline bounces omit it.
+  tailNode.connect(destination ?? ctx.destination);
 
   const master = ctx.createGain();
   master.gain.value = plan.master.gainLinear;
@@ -136,6 +140,33 @@ export async function buildBackbone(ctx, plan, options) {
 }
 
 /**
+ * The musical clip envelope (gain + micro-fades) on [t0, t1), shared by the
+ * offline bounce (inside buildClipVoice) and the live engine (at arm time).
+ * The call sequence is exactly the Milestone B one.
+ */
+export function applyClipEnvelope(param, clip, t0, t1, sr) {
+  const lin = clip.clipGainLinear;
+  const fadeInSec = clip.fadeInFrames / sr;
+  const fadeOutSec = clip.fadeOutFrames / sr;
+  param.setValueAtTime(0, 0);
+  if (fadeInSec > 0) {
+    param.setValueAtTime(0, t0);
+    param.linearRampToValueAtTime(lin, t0 + fadeInSec);
+  } else {
+    param.setValueAtTime(lin, t0);
+  }
+  if (fadeOutSec > 0) {
+    let fadeDownStart = t1 - fadeOutSec;
+    const fadeUpEnd = t0 + fadeInSec;
+    if (fadeDownStart < fadeUpEnd) fadeDownStart = fadeUpEnd;
+    param.setValueAtTime(lin, fadeDownStart);
+    param.linearRampToValueAtTime(0, t1);
+  } else {
+    param.setValueAtTime(0, t1);
+  }
+}
+
+/**
  * Build one clip's source -> DSP/bypass -> clipGain chain feeding `dest`.
  * Shared by the offline per-clip build and the live per-occurrence voice so the
  * bypass decision (clipNeedsDsp) and the clip-gain law are identical.
@@ -149,6 +180,7 @@ export async function buildBackbone(ctx, plan, options) {
 export async function buildClipVoice(ctx, clip, source, options) {
   const {
     StretchFactory, dspBypass = false, startDelaySec = 0, timeOriginSec = 0,
+    arm = true,
   } = options;
   const sr = clip.sampleRate ?? options.sampleRate ?? 48000;
   const l = source.channels[0].slice(clip.sourceStartFrame, clip.sourceEndFrame);
@@ -160,42 +192,34 @@ export async function buildClipVoice(ctx, clip, source, options) {
 
   // Clip gain + fades: half-open region [t0, t1). Zero from the origin (no
   // pre-ring before the region), ramps over the fade, exactly zero at the end.
+  // With `arm: false` (live engine) the envelope is applied by the caller at arm
+  // time through applyClipEnvelope, so an epoch can still be re-anchored.
   const clipGain = ctx.createGain();
-  const lin = clip.clipGainLinear;
-  const fadeInSec = clip.fadeInFrames / sr;
-  const fadeOutSec = clip.fadeOutFrames / sr;
-  clipGain.gain.setValueAtTime(0, 0);
-  if (fadeInSec > 0) {
-    clipGain.gain.setValueAtTime(0, t0);
-    clipGain.gain.linearRampToValueAtTime(lin, t0 + fadeInSec);
-  } else {
-    clipGain.gain.setValueAtTime(lin, t0);
-  }
-  if (fadeOutSec > 0) {
-    let fadeDownStart = t1 - fadeOutSec;
-    const fadeUpEnd = t0 + fadeInSec;
-    if (fadeDownStart < fadeUpEnd) fadeDownStart = fadeUpEnd;
-    clipGain.gain.setValueAtTime(lin, fadeDownStart);
-    clipGain.gain.linearRampToValueAtTime(0, t1);
-  } else {
-    clipGain.gain.setValueAtTime(0, t1);
-  }
+  if (arm) applyClipEnvelope(clipGain.gain, clip, t0, t1, sr);
 
   const needsDsp = clipNeedsDsp(clip.rate, clip.pitchSemitones);
   let head;
   let stretch = null;
-  if (dspBypass && !needsDsp) {
+  // The ONE routing decision (time-math.js clipRoute): `dspBypass` selects the
+  // host policy — live 'bypass-unity' or the accepted offline 'stretch-all'.
+  if (clipRoute(clip.rate, clip.pitchSemitones, dspBypass ? 'live' : 'offline') === 'bypass') {
     // Bypass: sample-exact AudioBufferSourceNode (no algorithmic latency/priming).
     const buf = ctx.createBuffer(2, l.length, sr);
     buf.copyToChannel(l, 0);
     buf.copyToChannel(r, 1);
     head = ctx.createBufferSource();
     head.buffer = buf;
-    head.start(t0, 0);
+    if (arm) head.start(t0, 0);
   } else {
     // Stretch/pitch path (the vendored Signalsmith node).
     stretch = await StretchFactory(ctx, { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
     await stretch.addBuffers([l, r]);
+  }
+  // `arm: false` (the live engine): the caller measures the real lead to t0
+  // and sends the start itself — the legal Signalsmith arm-now + one-future-
+  // stop pair, or the bypass start/stop — or refuses a late voice. The offline
+  // bounce keeps `arm: true`: one future arm, unchanged from Milestone B.
+  if (arm && stretch) {
     stretch.schedule({
       output: t0,
       active: true,
@@ -205,10 +229,12 @@ export async function buildClipVoice(ctx, clip, source, options) {
       formantCompensation: clip.preserveFormants,
       formantBaseHz: 0,
     });
-    head = stretch;
   }
+  if (stretch) head = stretch;
   head.connect(clipGain);
-  return { head, stretch, clipGain, needsDsp, t0, t1 };
+  return {
+    head, stretch, clipGain, needsDsp, t0, t1, sliceFrames: l.length,
+  };
 }
 
 /**

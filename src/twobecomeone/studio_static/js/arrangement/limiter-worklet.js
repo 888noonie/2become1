@@ -139,9 +139,12 @@ class LimiterProcessor extends AudioWorkletProcessor {
     if (!output || !output[0]) return true;
     const inL = input && input[0] ? input[0] : new Float32Array(output[0].length);
     const inR = input && input[1] ? input[1] : inL;
+    const faultsBefore = this.limiter.nonFiniteCount;
     this.limiter.processBlock(inL, inR, output[0], output[1] || output[0]);
     this.blocks += 1;
-    if (this.blocks % 256 === 0) {
+    // A new non-finite fault is reported on the block it happens (the output is
+    // already zeroed); routine stats stay at one message per 256 blocks.
+    if (this.limiter.nonFiniteCount !== faultsBefore || this.blocks % 256 === 0) {
       this.port.postMessage({ type: 'stats', ...this.limiter.stats() });
     }
     return true;

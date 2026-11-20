@@ -169,10 +169,16 @@ export function occurrencesInWindow(plan, map, ctxFrom, ctxTo, options = {}) {
  * at output == nowSec WOULD be discarded by a later stop; the strict lead
  * (arm.output < nowSec) is required and is the default here.
  */
-export function signalsmithScheduleSequence(occ, { nowSec, sampleRate, armLeadSec = 0.002 } = {}) {
+export function signalsmithScheduleSequence(occ, {
+  nowSec, sampleRate, armLeadSec = 0.002, originSec = 0,
+} = {}) {
   const spf = 1 / sampleRate;
-  const occStartSec = occ.ctxStart * spf;
-  const occEndSec = occ.ctxEnd * spf;
+  // `occ.ctxStart/ctxEnd` are playback-line offsets (frames since the epoch
+  // origin). `originSec` is that origin on the CONTEXT clock, so the arm and
+  // stop are absolute context times comparable with `nowSec` (Grok N4: the
+  // live engine must not mix epoch-relative offsets with context time).
+  const occStartSec = originSec + occ.ctxStart * spf;
+  const occEndSec = originSec + occ.ctxEnd * spf;
   const armOutputSec = nowSec - Math.max(armLeadSec, 1e-6); // STRICTLY < nowSec (the pop drops output >= anchor)
   // Source position at the arm's output time, extrapolated from the occurrence's
   // source start at its ctx start (rate = source frames per output frame).

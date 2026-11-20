@@ -30,7 +30,32 @@ export const VoiceState = Object.freeze({
   PENDING: 'pending',
   SOUNDING: 'sounding',
   TAIL: 'tail',
+  // Strict (engine-owned) lifecycle, OPERATION THE GOLDEN EAR II (Grok N5):
+  //   allocated -> prepared -> sounding -> fading -> disconnected -> (released)
+  // A slot is reserved at `allocated`, before any node exists, and is returned
+  // to the free list ONLY from `disconnected` — i.e. after the engine has really
+  // disconnected the voice's nodes. Stages may be skipped forwards (a voice
+  // cancelled before it sounded goes prepared -> fading, a failed build goes
+  // allocated -> disconnected) but never backwards.
+  ALLOCATED: 'allocated',
+  PREPARED: 'prepared',
+  FADING: 'fading',
+  DISCONNECTED: 'disconnected',
 });
+
+/** Forward order of the strict lifecycle (index = rank). */
+export const STRICT_LIFECYCLE = Object.freeze([
+  VoiceState.ALLOCATED, VoiceState.PREPARED, VoiceState.SOUNDING,
+  VoiceState.FADING, VoiceState.DISCONNECTED,
+]);
+
+export class LifecycleError extends Error {
+  constructor(id, from, to) {
+    super(`voice ${id}: illegal lifecycle transition ${from} -> ${to}`);
+    this.name = 'LifecycleError';
+    this.code = 'ILLEGAL_LIFECYCLE';
+  }
+}
 
 export class PoolExhaustedError extends Error {
   constructor(required, capacity) {
@@ -84,8 +109,13 @@ export class VoicePool {
   /**
    * @param {number} capacity hard bound on live (non-free) voices
    */
-  constructor(capacity = MAX_CLIPS_PER_GRAPH) {
+  constructor(capacity = MAX_CLIPS_PER_GRAPH, { strict = false } = {}) {
     this.capacity = capacity;
+    /** Strict mode (the live engine): no automatic reclamation; a slot frees
+     *  only from DISCONNECTED via releaseDisconnected(). Legacy (non-strict)
+     *  behaviour is kept for the pure pool tests. */
+    this.strict = strict;
+    this.illegalTransitions = 0;
     this.voices = new Map(); // id -> voice
     this.free = [];
     this.peakConcurrent = 0;
@@ -102,6 +132,9 @@ export class VoicePool {
   }
 
   #sweepTail(nowFrame, epoch) {
+    // Strict mode never frees a slot behind the engine's back (Grok N5: a tail
+    // slot reused while its old node was still connected).
+    if (this.strict) return;
     // Reclaim tail voices whose ring has finished, and any tail from an older
     // epoch (inaudible) regardless of remaining ring. A SOUNDING voice is never
     // reclaimed here.
@@ -140,14 +173,17 @@ export class VoicePool {
         error: new PoolExhaustedError(this.#liveCount(), this.capacity),
       };
     }
-    const id = this.free.pop() ?? (nextVoiceId++);
+    // Strict mode never reuses an id: a stale async completion that still holds
+    // an old id can then never act on a different, newer voice.
+    const id = this.strict ? (nextVoiceId++) : (this.free.pop() ?? (nextVoiceId++));
     const voice = {
       id,
       epoch,
       generation,
       role,
       clipId,
-      state: VoiceState.PENDING,
+      state: this.strict ? VoiceState.ALLOCATED : VoiceState.PENDING,
+      history: [this.strict ? VoiceState.ALLOCATED : VoiceState.PENDING],
       bytes,
       tailFrames,
       tailEndFrame: null,
@@ -178,9 +214,52 @@ export class VoicePool {
     v.tailEndFrame = tailEndFrame;
   }
 
-  /** Force-release a voice (its work was cancelled by a newer epoch). */
+  /** Force-release a voice (its work was cancelled by a newer epoch). In strict
+   *  mode this is refused unless the voice is DISCONNECTED. */
   release(id) {
+    const v = this.voices.get(id);
+    if (this.strict && v && v.state !== VoiceState.DISCONNECTED) {
+      this.illegalTransitions += 1;
+      throw new LifecycleError(id, v.state, 'released');
+    }
     this.#free(id);
+  }
+
+  /**
+   * Strict lifecycle step. Forward-only along STRICT_LIFECYCLE; a repeat of the
+   * current state is a no-op. Throws LifecycleError on a backwards or unknown
+   * transition so an engine bug cannot silently corrupt the ledger.
+   */
+  advance(id, to) {
+    const v = this.voices.get(id);
+    if (!v) throw new LifecycleError(id, 'free', to);
+    const from = STRICT_LIFECYCLE.indexOf(v.state);
+    const next = STRICT_LIFECYCLE.indexOf(to);
+    if (next < 0 || from < 0 || next < from) {
+      this.illegalTransitions += 1;
+      throw new LifecycleError(id, v.state, to);
+    }
+    if (next === from) return v;
+    v.state = to;
+    v.history.push(to);
+    return v;
+  }
+
+  /** Return a DISCONNECTED voice's slot to the free list (strict lifecycle end). */
+  releaseDisconnected(id) {
+    const v = this.voices.get(id);
+    if (!v || v.state !== VoiceState.DISCONNECTED) {
+      this.illegalTransitions += 1;
+      throw new LifecycleError(id, v ? v.state : 'free', 'released');
+    }
+    const history = [...v.history, 'released'];
+    this.#free(id);
+    return history;
+  }
+
+  /** State of a live voice (or null once released). */
+  stateOf(id) {
+    return this.voices.get(id)?.state ?? null;
   }
 
   /**
@@ -206,10 +285,13 @@ export class VoicePool {
 
   stats() {
     let sounding = 0; let pending = 0; let tail = 0;
+    const byState = {};
     for (const v of this.voices.values()) {
+      byState[v.state] = (byState[v.state] ?? 0) + 1;
       if (v.state === VoiceState.SOUNDING) sounding += 1;
-      else if (v.state === VoiceState.PENDING) pending += 1;
-      else if (v.state === VoiceState.TAIL) tail += 1;
+      else if (v.state === VoiceState.PENDING || v.state === VoiceState.ALLOCATED
+        || v.state === VoiceState.PREPARED) pending += 1;
+      else if (v.state === VoiceState.TAIL || v.state === VoiceState.FADING) tail += 1;
     }
     return {
       capacity: this.capacity,
@@ -224,6 +306,9 @@ export class VoicePool {
       peakAllocatedBytes: this.peakAllocatedBytes,
       refusals: this.refusals,
       stolen: this.stolen,
+      byState,
+      strict: this.strict,
+      illegalTransitions: this.illegalTransitions,
     };
   }
 }

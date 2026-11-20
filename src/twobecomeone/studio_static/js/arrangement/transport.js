@@ -274,7 +274,9 @@ export function transportReduce(state, event) {
       s.epoch += 1; // a retarget begins a new audio epoch
       s.generation += 1;
       s.seamFrame = frame;
-      s.cueFrame = frame;
+      // A retarget that is not an owner seek (a live loop change re-anchors the
+      // map at the heard position) keeps the Stop cue where the owner left it.
+      if (event.keepCue !== true) s.cueFrame = frame;
       effects.push({
         type: 'seek',
         epoch: s.epoch,
@@ -283,6 +285,7 @@ export function transportReduce(state, event) {
         toFrame: frame,
         // A seek while already seeking simply retargets (supersede).
         retarget: event.retarget === true,
+        keepCue: event.keepCue === true,
       });
       return { state: s, effects };
     }

@@ -1,5 +1,16 @@
 # OPERATION CLOCKWORK — Milestone C1: Real-Time Transport Core
 
+> **Superseded in part by OPERATION THE GOLDEN EAR II (2026-11-20).** Grok's
+> independent audit found that the live `RealtimeEngine` did not carry this
+> document's transport contracts into live audio: seek left old audio playing for
+> about 3.9 s, Stop never completed, there were no audition controls, the
+> horizon was not supplied as priming lead, the voice ledger disagreed with the
+> graph, and loop seams were unwired. Those defects were reproduced and repaired
+> on `fix/clockwork-rescue`. See `docs/golden-ear-ii-clockwork-rescue.md`. The
+> pure-module evidence below still stands. The live-engine claims in it, and the
+> earlier listening procedure, should be read through that record.
+
+
 Branch: `feature/all-the-time` (isolated local engineering). Starting HEAD
 `462dba92720b3d1a1a33b8b6dab10ca68a84d094`. This document is the C1 evidence
 receipt and the PM listening checklist. Design input: `design/golden-ear @

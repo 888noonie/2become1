@@ -232,3 +232,18 @@ test('T1: generation increments on every state-changing command (stale-work inva
   s = transportReduce(s, { type: 'setLoop', loop: [0, 100] }).state;
   assert.ok(s.generation > g1, 'setLoop bumps the generation');
 });
+
+test('Golden Ear II: a keepCue retarget (live loop change) moves the epoch but not the Stop cue', () => {
+  let s = createTransportState({ arrangementEndFrame: END });
+  s = transportReduce(s, { type: 'prepare' }).state;
+  s = transportReduce(s, { type: 'ready', parkedFrame: 1000 }).state;
+  s = transportReduce(s, { type: 'play' }).state;
+  const epoch = s.epoch;
+  const r = transportReduce(s, { type: 'seek', frame: 50000, keepCue: true });
+  assert.equal(r.state.phase, Phase.SEEKING);
+  assert.equal(r.state.epoch, epoch + 1);
+  assert.equal(r.state.cueFrame, 1000, 'cue kept');
+  assert.equal(r.effects[0].keepCue, true);
+  const owner = transportReduce(s, { type: 'seek', frame: 50000 });
+  assert.equal(owner.state.cueFrame, 50000, 'an owner seek still moves the cue');
+});

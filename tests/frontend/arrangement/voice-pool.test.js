@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { VoicePool, VoiceState, deriveVoiceCapacity, PoolExhaustedError } from '../../../src/twobecomeone/studio_static/js/voice-pool.js';
+import { VoicePool, VoiceState, deriveVoiceCapacity, PoolExhaustedError, STRICT_LIFECYCLE, LifecycleError } from '../../../src/twobecomeone/studio_static/js/voice-pool.js';
 import { MAX_CLIPS_PER_GRAPH } from '../../../src/twobecomeone/studio_static/js/arrangement/offline-render.js';
 
 test('GATE 4: capacity is derived from concurrency and the graph limit', () => {
@@ -130,6 +130,48 @@ test('GATE 4: release frees bytes and returns the slot for reuse', () => {
   assert.equal(pool.acquire({ epoch: 1, bytes: 1, nowFrame: 0 }).ok, false, 'still bounded at 4');
 });
 
-test('GATE 4: VoiceState names the lifecycle stages', () => {
-  assert.deepEqual(Object.values(VoiceState).sort(), ['pending', 'sounding', 'tail']);
+test('GATE 4: VoiceState names the lifecycle stages (legacy three + the strict ledger)', () => {
+  // Golden Ear II (Grok N5) extends the enum with the engine-owned strict
+  // lifecycle; the three C1 names are kept for the non-strict pool.
+  assert.deepEqual(Object.values(VoiceState).sort(),
+    ['allocated', 'disconnected', 'fading', 'pending', 'prepared', 'sounding', 'tail']);
+  assert.deepEqual([...STRICT_LIFECYCLE], ['allocated', 'prepared', 'sounding', 'fading', 'disconnected']);
+});
+
+test('N5: a strict pool never frees a slot before the voice is disconnected', () => {
+  const pool = new VoicePool(2, { strict: true });
+  const a = pool.acquire({ epoch: 1, bytes: 10 }).voice;
+  pool.advance(a.id, 'prepared');
+  pool.advance(a.id, 'sounding');
+  pool.advance(a.id, 'fading');
+  // No automatic reclamation, whatever the clock or epoch says.
+  pool.sweep(1e12, 99);
+  assert.equal(pool.stats().live, 1);
+  assert.throws(() => pool.release(a.id), LifecycleError, 'release before disconnection is refused');
+  assert.throws(() => pool.releaseDisconnected(a.id), LifecycleError);
+  pool.advance(a.id, 'disconnected');
+  assert.deepEqual(pool.releaseDisconnected(a.id), ['allocated', 'prepared', 'sounding', 'fading', 'disconnected', 'released']);
+  assert.equal(pool.stats().live, 0);
+  assert.equal(pool.stats().illegalTransitions, 2);
+});
+
+test('N5: strict lifecycle is forward-only and ids are never reused', () => {
+  const pool = new VoicePool(4, { strict: true });
+  const a = pool.acquire({}).voice;
+  pool.advance(a.id, 'sounding'); // skipping forwards is allowed
+  assert.throws(() => pool.advance(a.id, 'prepared'), LifecycleError, 'backwards is refused');
+  pool.advance(a.id, 'disconnected');
+  pool.releaseDisconnected(a.id);
+  const b = pool.acquire({}).voice;
+  assert.notEqual(b.id, a.id, 'a released id is never handed out again (stale completions cannot alias)');
+  assert.throws(() => pool.advance(a.id, 'fading'), LifecycleError, 'a released voice cannot be advanced');
+});
+
+test('N5: a strict pool refuses at capacity without stealing', () => {
+  const pool = new VoicePool(1, { strict: true });
+  assert.equal(pool.acquire({}).ok, true);
+  const r = pool.acquire({});
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'POOL_EXHAUSTED');
+  assert.equal(pool.stats().stolen, 0);
 });

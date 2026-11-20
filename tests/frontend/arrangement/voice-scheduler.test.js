@@ -195,3 +195,22 @@ test('GATE 3: signalsmithScheduleSequence emits the legal arm<=now < stop shape'
   tm.schedule(seq.stop);
   assert.ok(tm.timeMap.includes(arm), 'the legal sequence does not lose the arm');
 });
+
+test('Golden Ear II: originSec places the legal pair on the context clock (no offset/clock mixing)', () => {
+  const SR = 48000;
+  const occ = { ctxStart: 0, ctxEnd: SR, sourceStart: 0, rate: 1.2, semitones: 0, preserveFormants: false };
+  const originSec = 7.5; // the voice's t0 on the device clock
+  const nowSec = 7.4; // 100 ms of lead
+  const { arm, stop } = signalsmithScheduleSequence(occ, { nowSec, sampleRate: SR, originSec });
+  assert.ok(arm.output < nowSec, 'arm strictly before now');
+  assert.ok(Math.abs(stop.output - (originSec + 1)) < 1e-12, 'stop at the context-time end');
+  // At t0 the compensated arm reads exactly source frame 0 (input seconds).
+  const inputAtT0 = arm.input + (originSec - arm.output) * arm.rate;
+  assert.ok(Math.abs(inputAtT0) < 1e-12, `input at t0 = ${inputAtT0}`);
+  // Against the faithful pop model, the stop never discards the arm.
+  const m = new SignalsmithTimeMapModel(nowSec);
+  m.schedule(arm);
+  m.schedule(stop);
+  assert.equal(m.segmentAt(originSec).active, true);
+  assert.equal(m.segmentAt(originSec + 1).active, false);
+});
