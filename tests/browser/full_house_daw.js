@@ -15,6 +15,19 @@ import { chromium } from 'playwright-core';
 import { resolveChromium } from './chromium.js';
 
 const [base = 'http://127.0.0.1:8791', outDir = 'full-house-out'] = process.argv.slice(2);
+const A11Y_SOURCE = readFileSync(new URL('./a11y.js', import.meta.url), 'utf8')
+  .replace(/^export function /gm, 'function ')
+  .replace(/^export \{.*$/m, '')
+  .replace(/^export const /gm, 'const ')
+  .replace(/^export /gm, '')
+  + '\nwindow.auditDocument = auditDocument;\n';
+async function audit(page, viewportWidth) {
+  if (!(await page.evaluate(() => typeof window.auditDocument === 'function'))) await page.addScriptTag({ content: A11Y_SOURCE });
+  return page.evaluate((w) => {
+    const r = window.auditDocument(document, { viewportWidth: w });
+    return { serious: r.serious, moderate: r.moderate, info: r.info, findings: (r.findings ?? []).filter((f) => f.severity !== 'info').slice(0, 8) };
+  }, viewportWidth);
+}
 mkdirSync(outDir, { recursive: true });
 const checks = [];
 const measurements = {};
@@ -243,11 +256,14 @@ try {
   await page.fill('input[aria-label="Gain"]', '-3');
   await page.dispatchEvent('input[aria-label="Gain"]', 'change');
   // Fade-out by dragging its grip on the clip.
-  const fb = await page.locator(`.daw__clip[data-clip-id="${bv}"]`).boundingBox();
-  await page.mouse.move(fb.x + fb.width - 16, fb.y + 4);
+  // Drag the fade-out grip itself (its own element, scrolled into view).
+  const grip = page.locator(`.daw__clip[data-clip-id="${bv}"] .daw__fade-grip--out`);
+  await grip.scrollIntoViewIfNeeded();
+  const gb = await grip.boundingBox();
+  await page.mouse.move(gb.x + gb.width / 2, gb.y + gb.height / 2);
   await page.mouse.down();
-  await page.mouse.move(fb.x + fb.width - 16 - 2 * ppb, fb.y + 4);
-  await page.mouse.move(fb.x + fb.width - 16 - 4 * ppb, fb.y + 4);
+  await page.mouse.move(gb.x + gb.width / 2 - 2 * ppb, gb.y + gb.height / 2);
+  await page.mouse.move(gb.x + gb.width / 2 - 4 * ppb, gb.y + gb.height / 2);
   await page.mouse.up();
   st = await state();
   const faded = st.clips.find((c) => c.id === bv);
@@ -379,11 +395,36 @@ try {
     };
   });
   await page.click('button[aria-label="Solo B Vocals"]');
-  await S(() => window.__arrangement.session.seek(116)); // inside the stretched, +3 st B Vocals clip
+  // Cue into the stretched, +3 st B Vocals clip at its loudest passage (read
+  // from the decoded source), so a rest between sung phrases cannot pass for
+  // a silent voice.
+  const loudBeat = await S((id) => {
+    const s = window.__arrangement.session;
+    const c = s.state.clips.find((x) => x.id === id);
+    const a = s.state.assets[c.assetId];
+    const ch = s.buffers[a.bufferReference].channels[0];
+    const spb = 60 / s.bpm;
+    const rate = s.bpm / a.nativeBpm;
+    let best = c.timelineStartBeat + 1; let bestE = -1;
+    for (let b = c.timelineStartBeat + 1; b < c.timelineStartBeat + c.durationBeats - 3; b += 0.5) {
+      const from = Math.round((c.sourceOffsetSec + (b - c.timelineStartBeat) * spb * rate) * 48000);
+      let e = 0;
+      for (let i = from; i < from + 48000 && i < ch.length; i += 1) e += ch[i] * ch[i];
+      if (e > bestE) { bestE = e; best = b; }
+    }
+    s.seek(best);
+    return best;
+  }, bv);
+  measurements.soloCueBeat = loudBeat;
   await page.click('button[aria-label="Play"]');
   await page.waitForFunction(() => window.__arrangement.session.phase() === 'playing', null, { timeout: 15000 });
   await sleep(400);
   const soloLevel = await S(() => window.__level(700));
+  measurements.soloContext = await S(() => {
+    const s = window.__arrangement.session;
+    return { phase: s.phase(), beat: s.playheadBeat(), solo: s.state.tracks.map((t) => t.solo), mute: s.state.tracks.map((t) => t.mute),
+      clips4: s.state.clips.filter((c) => c.trackIndex === 4).map((c) => [c.timelineStartBeat, c.durationBeats]), events: s.engine.diagnostics().events.slice(-6), msgs: s.messages.slice(-4) };
+  });
   const dsp = await S(() => {
     const d = window.__arrangement.session.engine.diagnostics();
     return { dspArms: d.timing.suppliedDspLeadMs?.count ?? 0, minLeadMs: d.timing.suppliedDspLeadMs?.min ?? null, misses: d.deadlineMisses, unqualified: d.unqualifiedStretch };
@@ -447,6 +488,9 @@ try {
   check('10. reopened project holds references, not audio', !JSON.stringify(reopened).includes('channels') && JSON.stringify(reopened).length < 40000,
     { bytes: JSON.stringify(reopened).length });
   await page.screenshot({ path: join(outDir, 'daw-1440-reopened.png') });
+  const deskAudit = await audit(page, 1440);
+  measurements.a11y1440 = deskAudit;
+  check('a11y 1440: no serious or moderate findings on the arrangement', deskAudit.serious === 0 && deskAudit.moderate === 0, deskAudit);
 
   // ---- 11. Export the finished arrangement ---------------------------------
   const [download] = await Promise.all([
@@ -508,6 +552,9 @@ try {
     .filter((r) => r.h < 28));
   check('phone 390 px: controls keep usable heights', small.length === 0, small);
   await page.screenshot({ path: join(outDir, 'daw-390.png'), fullPage: false });
+  const phoneAudit = await audit(page, 390);
+  measurements.a11y390 = phoneAudit;
+  check('a11y 390: no serious or moderate findings on the arrangement', phoneAudit.serious === 0 && phoneAudit.moderate === 0, phoneAudit);
   check('no page errors', pageErrors.length === 0, pageErrors);
 } catch (err) {
   check('journey completed', false, { error: String(err && err.stack || err) });

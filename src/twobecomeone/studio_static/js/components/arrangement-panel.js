@@ -300,7 +300,7 @@ export function mountArrangementPanel(opts) {
     const peaks = asset ? peaksFor(asset.bufferReference) : null;
     const ratio = Math.min(win.devicePixelRatio || 1, 2);
     const w = Math.max(1, Math.min(8192, Math.round(widthPx * ratio)));
-    const hgt = Math.round((LANE_HEIGHT - 22) * ratio);
+    const hgt = Math.max(8, Math.round((canvas.clientHeight || LANE_HEIGHT - 22) * ratio));
     canvas.width = w;
     canvas.height = hgt;
     const g = canvas.getContext?.('2d');
@@ -669,9 +669,10 @@ export function mountArrangementPanel(opts) {
   // ------------------------------------------------------------- pointer gestures
 
   const beatAt = (clientX) => (clientX - content.getBoundingClientRect().left) / pxPerBeat();
+  const laneHeight = () => lanes.firstElementChild?.offsetHeight || LANE_HEIGHT;
   const laneAt = (clientY) => {
     const r = lanes.getBoundingClientRect();
-    return Math.max(0, Math.min(7, Math.floor((clientY - r.top) / LANE_HEIGHT)));
+    return Math.max(0, Math.min(7, Math.floor((clientY - r.top) / laneHeight())));
   };
 
   on(lanes, 'pointerdown', (ev) => {
@@ -714,7 +715,7 @@ export function mountArrangementPanel(opts) {
       d.start = snap(pointer - d.grabOffset, free);
       d.lane = laneAt(ev.clientY);
       d.el.style.left = `${d.start * ppb}px`;
-      d.el.style.transform = `translateY(${(d.lane - c.trackIndex) * LANE_HEIGHT}px)`;
+      d.el.style.transform = `translateY(${(d.lane - c.trackIndex) * laneHeight()}px)`;
       d.el.classList.add('is-dragging');
     } else if (d.grip === 'start') {
       const end = c.timelineStartBeat + c.durationBeats;

@@ -191,6 +191,43 @@ Earlier audio history: `docs/stem-desk-audio-diagnosis.md`.
   previous code, not with tone probes alone. Headless PCM never replaces the
   PM's listening acceptance.
 
+## Studio arrangement editor (OPERATION FULL HOUSE)
+
+The Studio has two surfaces: Performance (the accepted desk, still the landing
+surface) and Arrangement (`#/studio/arrangement`, remembered once chosen).
+Evidence and the demo procedure: `docs/full-house-daw.md`.
+
+- One `EditEngine` (`js/arrangement/edit-api.js`) holds the ONE ProjectState.
+  Every control, keyboard shortcut and Producer action goes through
+  `DawSession.apply` → `EditEngine.run`: validated, atomic, undoable. Do not add
+  a second project, snapshot or arrangement state, for the UI or for the AI.
+- Assets carry a Studio media URL as `bufferReference` (a stem section such as
+  `/api/stems/{set}/audio?name=vocals&start=30&duration=60`). Decoded PCM lives
+  in `DawSession.buffers` and never enters project JSON. The server refuses any
+  other reference shape. Decoding uses the desk's limits (40 MiB per stem and
+  320 MiB in all for sections, 128 / 1024 MiB for Full length).
+- No AudioContext exists until Play. Performance and Arrangement fire
+  `twobecomeone:exclusive-play`; the other one stops. One context per session.
+- The live engine takes edits with `RealtimeEngine.replacePlan`: mixer values
+  ramp on the shared backbone (20 ms); a clip change re-anchors at the heard
+  position through the Seek handover. Never rebuild the engine to apply an edit.
+- Imported stems play at ratio 1 (no DSP) until the musician chooses Fit to
+  project tempo (`beat_sync` from the track's measured BPM) or a manual speed.
+  Stretch keeps pitch and the source span; pitch keeps time. An entered tempo
+  is labelled entered, never measured. A rate or pitch outside the measured
+  priming range plays and is reported as `STRETCH_UNQUALIFIED`.
+- Save writes `/api/arrangements/{id}` (1 MiB JSON limit, atomic replace).
+  Reopening restores the exact ProjectState; undo history starts fresh.
+- Export saves first, renders that saved state through `renderOffline` (the
+  accepted stretch-all bounce, limiter ceiling -0.3 dBFS, 0.5 s tail) and
+  offers a 24-bit 48 kHz WAV download from the musician's own click. At most
+  32 clips per bounce; more is refused with the reason.
+- The arrangement Producer suggests ordinary edit commands, dry-runs them with
+  `EditEngine.propose`, and applies Hear it / Hear mine / Keep / Undo as normal
+  batches. A field the musician changes after the idea arrives is theirs.
+- Browser runs use `--disable-audio-output --mute-audio`. Headless measurements
+  never replace the PM's listening acceptance.
+
 ## Static assets
 
 - There is no byte ceiling. Record the total uncompressed bytes under

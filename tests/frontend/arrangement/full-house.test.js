@@ -229,6 +229,20 @@ test('a clip edit while playing hands over at the heard position: old voices fad
   assert.equal(ctx.connectedProcessors(), 0);
 });
 
+test('negative control: an engine that ignores edits keeps the OLD source sounding, and the detector sees it', async () => {
+  const { ctx, engine } = await liveEngine([planClip({ id: 'x', length: 20 * SR })]);
+  engine.play(0);
+  await run(ctx, engine, 1.0);
+  // The pre-FULL-HOUSE behaviour: the plan is fixed at construction.
+  const original = engine.replacePlan;
+  engine.replacePlan = async () => ({ reseeked: false });
+  await engine.replacePlan(enginePlan([planClip({ id: 'x', start: 0, length: 20 * SR, src: 2 * SR })]));
+  await run(ctx, engine, 1.6);
+  const readsEdited = [...engine.voices.values()].every((v) => v.vp.sourceStart >= 2 * SR);
+  assert.equal(readsEdited, false, 'without plan replacement the heard voices still read the unedited source');
+  engine.replacePlan = original;
+});
+
 test('a mixer-only change while playing does not re-seek', async () => {
   const { ctx, engine } = await liveEngine([planClip({ id: 'x', length: 20 * SR })]);
   engine.play(0);

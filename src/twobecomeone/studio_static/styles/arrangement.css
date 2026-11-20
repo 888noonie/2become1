@@ -77,7 +77,8 @@
 .daw__field--quiet { opacity: 0.85; }
 .daw__field select, .daw__field input[type="number"], .daw__project select, .daw__name,
 .daw__import select, .daw__import input, .daw__row input[type="number"] {
-  min-height: 40px;
+  min-height: 44px;
+  box-sizing: border-box;
   padding: 4px 8px;
   border: 1px solid var(--color-control-border);
   border-radius: var(--radius-sm);
@@ -272,13 +273,15 @@
   .daw__body { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 640px) {
-  .daw { --daw-head: 150px; }
+  /* Phone: each switch keeps a full 44 x 44 target; the lane name is the
+     selection target across the full lane height. Level lives in the inspector. */
+  .daw { --daw-head: 176px; }
   .daw__head { grid-template-rows: 1fr; padding: 4px 6px 4px 10px; }
-  .daw__head-name { align-self: stretch; }
+  .daw__head-name { align-self: stretch; min-height: 44px; }
   .daw__head-ms { grid-row: auto; }
   .daw__head-fader { display: none; }
   .daw__head-index { display: none; }
-  .daw__ms { width: 30px; height: 32px; }
+  .daw__ms { width: 44px; height: 44px; }
   .daw__name { min-width: 0; flex: 1 1 100%; }
   .daw__project .daw__levels { margin-left: 0; }
   .daw__row { grid-template-columns: 6em minmax(0, 1fr) auto; }
