@@ -19,7 +19,9 @@ import {
 import {
   MAX_CLIP_GAIN_DB, MAX_EQ_GAIN_DB, MAX_PITCH_SEMITONES, MAX_VOLUME_DB,
   MIN_CLIP_GAIN_DB, MIN_EQ_GAIN_DB, MIN_PITCH_SEMITONES, MIN_VOLUME_DB,
+  MAX_AUTOMATION_POINTS,
 } from '../arrangement/project-state.js';
+import { dbToLinear } from '../arrangement/render-plan.js';
 import {
   MIN_CLIP_DURATION_BEATS, beatsToSourceSeconds, slipLimitsSec, sourceAdvanceRate,
 } from '../arrangement/time-math.js';
@@ -100,6 +102,8 @@ export function mountArrangementPanel(opts) {
     selectedTrack: 0,
     lastLoop: null,
     drag: null,
+    envDrag: null,
+    selectedPoint: null,
     rafId: null,
     tracks: [],
     disposed: false,
@@ -109,6 +113,11 @@ export function mountArrangementPanel(opts) {
   const onChange = (kind) => {
     if (ui.disposed) return;
     if (kind === 'transport') { renderTransport(); startPlayheadLoop(); return; }
+    if (ui.envDrag) {
+      paintLiveEnvelope(ui.envDrag.trackIndex);
+      renderInspector();
+      return;
+    }
     render();
   };
   const onMessage = (entry) => {
@@ -404,6 +413,228 @@ export function mountArrangementPanel(opts) {
   }
 
   let producerPreview = () => [];
+  let producerHandle = null;
+
+  function dropEnvelopePreview(trackIndex) {
+    if (typeof producerHandle?.dropEnvelopePreview === 'function') {
+      producerHandle.dropEnvelopePreview(trackIndex);
+    }
+  }
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const linearFloor = () => dbToLinear(MIN_VOLUME_DB);
+  const linearCeil = () => dbToLinear(MAX_VOLUME_DB);
+
+  function linearToY(lin, height) {
+    const pad = 8;
+    const t = (lin - linearFloor()) / (linearCeil() - linearFloor());
+    return (height - pad) - Math.min(1, Math.max(0, t)) * (height - pad * 2);
+  }
+
+  function yToOffsetDb(y, track, height) {
+    const pad = 8;
+    const t = ((height - pad) - y) / (height - pad * 2);
+    const lin = linearFloor() + Math.min(1, Math.max(0, t)) * (linearCeil() - linearFloor());
+    const absolute = 20 * Math.log10(Math.max(lin, linearFloor()));
+    return clampTo(absolute - track.volumeDb, MIN_VOLUME_DB, MAX_VOLUME_DB);
+  }
+
+  function pointLinear(track, point) {
+    const absolute = clampTo(track.volumeDb + point.db, MIN_VOLUME_DB, MAX_VOLUME_DB);
+    return dbToLinear(absolute);
+  }
+
+  /** Vertices in linear amplitude, so a straight stroke is the sound. */
+  function curveVertices(track, width) {
+    const height = LANE_HEIGHT;
+    const stored = track.gainPoints ?? [];
+    if (!stored.length) {
+      const y = linearToY(dbToLinear(track.volumeDb), height);
+      return [{ x: 0, y }, { x: width, y }];
+    }
+    const sorted = stored.map((point, index) => ({ point, index }))
+      .sort((a, b) => (a.point.beat - b.point.beat) || (a.index - b.index));
+    const xOf = (beat) => beat * pxPerBeat();
+    const verts = [];
+    const first = sorted[0].point;
+    const last = sorted[sorted.length - 1].point;
+    if (first.beat > 0) verts.push({ x: 0, y: linearToY(pointLinear(track, first), height) });
+    for (const row of sorted) {
+      verts.push({
+        x: xOf(row.point.beat),
+        y: linearToY(pointLinear(track, row.point), height),
+        index: row.index,
+      });
+    }
+    verts.push({ x: Math.max(width, xOf(last.beat)), y: linearToY(pointLinear(track, last), height) });
+    return verts;
+  }
+
+  function envelopeLayer(track, width) {
+    const height = LANE_HEIGHT;
+    const svg = doc.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'daw__env');
+    svg.setAttribute('width', String(width));
+    svg.setAttribute('height', String(height));
+    svg.setAttribute('aria-hidden', 'true');
+    const poly = doc.createElementNS(SVG_NS, 'polyline');
+    poly.setAttribute('class', `daw__env-line daw__env-line--${trackGroup(track.trackIndex)}`);
+    poly.setAttribute('fill', 'none');
+    const verts = curveVertices(track, width);
+    poly.setAttribute('points', verts.map((v) => `${v.x.toFixed(2)},${v.y.toFixed(2)}`).join(' '));
+    svg.append(poly);
+    const layer = h('div', {
+      class: 'daw__env-layer',
+      dataset: { track: String(track.trackIndex) },
+    }, [svg]);
+    (track.gainPoints ?? []).forEach((point, index) => {
+      const absolute = clampTo(track.volumeDb + point.db, MIN_VOLUME_DB, MAX_VOLUME_DB);
+      const selected = ui.selectedPoint?.trackIndex === track.trackIndex && ui.selectedPoint?.index === index;
+      const handle = h('button', {
+        type: 'button',
+        class: `daw__env-handle daw__env-handle--${trackGroup(track.trackIndex)}${selected ? ' is-selected' : ''}`,
+        style: {
+          left: `${point.beat * pxPerBeat()}px`,
+          top: `${linearToY(pointLinear(track, point), height)}px`,
+        },
+        title: `${formatPosition(point.beat, beatsPerBar())}, ${fmtDb(absolute)} absolute`,
+        'aria-label': `Level point ${formatPosition(point.beat, beatsPerBar())}, ${fmtDb(absolute)} absolute`,
+        dataset: { track: String(track.trackIndex), index: String(index), envPoint: '1' },
+      });
+      layer.append(handle);
+    });
+    return layer;
+  }
+
+  function paintLiveEnvelope(trackIndex) {
+    const row = lanes.querySelector(`.daw__lane[data-track="${trackIndex}"]`);
+    const track = session.state.tracks[trackIndex];
+    if (!row || !track) return;
+    const width = parseFloat(content.style.width) || row.clientWidth || 1;
+    const next = envelopeLayer(track, width);
+    const prev = row.querySelector('.daw__env-layer');
+    if (prev) prev.replaceWith(next);
+    else row.prepend(next);
+  }
+
+  function distToSegment(px, py, a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / len2));
+    return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
+  }
+
+  /**
+   * Hit the curve only when the pointer is not on a clip grip. Fade, slip,
+   * trim, and move handles stay in charge; this returns null for those.
+   */
+  function envelopeHit(ev) {
+    if (ev.target.closest?.('.daw__clip') || ev.target.closest?.('[data-grip]')) return null;
+    const handle = ev.target.closest?.('.daw__env-handle');
+    if (handle) {
+      return {
+        kind: 'point',
+        trackIndex: Number(handle.dataset.track),
+        index: Number(handle.dataset.index),
+      };
+    }
+    const laneEl = ev.target.closest?.('.daw__lane');
+    if (!laneEl) return null;
+    const trackIndex = Number(laneEl.dataset.track);
+    const track = session.state.tracks[trackIndex];
+    if (!track) return null;
+    const width = parseFloat(content.style.width) || laneEl.clientWidth || 1;
+    const rect = laneEl.getBoundingClientRect();
+    const x = ev.clientX - rect.left;
+    const y = ev.clientY - rect.top;
+    const verts = curveVertices(track, width);
+    let nearest = null;
+    for (const vert of verts) {
+      if (vert.index == null) continue;
+      const d = Math.hypot(x - vert.x, y - vert.y);
+      if (d <= 10 && (!nearest || d < nearest.d)) nearest = { d, index: vert.index };
+    }
+    if (nearest) return { kind: 'point', trackIndex, index: nearest.index };
+    let best = Infinity;
+    for (let i = 1; i < verts.length; i += 1) best = Math.min(best, distToSegment(x, y, verts[i - 1], verts[i]));
+    if (best > 10) return null;
+    return {
+      kind: 'add',
+      trackIndex,
+      beat: Math.max(0, x / pxPerBeat()),
+      db: yToOffsetDb(y, track, LANE_HEIGHT),
+    };
+  }
+
+  function beginEnvelopeDrag(hit, ev) {
+    const track = session.state.tracks[hit.trackIndex];
+    let points = (track.gainPoints ?? []).map((p) => ({ beat: p.beat, db: p.db }));
+    let index = hit.index;
+    if (hit.kind === 'add') {
+      if (points.length >= MAX_AUTOMATION_POINTS) {
+        session.apply({
+          name: 'setTrackGainEnvelope',
+          args: { trackIndex: hit.trackIndex, points: [...points, { beat: hit.beat, db: hit.db }] },
+        });
+        return;
+      }
+      points = [...points, { beat: hit.beat, db: hit.db }];
+      index = points.length - 1;
+    }
+    ui.selectedPoint = { trackIndex: hit.trackIndex, index };
+    ui.selectedTrack = hit.trackIndex;
+    ui.envDrag = { trackIndex: hit.trackIndex, index, pointerId: ev.pointerId };
+    const outcome = session.apply({
+      name: 'setTrackGainEnvelope',
+      args: { trackIndex: hit.trackIndex, points },
+    }, `gain-envelope-${hit.trackIndex}`);
+    if (!outcome.ok) ui.envDrag = null;
+    else dropEnvelopePreview(hit.trackIndex);
+  }
+
+  function nudgeSelectedPoint(key) {
+    const sel = ui.selectedPoint;
+    if (!sel) return;
+    const track = session.state.tracks[sel.trackIndex];
+    const points = (track.gainPoints ?? []).map((p) => ({ beat: p.beat, db: p.db }));
+    const point = points[sel.index];
+    if (!point) return;
+    if (key === 'ArrowLeft') point.beat = Math.max(0, point.beat - 0.25);
+    if (key === 'ArrowRight') point.beat += 0.25;
+    if (key === 'ArrowUp') point.db = Math.min(MAX_VOLUME_DB, point.db + 1);
+    if (key === 'ArrowDown') point.db = Math.max(MIN_VOLUME_DB, point.db - 1);
+    const outcome = session.apply({
+      name: 'setTrackGainEnvelope',
+      args: { trackIndex: sel.trackIndex, points },
+    });
+    if (outcome.ok) dropEnvelopePreview(sel.trackIndex);
+  }
+
+  function deleteSelectedPoint() {
+    const sel = ui.selectedPoint;
+    if (!sel) return;
+    const track = session.state.tracks[sel.trackIndex];
+    const points = (track.gainPoints ?? []).filter((_, i) => i !== sel.index);
+    ui.selectedPoint = null;
+    const outcome = session.apply({
+      name: 'setTrackGainEnvelope',
+      args: { trackIndex: sel.trackIndex, points },
+    });
+    if (outcome.ok) dropEnvelopePreview(sel.trackIndex);
+  }
+
+  function selectedPointLine(track) {
+    const sel = ui.selectedPoint;
+    if (!sel || sel.trackIndex !== track.trackIndex) return null;
+    const point = track.gainPoints?.[sel.index];
+    if (!point) return null;
+    const absolute = clampTo(track.volumeDb + point.db, MIN_VOLUME_DB, MAX_VOLUME_DB);
+    return h('p', {
+      class: 'daw__ins-sub',
+      text: `Point ${formatPosition(point.beat, beatsPerBar())}, ${fmtDb(absolute)} absolute`,
+    });
+  }
 
   function renderLanes() {
     const ppb = pxPerBeat();
@@ -437,6 +668,7 @@ export function mountArrangementPanel(opts) {
         role: 'group',
         'aria-label': `Lane ${track.name}`,
       });
+      row.append(envelopeLayer(track, width));
       for (const clip of session.state.clips) if (clip.trackIndex === track.trackIndex) row.append(clipEl(clip));
       for (const ghost of producerPreview()) {
         if (ghost.trackIndex !== track.trackIndex) continue;
@@ -491,7 +723,10 @@ export function mountArrangementPanel(opts) {
 
   /** A range bound to one command; a drag is one undo step. */
   function bindGesture(input, key, build) {
-    input.addEventListener('input', () => { session.apply(build(Number(input.value)), key); });
+    input.addEventListener('input', () => {
+      const outcome = session.apply(build(Number(input.value)), key);
+      if (outcome?.ok && key.startsWith('vol:')) dropEnvelopePreview(Number(key.slice(4)));
+    });
     input.addEventListener('change', () => { session.endGesture(); });
   }
 
@@ -512,6 +747,7 @@ export function mountArrangementPanel(opts) {
     replaceChildren(inspector, [
       h('h3', { class: `daw__ins-title daw__ins-title--${group}`, text: `Track · ${track.name}` }),
       h('p', { class: 'daw__ins-sub', text: `Lane ${i + 1} · bank ${group}. Select a clip to edit it.` }),
+      selectedPointLine(track),
       rangeRow('Level', {
         min: MIN_VOLUME_DB, max: MAX_VOLUME_DB, step: 0.5, value: track.volumeDb, format: fmtDb,
         key: `vol:${i}`, build: (v) => ({ name: 'setTrackVolume', args: { trackIndex: i, volumeDb: v } }),
@@ -782,6 +1018,19 @@ export function mountArrangementPanel(opts) {
 
   on(lanes, 'pointerdown', (ev) => {
     if (ev.button !== 0) return;
+    // Clip grips win. A point hit does not stop the event when the pointer is
+    // on a grip, and it does not fall through to the empty-lane seek.
+    const onGrip = ev.target.closest?.('[data-grip]');
+    const onClip = ev.target.closest?.('.daw__clip');
+    if (!onGrip && !onClip) {
+      const hit = envelopeHit(ev);
+      if (hit) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        beginEnvelopeDrag(hit, ev);
+        return;
+      }
+    }
     const el = ev.target.closest('.daw__clip');
     if (!el) {
       // Empty lane: select the track, cue there.
@@ -809,6 +1058,23 @@ export function mountArrangementPanel(opts) {
   });
 
   on(win, 'pointermove', (ev) => {
+    const env = ui.envDrag;
+    if (env && ev.pointerId === env.pointerId) {
+      const laneEl = lanes.querySelector(`.daw__lane[data-track="${env.trackIndex}"]`);
+      const track = session.state.tracks[env.trackIndex];
+      if (!laneEl || !track) return;
+      const rect = laneEl.getBoundingClientRect();
+      const beat = Math.max(0, (ev.clientX - rect.left) / pxPerBeat());
+      const db = yToOffsetDb(ev.clientY - rect.top, track, LANE_HEIGHT);
+      const points = (track.gainPoints ?? []).map((p) => ({ beat: p.beat, db: p.db }));
+      if (!points[env.index]) return;
+      points[env.index] = { beat, db };
+      session.apply({
+        name: 'setTrackGainEnvelope',
+        args: { trackIndex: env.trackIndex, points },
+      }, `gain-envelope-${env.trackIndex}`);
+      return;
+    }
     const d = ui.drag;
     if (!d || ev.pointerId !== d.pointerId) return;
     if (!d.moved && Math.abs(ev.clientX - d.startX) < 3 && Math.abs(ev.clientY - d.startY) < 3) return;
@@ -862,6 +1128,12 @@ export function mountArrangementPanel(opts) {
   });
 
   const endDrag = (ev) => {
+    if (ui.envDrag && (!ev || ev.pointerId === ui.envDrag.pointerId)) {
+      ui.envDrag = null;
+      session.endGesture();
+      render();
+      return;
+    }
     const d = ui.drag;
     if (!d || (ev && ev.pointerId !== d.pointerId)) return;
     ui.drag = null;
@@ -893,7 +1165,11 @@ export function mountArrangementPanel(opts) {
     if (!outcome || !outcome.ok) render(); // a refused edit snaps the preview back
   };
   on(win, 'pointerup', endDrag);
-  on(win, 'pointercancel', (ev) => { if (ui.drag) { ui.drag = null; render(); } void ev; });
+  on(win, 'pointercancel', (ev) => {
+    if (ui.envDrag) { ui.envDrag = null; session.endGesture(); render(); }
+    if (ui.drag) { ui.drag = null; render(); }
+    void ev;
+  });
 
   // Contextual hint: one quiet line that names what the pointer is over.
   const HINTS = {
@@ -1168,6 +1444,19 @@ export function mountArrangementPanel(opts) {
     const mod = ev.ctrlKey || ev.metaKey;
     if (ev.key === 'Escape') { session.stop(); return; }
     if (typing(ev.target)) return;
+    const onClipTarget = ev.target.closest?.('.daw__clip');
+    if (!mod && ui.selectedPoint && !onClipTarget) {
+      if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight' || ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        nudgeSelectedPoint(ev.key);
+        return;
+      }
+      if (ev.key === 'Delete' || ev.key === 'Backspace') {
+        ev.preventDefault();
+        deleteSelectedPoint();
+        return;
+      }
+    }
     if (ev.key === ' ' && !mod) {
       if (ev.target.closest?.('.daw__clip')) return; // Space selects a focused clip
       ev.preventDefault();
@@ -1200,7 +1489,7 @@ export function mountArrangementPanel(opts) {
   // through the same command path.
   // OPERATION THE LISTENING ROOM: the producer may also draw its idea on the
   // timeline (outlines of clips that are not playing yet).
-  const producerHandle = opts.producer?.({ container: producerMount, session, onAnnounce, rerender: () => render(), selectedClipId: () => ui.selectedClipId }) ?? null;
+  producerHandle = opts.producer?.({ container: producerMount, session, onAnnounce, rerender: () => render(), selectedClipId: () => ui.selectedClipId }) ?? null;
   const producerDispose = typeof producerHandle === 'function' ? producerHandle : producerHandle?.dispose ?? null;
   producerPreview = typeof producerHandle?.preview === 'function' ? producerHandle.preview : () => [];
 

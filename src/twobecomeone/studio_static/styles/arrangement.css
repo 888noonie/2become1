@@ -194,6 +194,21 @@
   position: absolute; top: 0; height: 8px; background: var(--color-action); opacity: 0.85; border-radius: 0 0 3px 3px;
 }
 .daw__lanes { position: relative; touch-action: pan-x; }
+/* Gain curve is linear amplitude (a straight stroke is the sound). Handles
+   stay 12 px so they do not cover the 10–12 px clip grips in a 64 px lane.
+   The layer is under the clips: a grip hit is the clip's, not the point's. */
+.daw__env-layer { position: absolute; inset: 0; pointer-events: none; }
+.daw__env { display: block; overflow: visible; }
+.daw__env-line { fill: none; stroke-width: 1.5; stroke-linejoin: round; }
+.daw__env-line--A { stroke: var(--color-anchor); }
+.daw__env-line--B { stroke: var(--color-lead); }
+.daw__env-handle {
+  position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; padding: 0;
+  border-radius: 50%; border: 2px solid var(--color-surface); pointer-events: auto; cursor: grab;
+}
+.daw__env-handle--A { background: var(--color-anchor); }
+.daw__env-handle--B { background: var(--color-lead); }
+.daw__env-handle.is-selected { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .daw__lane {
   position: relative; height: var(--daw-lane); box-sizing: border-box;
   border-bottom: 1px solid var(--color-border);

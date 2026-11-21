@@ -49,6 +49,7 @@
 // every voice and calls `onFail`.
 
 import { buildBackbone, buildClipVoice, applyClipEnvelope, MAX_CLIPS_PER_GRAPH } from './arrangement/offline-render.js';
+import { scheduleGainEnvelope, schedulePanEnvelope } from './arrangement/automation.js';
 import { createTransportState, transportReduce, createTransportMap, Phase } from './arrangement/transport.js';
 import { occurrencesInWindow, sourceFrameAt, signalsmithScheduleSequence } from './arrangement/voice-scheduler.js';
 import { VoicePool, VoiceState, deriveVoiceCapacity } from './voice-pool.js';
@@ -143,7 +144,11 @@ export class RealtimeEngine {
     this.wakeMs = options.wakeMs ?? DEFAULT_WAKE_MS;
     this.admissionFrames = options.admissionFrames
       ?? (this.startLeadFrames + ms(this.wakeMs) + ms(ASSUMED_JITTER_ALLOWANCE_MS));
-    this.horizonFrames = this.startLeadFrames; // compatibility alias
+    // Compatibility alias for the start lead. It is NOT the automation
+    // horizon: gain events use 120 s or 8 loop passes (automation.js).
+    this.horizonFrames = this.startLeadFrames;
+    this._gainUntil = new Map();
+    this._panUntil = new Map();
     this.releaseMarginFrames = options.releaseMarginFrames ?? RELEASE_MARGIN_FRAMES;
     this.minLoopFrames = Math.max(2 * this.admissionFrames, Math.round((60 / plan.masterBpm) * this.sr));
 
@@ -393,6 +398,8 @@ export class RealtimeEngine {
     if (this._disposed) return { reseeked: false };
     if (plan.sampleRate !== this.sr) throw new RangeError('a replacement plan must keep the sample rate');
     const previous = this.plan;
+    // Envelope points live on tracks, not clips. An envelope-only edit leaves
+    // this comparison unchanged, so replacePlan does not seek.
     const clipsChanged = JSON.stringify(previous.clips) !== JSON.stringify(plan.clips)
       || previous.masterBpm !== plan.masterBpm;
     if (clipsChanged && plan.clips.some((c) => !(c.rate === 1 && c.pitchSemitones === 0))) {
@@ -418,7 +425,15 @@ export class RealtimeEngine {
     return { reseeked: true, frame: target };
   }
 
-  /** Ramp the shared backbone to a plan's mixer values (20 ms, never a step). */
+  /**
+   * Ramp the shared backbone to a plan's mixer values (20 ms, never a step).
+   * A track with gain points is not glided to volumeLinear: that erases the
+   * curve. The value at `now` comes from the active epoch's origin and map.
+   * Deleting the last point takes the glide path again. Mute or solo replaces
+   * the future schedule of every automated track, because audible is recomputed
+   * for all eight. Pan is a different AudioParam and is not cancelled here
+   * except by its own glide.
+   */
   applyMix(plan, rampSec = 0.02) {
     const bb = this.backbone;
     if (!bb) return;
@@ -429,9 +444,41 @@ export class RealtimeEngine {
       param.setValueAtTime(param.value, now);
       param.linearRampToValueAtTime(value, now + rampSec);
     };
+    const epoch = this.active;
     for (const t of plan.tracks) {
-      glide(bb.trackInputs[`gain-${t.trackIndex}`]?.gain, t.audible ? t.volumeLinear : 0);
-      glide(bb.trackInputs[`pan-${t.trackIndex}`]?.pan, t.pan);
+      const gain = bb.trackInputs[`gain-${t.trackIndex}`]?.gain;
+      const automated = Array.isArray(t.gainPoints) && t.gainPoints.length > 0;
+      if (automated && epoch) {
+        const scheduled = scheduleGainEnvelope(gain, t, {
+          originSec: epoch.originSec,
+          map: epoch.map,
+          sampleRate: this.sr,
+          bpm: plan.masterBpm,
+          audible: t.audible,
+          horizonSec: 120,
+          now,
+        });
+        this._gainUntil.set(t.trackIndex, scheduled.untilSec);
+      } else {
+        if (gain) glide(gain, t.audible ? t.volumeLinear : 0);
+        this._gainUntil.delete(t.trackIndex);
+      }
+      const pan = bb.trackInputs[`pan-${t.trackIndex}`]?.pan;
+      const panAutomated = Array.isArray(t.panPoints) && t.panPoints.length > 0;
+      if (panAutomated && epoch && pan) {
+        const scheduled = schedulePanEnvelope(pan, t, {
+          originSec: epoch.originSec,
+          map: epoch.map,
+          sampleRate: this.sr,
+          bpm: plan.masterBpm,
+          horizonSec: 120,
+          now,
+        });
+        this._panUntil.set(t.trackIndex, scheduled.untilSec);
+      } else {
+        if (pan) glide(pan, t.pan);
+        this._panUntil.delete(t.trackIndex);
+      }
       const eq = bb.trackInputs[`eq-${t.trackIndex}`];
       if (eq) {
         glide(eq.low.gain, t.eq.lowGainDb);
@@ -581,6 +628,98 @@ export class RealtimeEngine {
     }
     this.active = rec;
     this.#log('epoch', { id: rec.id, kind, startFrame, originSec });
+    // Schedule from the new epoch's own clock. horizonFrames is the start
+    // lead (~104 ms), not this window: the curve gets 120 s or 8 passes.
+    this.#scheduleEpochGains(rec);
+  }
+
+  /**
+   * Write gain automation for the epoch that is about to be heard. The anchor
+   * is originSec (when this map starts), not transport.playheadBeat. Tracks
+   * with no points keep the constant the backbone or the last glide set.
+   */
+  #scheduleEpochGains(rec) {
+    if (!this.backbone || !this.plan) return;
+    for (const t of this.plan.tracks) {
+      if (!t.gainPoints?.length) continue;
+      const gain = this.backbone.trackInputs[`gain-${t.trackIndex}`]?.gain;
+      if (!gain) continue;
+      const scheduled = scheduleGainEnvelope(gain, t, {
+        originSec: rec.originSec,
+        map: rec.map,
+        sampleRate: this.sr,
+        bpm: this.plan.masterBpm,
+        audible: t.audible,
+        horizonSec: 120,
+        now: rec.originSec,
+      });
+      this._gainUntil.set(t.trackIndex, scheduled.untilSec);
+    }
+    for (const t of this.plan.tracks) {
+      if (!t.panPoints?.length) continue;
+      const pan = this.backbone.trackInputs[`pan-${t.trackIndex}`]?.pan;
+      if (!pan) continue;
+      const scheduled = schedulePanEnvelope(pan, t, {
+        originSec: rec.originSec,
+        map: rec.map,
+        sampleRate: this.sr,
+        bpm: this.plan.masterBpm,
+        horizonSec: 120,
+        now: rec.originSec,
+      });
+      this._panUntil.set(t.trackIndex, scheduled.untilSec);
+    }
+  }
+
+  /**
+   * The wake loop may append AudioParam events past the 120 s / 8-pass
+   * window so a later repeat still restarts the entrance. It must not write
+   * the gain at `now`: scheduleGainEnvelope is called with append, which
+   * does not cancel the sounding value and does not set it again.
+   * horizonFrames is not passed.
+   */
+  #extendAutomation() {
+    const rec = this.active;
+    if (!rec || !this.backbone || !this.plan) return;
+    if (!ACTIVE_PHASES.has(this.transport.phase)) return;
+    const now = this.ctx.currentTime;
+    for (const t of this.plan.tracks) {
+      if (!t.gainPoints?.length || !t.audible) continue;
+      const until = this._gainUntil.get(t.trackIndex);
+      if (!Number.isFinite(until) || now + 30 < until) continue;
+      const gain = this.backbone.trackInputs[`gain-${t.trackIndex}`]?.gain;
+      if (!gain) continue;
+      const scheduled = scheduleGainEnvelope(gain, t, {
+        originSec: rec.originSec,
+        map: rec.map,
+        sampleRate: this.sr,
+        bpm: this.plan.masterBpm,
+        audible: true,
+        horizonSec: 120,
+        now,
+        append: true,
+        appendFromSec: until,
+      });
+      this._gainUntil.set(t.trackIndex, scheduled.untilSec);
+    }
+    for (const t of this.plan.tracks) {
+      if (!t.panPoints?.length) continue;
+      const until = this._panUntil.get(t.trackIndex);
+      if (!Number.isFinite(until) || now + 30 < until) continue;
+      const pan = this.backbone.trackInputs[`pan-${t.trackIndex}`]?.pan;
+      if (!pan) continue;
+      const scheduled = schedulePanEnvelope(pan, t, {
+        originSec: rec.originSec,
+        map: rec.map,
+        sampleRate: this.sr,
+        bpm: this.plan.masterBpm,
+        horizonSec: 120,
+        now,
+        append: true,
+        appendFromSec: until,
+      });
+      this._panUntil.set(t.trackIndex, scheduled.untilSec);
+    }
   }
 
   // ----------------------------------------------------------- scheduler
@@ -709,6 +848,7 @@ export class RealtimeEngine {
         this.#reduce({ type: 'arrangementEnd' });
       }
     }
+    this.#extendAutomation();
     if (this.pendingStop && now >= this.pendingStop.endSec + this.releaseMarginFrames / this.sr) {
       // Every connected voice was faded by the stop; release any still holding nodes.
       for (const v of [...this.voices.values()]) if (v.nodesConnected) this.#releaseVoice(v);

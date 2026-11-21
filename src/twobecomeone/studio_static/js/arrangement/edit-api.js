@@ -29,6 +29,7 @@ import {
   deserializeProject,
   makeAsset,
   makeClip,
+  readAutomationPoints,
   serializeProject,
   validateProject,
 } from './project-state.js';
@@ -408,7 +409,35 @@ const COMMANDS = {
     requireTrackIndex(trackIndex);
     requireRange(volumeDb, MIN_VOLUME_DB, MAX_VOLUME_DB, 'volumeDb');
     draft.tracks[trackIndex].volumeDb = volumeDb;
+    // Offsets stay put. The heard curve shifts because absolute dB is
+    // volumeDb + point.db. This command does not rewrite point.db.
     return { trackIndex, volumeDb };
+  },
+
+  /**
+   * Replace one track's gain points. null or [] clears them. The whole list
+   * is one undo step; a drag passes that whole list through runGesture with
+   * key `gain-envelope-${trackIndex}`. Throws before history on a bad point.
+   */
+  setTrackGainEnvelope(draft, args) {
+    const { trackIndex, points } = args;
+    requireTrackIndex(trackIndex);
+    const read = readAutomationPoints(points, 'gain');
+    if (read.error) throw new InvalidEditError(read.error.message, read.error.code);
+    if (!read.points.length) delete draft.tracks[trackIndex].gainPoints;
+    else draft.tracks[trackIndex].gainPoints = read.points;
+    return { trackIndex, points: read.points };
+  },
+
+  /** Same replacement rule as the gain envelope. Gesture key `pan-envelope-${trackIndex}`. */
+  setTrackPanEnvelope(draft, args) {
+    const { trackIndex, points } = args;
+    requireTrackIndex(trackIndex);
+    const read = readAutomationPoints(points, 'pan');
+    if (read.error) throw new InvalidEditError(read.error.message, read.error.code);
+    if (!read.points.length) delete draft.tracks[trackIndex].panPoints;
+    else draft.tracks[trackIndex].panPoints = read.points;
+    return { trackIndex, points: read.points };
   },
 
   setTrackPan(draft, args) {
@@ -743,6 +772,14 @@ export class EditEngine {
 
   setTrackVolume(trackIndex, volumeDb) {
     return this.run({ name: 'setTrackVolume', args: { trackIndex, volumeDb } }).result;
+  }
+
+  setTrackGainEnvelope(trackIndex, points) {
+    return this.run({ name: 'setTrackGainEnvelope', args: { trackIndex, points } }).result;
+  }
+
+  setTrackPanEnvelope(trackIndex, points) {
+    return this.run({ name: 'setTrackPanEnvelope', args: { trackIndex, points } }).result;
   }
 
   setTrackPan(trackIndex, pan) {

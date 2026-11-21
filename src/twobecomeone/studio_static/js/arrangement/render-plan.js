@@ -139,6 +139,10 @@ export function compileRenderPlan(state, options = {}) {
     mute: t.mute,
     solo: t.solo,
     audible: trackAudible(t, anySolo),
+    // Absent points compile as []. Clip objects are not given this field, so
+    // an envelope edit leaves plan.clips byte-identical and does not seek.
+    gainPoints: Array.isArray(t.gainPoints) ? t.gainPoints.map((p) => ({ beat: p.beat, db: p.db })) : [],
+    panPoints: Array.isArray(t.panPoints) ? t.panPoints.map((p) => ({ beat: p.beat, pan: p.pan })) : [],
     eq: {
       lowGainDb: t.eq.lowGainDb,
       midGainDb: t.eq.midGainDb,
