@@ -174,6 +174,14 @@ function normUtterance(text) {
   return String(text ?? '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/** The whole utterance is only “half a beat earlier/later”. Punctuation is ignored. */
+export function halfBeatOnly(text) {
+  const n = normUtterance(text);
+  if (n === 'half a beat earlier') return -0.5;
+  if (n === 'half a beat later') return 0.5;
+  return null;
+}
+
 /**
  * Deterministic front door. `text` must be the whole utterance: "play the
  * second chorus" is not Play, and "let me hear mine again" is hear_mine.
@@ -206,7 +214,7 @@ function songsWithVocals(state, groups) {
 }
 
 /** A level move over time, not a clip fade. Null when the sentence is not one. */
-function entranceRequest(sentence) {
+export function entranceRequest(sentence) {
   const n = normUtterance(sentence);
   if (!/\b(?:bring|fade)\b/.test(n) || !/\bvocals?\b/.test(n) || !/\bin\b/.test(n)) return null;
   if (!/\b(?:four|4) bars\b/.test(n) || !/\b(?:gradually|across|over)\b/.test(n)) return null;

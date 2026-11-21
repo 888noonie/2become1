@@ -13,7 +13,7 @@ import { EditEngine } from '../../../src/twobecomeone/studio_static/js/arrangeme
 import { compileRenderPlan } from '../../../src/twobecomeone/studio_static/js/arrangement/render-plan.js';
 import { beatsToSourceSeconds, sourceAdvanceRate } from '../../../src/twobecomeone/studio_static/js/arrangement/time-math.js';
 import {
-  applyIntent, buildIdea, clipObject, clipSourceRange, localCommand, passageSource, projectSummary, refusalText,
+  applyIntent, buildIdea, clipObject, clipSourceRange, entranceRequest, halfBeatOnly, localCommand, passageSource, projectSummary, refusalText,
 } from '../../../src/twobecomeone/studio_static/js/arrangement/producer-intent.js';
 
 const SR = 48000;
@@ -297,6 +297,11 @@ test('local commands are the whole utterance: “let me hear mine again” is he
   assert.deepEqual(localCommand('stop', {}), { transport: 'stop' });
   assert.equal(localCommand('play the second chorus', {}), null);
   assert.equal(localCommand('keep it quieter', {}), null);
+  assert.equal(halfBeatOnly('Half a beat earlier!'), -0.5);
+  assert.equal(halfBeatOnly('half a beat later'), 0.5);
+  assert.equal(halfBeatOnly('the second chorus half a beat earlier'), null);
+  assert.ok(entranceRequest('bring song B vocals in gradually across four bars'));
+  assert.equal(entranceRequest('the second chorus of the other song at bar 17'), null);
 });
 
 test('“the other song” follows mine, an explicit song wins, and an unset mine is a question', () => {

@@ -96,7 +96,6 @@ test('say it, see it on the timeline, Hear it, refine it while listening (one un
   const { s, made, calls, container, btn, tell } = await mounted([
     HEADLINE,
     { action: 'adjust', reply: 'Up two, fading in.', pitch_change: 2, fade_in_change: 2, asks: ['pitch', 'fade'] },
-    { action: 'adjust', reply: 'Earlier.', shift_beats: -0.5, asks: ['place_or_move'] },
     { action: 'adjust', reply: 'One more.', pitch_change: 1, asks: ['pitch'] },
   ]);
   const before = structuredClone(s.state.clips);
@@ -122,7 +121,9 @@ test('say it, see it on the timeline, Hear it, refine it while listening (one un
   assert.equal(ideaClip(s).pitchSemitones, 2);
   assert.equal(ideaClip(s).fadeInBeats, 2);
   assert.equal(s.edit.historyDepth.past, depth0 + 2, 'the refinement replaced what was heard as ONE step');
+  const beforeNudge = calls.filter((c) => c.url === '/api/producer/converse').length;
   await tell('Half a beat earlier');
+  assert.equal(calls.filter((c) => c.url === '/api/producer/converse').length, beforeNudge, 'a half-beat nudge does not call the model');
   let c = ideaClip(s);
   assert.deepEqual([c.timelineStartBeat, c.pitchSemitones, c.fadeInBeats], [63.5, 2, 2], 'nothing else was lost');
 
@@ -239,7 +240,26 @@ test('a four-bar vocal entrance is proposed as setTrackGainEnvelope and does not
   assert.deepEqual(env.args.points, [{ beat: 64, db: -60 }, { beat: 80, db: 0 }]);
   assert.equal(s.state.tracks[4].volumeDb, -6);
   assert.equal(s.state.tracks[4].gainPoints, undefined);
-  assert.equal(calls.filter((c) => c.url === '/api/producer/converse').length, 1);
+  assert.equal(calls.filter((c) => c.url === '/api/producer/converse').length, 0);
+});
+
+test('the four-bar vocal entrance does not call the model', async () => {
+  let converseCalled = false;
+  const { s, calls, tell } = await mounted([]);
+  const fetchCalls = calls;
+  const vocal = s.state.clips.find((c) => c.trackIndex === 4);
+  assert.equal(s.apply({ name: 'moveClip', args: { clipId: vocal.id, newTrackIndex: 4, newStartBeat: 64 } }).ok, true);
+  assert.equal(s.apply({ name: 'setTrackVolume', args: { trackIndex: 4, volumeDb: -6 } }).ok, true);
+  const seen = [];
+  const orig = s.edit.propose.bind(s.edit);
+  s.edit.propose = (cmd) => { seen.push(cmd); return orig(cmd); };
+  const said = await tell('Bring song B vocals in gradually across four bars!');
+  converseCalled = fetchCalls.some((c) => c.url === '/api/producer/converse');
+  assert.equal(converseCalled, false, said);
+  const env = seen.flatMap((c) => c.args?.commands ?? []).find((c) => c.name === 'setTrackGainEnvelope');
+  assert.ok(env, said);
+  assert.equal(env.args.trackIndex, 4);
+  assert.deepEqual(env.args.points, [{ beat: 64, db: -60 }, { beat: 80, db: 0 }]);
 });
 
 test('a question, an unsupported request and a model outage are said plainly; hand editing still works', async () => {

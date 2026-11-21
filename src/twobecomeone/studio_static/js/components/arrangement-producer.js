@@ -17,7 +17,7 @@ import { createElement as h, replaceChildren } from '../dom.js';
 import { GROUP_BASE, ROLES, SAMPLE_RATE, peaksFor } from '../arrangement/daw-session.js';
 import { beatsToSourceSeconds, sourceAdvanceRate } from '../arrangement/time-math.js';
 import { MIN_CLIP_DURATION_BEATS } from '../arrangement/time-math.js';
-import { applyIntent, buildIdea, clipObject, localCommand, mmss, projectSummary, refusalText } from '../arrangement/producer-intent.js';
+import { applyIntent, buildIdea, clipObject, entranceRequest, halfBeatOnly, localCommand, mmss, projectSummary, refusalText } from '../arrangement/producer-intent.js';
 
 /**
  * The same musical rule as the accepted Stem Desk suggester, as arrangement
@@ -574,6 +574,32 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     return '';
   }
 
+  /** Say the outcome of applyIntent. `via` is set only when a model answered. */
+  async function settle(outcome, via) {
+    conv.pending = outcome.pending ?? null;
+    let reply;
+    if (outcome.control === 'relabel') {
+      reply = (await relabel(outcome.song, outcome.sectionId, outcome.label)) ?? 'I could not rename that part.';
+    } else if (outcome.control) {
+      reply = await control(outcome.control);
+    } else if (outcome.ask) {
+      if (outcome.spec) conv.spec = outcome.spec;
+      reply = outcome.ask;
+    } else if (outcome.say) {
+      reply = outcome.say;
+    } else if (outcome.spec) {
+      if (outcome.spec.fresh && idea && idea.hearing === 'idea') writeAll((f) => idea.before.get(f.key), true);
+      if (outcome.spec.fresh) { idea = null; delete outcome.spec.fresh; }
+      reply = (await realise(outcome.spec)).text;
+    }
+    const spoken = reply || via?.reply || 'OK.';
+    line('producer', spoken, via ? `is-${via.action}` : 'is-local');
+    if (via?.model) {
+      log.lastElementChild.title = `${via.model.name} (${via.model.local ? 'on this machine' : 'external'}) chose “${via.action}” in ${via.model.elapsedMs} ms`;
+    }
+    say(spoken);
+  }
+
   async function converse(text) {
     if (conv.busy) return;
     const message = text.trim();
@@ -605,6 +631,16 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         return;
       }
       if (!Object.keys(groups).length) { line('producer', 'Bring a song onto the lanes first, then tell me what to do with it.'); return; }
+      const intentCtx = () => ({
+        state: session.state, analyses: conv.analyses, groups, selectedClipId: selectedClipId(), pending: conv.pending,
+        sentence: message, mine: project.mine,
+      });
+      // A curve or a half-beat nudge we can already name must not wait on the model.
+      if (entranceRequest(message) || halfBeatOnly(message) !== null) {
+        const outcome = applyIntent(spec, { action: 'adjust' }, { ...intentCtx(), resolved: {} });
+        await settle(outcome, null);
+        return;
+      }
       say('Thinking…');
       const answer = await json('/api/producer/converse', {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -612,29 +648,8 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       });
       await analysesFor(groups);
       const { intent, resolved, model } = answer;
-      const outcome = applyIntent(spec, intent, {
-        state: session.state, analyses: conv.analyses, groups, resolved, selectedClipId: selectedClipId(), pending: conv.pending,
-        sentence: message, mine: project.mine,
-      });
-      conv.pending = outcome.pending ?? null;
-      let reply;
-      if (outcome.control === 'relabel') {
-        reply = (await relabel(outcome.song, outcome.sectionId, outcome.label)) ?? 'I could not rename that part.';
-      } else if (outcome.control) {
-        reply = await control(outcome.control);
-      } else if (outcome.ask) {
-        if (outcome.spec) conv.spec = outcome.spec;
-        reply = outcome.ask;
-      } else if (outcome.say) {
-        reply = outcome.say;
-      } else if (outcome.spec) {
-        if (outcome.spec.fresh && idea && idea.hearing === 'idea') writeAll((f) => idea.before.get(f.key), true);
-        if (outcome.spec.fresh) { idea = null; delete outcome.spec.fresh; }
-        reply = (await realise(outcome.spec)).text;
-      }
-      line('producer', reply || intent.reply || 'OK.', `is-${intent.action}`);
-      log.lastElementChild.title = `${model.name} (${model.local ? 'on this machine' : 'external'}) chose “${intent.action}” in ${model.elapsedMs} ms`;
-      say(reply || intent.reply || 'OK.');
+      const outcome = applyIntent(spec, intent, { ...intentCtx(), analyses: conv.analyses, resolved });
+      await settle(outcome, { action: intent.action, reply: intent.reply, model });
     } catch (err) {
       const text = err.status === 503
         ? `The Producer's model isn't answering (${err.message}). Every edit still works by hand.`
