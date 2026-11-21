@@ -126,6 +126,7 @@ function writeCurve(param, points, valueAtBeat, linOf, options) {
     appendFromSec = null,
     fullTimeline = false,
     horizonSec = AUTOMATION_HORIZON_SEC,
+    untilSec = null,
   } = options;
   const sample = 1 / sampleRate;
   const horizonEnd = fullTimeline || !map.hasLoop ? Infinity : now + horizonSec;
@@ -169,13 +170,17 @@ function writeCurve(param, points, valueAtBeat, linOf, options) {
     return next;
   };
 
+  const within = (time) => untilSec == null || time < untilSec - 1e-12;
   if (!map.hasLoop) {
     for (const group of groupsOf(points)) {
       const time = timeOf(group.beat, 0);
-      if (time == null || time <= now + 1e-9) continue;
+      if (time == null || time <= now + 1e-9 || !within(time)) continue;
       state = writeGroup(group, time, state);
     }
-    return Infinity;
+    if (untilSec != null && untilSec > state.lastT + 0.5 * sample && untilSec > now + 0.5 * sample) {
+      state = emitRamp(valueAtBeat(beatAtContextTime(untilSec, options)), untilSec, state);
+    }
+    return untilSec ?? Infinity;
   }
 
   let startPass = 0;
@@ -192,6 +197,7 @@ function writeCurve(param, points, valueAtBeat, linOf, options) {
     const pass = startPass + n;
     const seam = originSec + map.passStartCtx(pass) / sampleRate;
     const passEnd = originSec + map.passStartCtx(pass + 1) / sampleRate;
+    if (untilSec != null && seam >= untilSec - 1e-9) break;
     if (n > 0 && seam >= horizonEnd - 1e-9) break;
     scheduledPasses += 1;
     boundary = Math.min(passEnd, horizonEnd);
@@ -205,16 +211,17 @@ function writeCurve(param, points, valueAtBeat, linOf, options) {
     const frameLo = pass === 0 ? map.startFrame : map.loopStart;
     const beatLo = frameToBeat(frameLo, sampleRate, bpm);
     const beatHi = frameToBeat(map.loopEnd, sampleRate, bpm);
-    const approach = Math.min(passEnd, horizonEnd) - sample;
+    let approach = Math.min(passEnd, horizonEnd) - sample;
     for (const group of groupsOf(points)) {
       if (!(group.beat > beatLo) || !(group.beat < beatHi)) continue;
       const time = timeOf(group.beat, pass);
       // A breakpoint that shares the loop-end frame is not written. The seam
       // set above owns that sample. timeOf returns null for that frame.
-      if (time == null || !(time < passEnd - 0.5 * sample)) continue;
+      if (time == null || !(time < passEnd - 0.5 * sample) || !within(time)) continue;
       if (time > horizonEnd + 1e-9) continue;
       state = writeGroup(group, time, state);
     }
+    if (untilSec != null) approach = Math.min(approach, untilSec);
     if (approach > state.lastT + 0.5 * sample && approach > seam && approach > now + 0.5 * sample && approach < passEnd) {
       // The horizon can cut a pass short. The ramp ends on the beat at that
       // sample, not on the loop end, or the first window arrives too loud.
@@ -225,6 +232,43 @@ function writeCurve(param, points, valueAtBeat, linOf, options) {
 
   if (!scheduledPasses) return append ? appendFromSec : now;
   return Number.isFinite(boundary) ? boundary : Infinity;
+}
+
+/**
+ * Keep `outgoing` sounding from `anchor` until `takeover`, including any step
+ * inside that window. A single ramp between the two endpoints would smear it.
+ * Returns true when it wrote that segment.
+ */
+function holdOutgoing(param, outgoing, anchor, takeover, sampleRate) {
+  if (!outgoing || !(takeover > anchor + 0.5 / sampleRate)) return false;
+  const clock = {
+    originSec: outgoing.originSec,
+    map: outgoing.map,
+    sampleRate,
+    bpm: outgoing.bpm,
+    now: anchor,
+    untilSec: takeover,
+  };
+  const gain = outgoing.kind !== 'pan';
+  const points = pointList(gain ? outgoing.track?.gainPoints : outgoing.track?.panPoints);
+  const valueAtBeat = (beat) => {
+    if (gain && outgoing.audible === false) return 0;
+    return gain ? gainLinearAtBeat(outgoing.track, beat) : panAtBeat(outgoing.track, beat);
+  };
+  const linOf = (point) => {
+    if (gain && outgoing.audible === false) return 0;
+    return gain ? dbToLinear(absoluteGainDb(outgoing.track, point)) : point.pan;
+  };
+  param.setValueAtTime(valueAtBeat(beatAtContextTime(anchor, clock)), anchor);
+  if (outgoing.audible !== false && points.length) {
+    writeCurve(param, points, valueAtBeat, linOf, clock);
+  } else {
+    const end = valueAtBeat(beatAtContextTime(takeover, clock));
+    const start = valueAtBeat(beatAtContextTime(anchor, clock));
+    if (Math.abs(end - start) > 1e-12) param.linearRampToValueAtTime(end, takeover);
+    else param.setValueAtTime(end, takeover);
+  }
+  return true;
 }
 
 /**
@@ -249,9 +293,10 @@ export function scheduleGainEnvelope(param, track, options) {
     const cancelAt = options.cancelFrom != null ? Math.min(options.cancelFrom, takeover) : Math.min(anchor, takeover);
     param.cancelScheduledValues(cancelAt);
     // A seek's new epoch starts later. Keep the curve that is already
-    // sounding until that instant; cancelling its future ramp otherwise
-    // drops the outgoing voice back to the last set point.
-    if (options.outgoingValueAt && takeover > anchor + 0.5 * sample) {
+    // sounding until that instant, steps included. Cancelling its future
+    // ramp otherwise drops the outgoing voice back to the last set point.
+    const held = holdOutgoing(param, options.outgoing, anchor, takeover, options.sampleRate);
+    if (!held && options.outgoingValueAt && takeover > anchor + 0.5 * sample) {
       const v0 = options.outgoingValueAt(anchor);
       const v1 = options.outgoingValueAt(takeover);
       param.setValueAtTime(v0, anchor);
@@ -285,7 +330,8 @@ export function schedulePanEnvelope(param, track, options) {
   if (!options.append) {
     const cancelAt = options.cancelFrom != null ? Math.min(options.cancelFrom, takeover) : Math.min(anchor, takeover);
     param.cancelScheduledValues(cancelAt);
-    if (options.outgoingPanAt && takeover > anchor + 0.5 * sample) {
+    const held = holdOutgoing(param, options.outgoing, anchor, takeover, options.sampleRate);
+    if (!held && options.outgoingPanAt && takeover > anchor + 0.5 * sample) {
       const v0 = options.outgoingPanAt(anchor);
       const v1 = options.outgoingPanAt(takeover);
       param.setValueAtTime(v0, anchor);

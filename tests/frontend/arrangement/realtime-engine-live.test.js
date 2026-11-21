@@ -884,6 +884,95 @@ function trackGain(engine, index = 0) {
   return engine.backbone.trackInputs[`gain-${index}`].gain;
 }
 
+const FLOOR = dbToLinear(-60);
+
+test('a seek keeps a step that lands inside the handover', async () => {
+  const { ctx, engine, plan } = await makeEngine({
+    clips: [planClip({ clipId: 'vox', start: 0, length: 20 * SR })],
+  });
+  plan.tracks[0].gainPoints = [{ beat: 8.1, db: -60 }, { beat: 8.1, db: 0 }];
+  engine.play();
+  await engine.settle();
+  const at = engine.active.originSec + 4;
+  await advance(ctx, engine, at);
+  engine.seek(0);
+  const gain = trackGain(engine);
+  assert.ok(Math.abs(gain.valueAt(at + 0.025) - FLOOR) < 1e-3, `25 ms into the handover is ${gain.valueAt(at + 0.025)}, want the hold`);
+  assert.ok(Math.abs(gain.valueAt(at + 0.075) - 1) < 1e-3, `75 ms into the handover is ${gain.valueAt(at + 0.075)}, want the step`);
+  engine.dispose();
+});
+
+test('a second seek before the handover keeps the curve that is still sounding', async () => {
+  const { ctx, engine, plan } = await makeEngine({
+    clips: [planClip({ clipId: 'vox', start: 0, length: 20 * SR })],
+  });
+  const track = { volumeDb: 0, gainPoints: [{ beat: 0, db: -60 }, { beat: 16, db: 0 }] };
+  plan.tracks[0].gainPoints = track.gainPoints;
+  engine.play();
+  await engine.settle();
+  const origin = engine.active.originSec;
+  const at = origin + 4;
+  await advance(ctx, engine, at);
+  engine.seek(0);
+  ctx.currentTime = at + 0.025;
+  engine.seek(0);
+  const gain = trackGain(engine);
+  const want = gainLinearAtBeat(track, 4.05 * 2);
+  assert.ok(Math.abs(want - 0.50674375) < 1e-4);
+  assert.ok(Math.abs(gain.valueAt(at + 0.05) - want) < 1e-3, `second seek at +50 ms is ${gain.valueAt(at + 0.05)}, want ${want}`);
+  engine.dispose();
+});
+
+test('clearing the envelope during a handover glides from the outgoing level', async () => {
+  const { ctx, engine, plan } = await makeEngine({
+    clips: [planClip({ clipId: 'vox', start: 0, length: 20 * SR })],
+  });
+  const track = { volumeDb: 0, gainPoints: [{ beat: 0, db: -60 }, { beat: 16, db: 0 }] };
+  plan.tracks[0].gainPoints = track.gainPoints;
+  engine.play();
+  await engine.settle();
+  const at = engine.active.originSec + 4;
+  await advance(ctx, engine, at);
+  engine.seek(0);
+  ctx.currentTime = at + 0.025;
+  const cleared = structuredClone(plan);
+  cleared.tracks[0].gainPoints = [];
+  await engine.replacePlan(cleared);
+  const gain = trackGain(engine);
+  const sounding = gainLinearAtBeat(track, 4.025 * 2);
+  const glide = sounding + (0.001 / 0.02) * (1 - sounding);
+  assert.ok(Math.abs(sounding - 0.503621875) < 1e-4);
+  assert.ok(Math.abs(gain.valueAt(at + 0.025) - sounding) < 1e-3, `clear starts at ${gain.valueAt(at + 0.025)}, want ${sounding}`);
+  assert.ok(Math.abs(gain.valueAt(at + 0.026) - glide) < 1e-3, `1 ms later is ${gain.valueAt(at + 0.026)}, want ${glide}`);
+  assert.ok(Math.abs(gain.valueAt(at + 0.025) - FLOOR) > 0.4);
+  engine.dispose();
+});
+
+test('a slow seek keeps the outgoing rise until the delayed handover', async () => {
+  let slow = false;
+  const factory = fakeStretchFactory({ beforeResolve: (audio) => { if (slow) audio.currentTime += 0.08; } });
+  const { ctx, engine, plan } = await makeEngine({
+    clips: [planClip({ clipId: 'arp', start: 0, length: 20 * SR, rate: 1.2 })],
+    factory,
+  });
+  const track = { volumeDb: 0, gainPoints: [{ beat: 0, db: -60 }, { beat: 16, db: 0 }] };
+  plan.tracks[0].gainPoints = track.gainPoints;
+  engine.play();
+  await engine.settle();
+  const origin = engine.active.originSec;
+  const at = origin + 4;
+  await advance(ctx, engine, at);
+  slow = true;
+  engine.seek(0);
+  await engine.settle();
+  const gain = trackGain(engine);
+  const want = gainLinearAtBeat(track, 4.125 * 2);
+  assert.ok(Math.abs(want - 0.516109375) < 1e-4);
+  assert.ok(Math.abs(gain.valueAt(origin + 4.125) - want) < 1e-3, `slow seek at +125 ms is ${gain.valueAt(origin + 4.125)}, want ${want}`);
+  assert.ok(Math.abs(gain.valueAt(origin + 4.125) - 0.5005) > 0.01);
+  engine.dispose();
+});
+
 test('seeking while a rise is sounding keeps the outgoing level until the handover', async () => {
   const { ctx, engine, plan } = await makeEngine({
     clips: [planClip({ clipId: 'vox', start: 0, length: 20 * SR })],

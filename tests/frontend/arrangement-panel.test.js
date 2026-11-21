@@ -193,13 +193,17 @@ test('arrow keys edit the focused level point and leave a focused fader alone', 
   handle.focus();
   handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
   assert.equal(s.state.tracks[4].gainPoints[0].db, -5, 'keyboard focus on the point raises that point');
+  const still = document.activeElement;
+  still.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+  assert.equal(s.state.tracks[4].gainPoints[0].db, -4, 'a second arrow keeps editing that point');
+  assert.equal(document.activeElement?.dataset?.envPoint, '1');
   const master = container.querySelector('[aria-label="Master level (exported)"]');
   const before = s.edit.serialize();
   master.focus();
   const ev = new window.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true });
   master.dispatchEvent(ev);
   assert.equal(ev.defaultPrevented, false, 'the master fader keeps the key');
-  assert.equal(s.state.tracks[4].gainPoints[0].db, -5, 'the point does not move while the fader is focused');
+  assert.equal(s.state.tracks[4].gainPoints[0].db, -4, 'the point does not move while the fader is focused');
   assert.equal(s.edit.serialize(), before);
 });
 

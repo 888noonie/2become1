@@ -438,6 +438,7 @@ export class RealtimeEngine {
     const bb = this.backbone;
     if (!bb) return;
     const now = this.ctx.currentTime;
+    this.#promoteSounding(now);
     const glide = (param, value, from = null) => {
       if (!param) return;
       // After cancelScheduledValues, param.value is the last remaining event,
@@ -507,8 +508,12 @@ export class RealtimeEngine {
       }
     }
     glide(bb.master.gain, plan.master.gainLinear);
-    if (epoch) {
+    if (epoch && epoch.originSec <= now + 1 / this.sr) {
       this._wired = { plan, originSec: epoch.originSec, map: epoch.map, bpm: plan.masterBpm };
+      this._pendingWire = null;
+    } else if (this._wired) {
+      this._wired = { ...this._wired, plan };
+      if (this._pendingWire) this._pendingWire = { ...this._pendingWire, plan };
     }
   }
 
@@ -661,6 +666,15 @@ export class RealtimeEngine {
    * is originSec (when this map starts), not transport.playheadBeat. Tracks
    * with no points keep the constant the backbone or the last glide set.
    */
+  /** Once a scheduled epoch has started, it is the curve a later seek must leave. */
+  #promoteSounding(now) {
+    const pending = this._pendingWire;
+    if (pending && now + 1 / this.sr >= pending.originSec) {
+      this._wired = pending;
+      this._pendingWire = null;
+    }
+  }
+
   #wiredAt(wired, trackIndex, time) {
     const tr = wired?.plan?.tracks?.[trackIndex];
     if (!tr) return null;
@@ -680,9 +694,13 @@ export class RealtimeEngine {
   #scheduleEpochGains(rec, extra = {}) {
     if (!this.backbone || !this.plan) return;
     const anchor = this.ctx.currentTime;
+    this.#promoteSounding(anchor);
     const takeover = rec.originSec;
     const wired = this._wired;
-    const preserve = !extra.cancelFrom && wired && takeover > anchor + 1 / this.sr;
+    // A future epoch is not sounding yet. The initial slow start moves with
+    // its voices; a seek keeps the curve whose origin is already in the past.
+    const sounding = wired && wired.originSec <= anchor + 1 / this.sr ? wired : null;
+    const preserve = Boolean(sounding) && takeover > anchor + 1 / this.sr;
     const clock = {
       originSec: rec.originSec,
       map: rec.map,
@@ -698,17 +716,18 @@ export class RealtimeEngine {
       if (!t.gainPoints?.length) continue;
       const gain = this.backbone.trackInputs[`gain-${t.trackIndex}`]?.gain;
       if (!gain) continue;
-      const outgoing = preserve ? this.#wiredAt(wired, t.trackIndex, 0) : null;
+      const old = preserve ? sounding.plan.tracks[t.trackIndex] : null;
       const scheduled = scheduleGainEnvelope(gain, t, {
         ...clock,
         audible: t.audible,
-        outgoingValueAt: outgoing?.track.gainPoints?.length
-          ? (time) => {
-            const heard = this.#wiredAt(wired, t.trackIndex, time);
-            if (!heard) return 0;
-            return heard.track.audible === false ? 0 : gainLinearAtBeat(heard.track, heard.beat);
-          }
-          : null,
+        outgoing: old?.gainPoints?.length ? {
+          kind: 'gain',
+          track: old,
+          originSec: sounding.originSec,
+          map: sounding.map,
+          bpm: sounding.bpm,
+          audible: old.audible !== false,
+        } : null,
       });
       this._gainUntil.set(t.trackIndex, scheduled.untilSec);
     }
@@ -718,16 +737,23 @@ export class RealtimeEngine {
       if (!pan) continue;
       const scheduled = schedulePanEnvelope(pan, t, {
         ...clock,
-        outgoingPanAt: preserve && wired.plan.tracks[t.trackIndex]?.panPoints?.length
-          ? (time) => {
-            const heard = this.#wiredAt(wired, t.trackIndex, time);
-            return heard ? panAtBeat(heard.track, heard.beat) : 0;
-          }
-          : null,
+        outgoing: preserve && sounding.plan.tracks[t.trackIndex]?.panPoints?.length ? {
+          kind: 'pan',
+          track: sounding.plan.tracks[t.trackIndex],
+          originSec: sounding.originSec,
+          map: sounding.map,
+          bpm: sounding.bpm,
+          audible: true,
+        } : null,
       });
       this._panUntil.set(t.trackIndex, scheduled.untilSec);
     }
-    this._wired = { plan: this.plan, originSec: rec.originSec, map: rec.map, bpm: this.plan.masterBpm };
+    const next = { plan: this.plan, originSec: rec.originSec, map: rec.map, bpm: this.plan.masterBpm };
+    if (preserve) this._pendingWire = next;
+    else {
+      this._wired = next;
+      this._pendingWire = null;
+    }
   }
 
   /**
@@ -742,6 +768,7 @@ export class RealtimeEngine {
     if (!rec || !this.backbone || !this.plan) return;
     if (!ACTIVE_PHASES.has(this.transport.phase)) return;
     const now = this.ctx.currentTime;
+    this.#promoteSounding(now);
     for (const t of this.plan.tracks) {
       if (!t.gainPoints?.length || !t.audible) continue;
       const until = this._gainUntil.get(t.trackIndex);

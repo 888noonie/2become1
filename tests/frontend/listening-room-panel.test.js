@@ -278,6 +278,19 @@ test('Undo then Hear mine keeps the musician mix and does not throw', async () =
   assert.equal(s.edit.serialize(), mine);
 });
 
+test('a reverb refusal retires a pending entrance so Hear it cannot apply it', async () => {
+  const { s, btn, tell } = await mounted([]);
+  const said = await tell('bring song B vocals in gradually across four bars');
+  assert.match(said, /Hear it/);
+  assert.equal(btn('Hear it').disabled, false);
+  const refused = await tell('bring song B vocals in gradually with reverb across four bars');
+  assert.match(refused, /can.t add that effect yet/);
+  assert.equal(s.state.tracks[4].gainPoints, undefined);
+  assert.equal(btn('Hear it').disabled, true, 'the earlier level move is no longer offered');
+  btn('Hear it').click();
+  assert.equal(s.state.tracks[4].gainPoints, undefined);
+});
+
 test('a reverb entrance is refused in words and the arrangement stays', async () => {
   const { s, calls, tell } = await mounted([{ action: 'propose', reply: 'Adding reverb.', fade_in: 16 }]);
   const before = s.edit.serialize();

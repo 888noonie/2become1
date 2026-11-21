@@ -682,8 +682,14 @@ export function mountArrangementPanel(opts) {
       return row;
     });
     const focused = doc.activeElement?.dataset?.clipId;
+    const focusedPoint = doc.activeElement?.dataset?.envPoint
+      ? { track: doc.activeElement.dataset.track, index: doc.activeElement.dataset.index }
+      : null;
     replaceChildren(lanes, rows);
     if (focused) lanes.querySelector(`[data-clip-id="${esc(focused)}"]`)?.focus({ preventScroll: true });
+    else if (focusedPoint) {
+      lanes.querySelector(`[data-env-point][data-track="${focusedPoint.track}"][data-index="${focusedPoint.index}"]`)?.focus({ preventScroll: true });
+    }
   }
 
   function renderHeaders() {

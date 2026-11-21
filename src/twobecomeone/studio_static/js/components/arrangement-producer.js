@@ -647,6 +647,10 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       // is unavailable and does not offer Hear it.
       if (entranceRequest(message) || halfBeatOnly(message) !== null) {
         const outcome = applyIntent(spec, { action: 'adjust' }, { ...intentCtx(), resolved: {} });
+        if (entranceRequest(message)?.refused && idea && idea.hearing !== 'idea' && idea.hearing !== 'kept') {
+          idea = null;
+          conv.spec = null;
+        }
         await settle(outcome, null);
         return;
       }
