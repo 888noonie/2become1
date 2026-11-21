@@ -224,6 +224,8 @@ test('Take the decks writes both songs, and another sketch keeps a hand edit', a
   const vocalIdea = ideas.find((clip) => clip.trackIndex === 4);
   const drumIdea = ideas.find((clip) => clip.trackIndex === 5);
   assert.ok(Math.abs(drumIdea.timelineStartBeat - (vocalIdea.timelineStartBeat + vocalIdea.durationBeats)) < 0.05, 'the drums follow the vocal that was placed');
+  const bedNow = s.state.clips.find((clip) => clip.id === drums.id);
+  assert.ok(Math.abs((bedNow.timelineStartBeat + bedNow.durationBeats) - drumIdea.timelineStartBeat) < 0.05, 'the old drums meet the new drums');
   assert.ok(s.state.clips.find((clip) => clip.id === vocal.id).durationBeats < vocalBefore - 1);
   assert.ok(s.state.clips.find((clip) => clip.id === drums.id).durationBeats < drumsBefore - 1);
   s.apply({ name: 'setTrackVolume', args: { trackIndex: 1, volumeDb: -9 } });

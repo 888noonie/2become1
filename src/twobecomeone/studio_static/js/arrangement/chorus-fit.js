@@ -159,7 +159,7 @@ export function arrangementPlans({ rank, sections = [], chorusBeat, bpb = 4, sec
     }] : [],
     trims: [
       { song: 'A', stem: 'vocals', endBeat: chorusBeat },
-      ...(handoffRow ? [{ song: 'A', stem: 'drums', endBeat: handoff }] : []),
+      ...(handoffRow ? [{ song: 'A', stem: 'drums', endBeat: handoff, atVocalEnd: true }] : []),
     ],
     entranceBars: 4,
     bothSongs: true,

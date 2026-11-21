@@ -671,7 +671,8 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
     const lane = laneIndex(trim.song, trim.stem);
     const clip = state.clips.find((item) => item.trackIndex === lane && !String(item.id).startsWith('idea-'));
     if (!clip) continue;
-    const duration = rt(trim.endBeat - clip.timelineStartBeat);
+    const endBeat = trim.atVocalEnd && vocalEnd != null ? vocalEnd : trim.endBeat;
+    const duration = rt(endBeat - clip.timelineStartBeat);
     if (!(duration >= 1) || duration >= clip.durationBeats - 0.05) continue;
     spec.clips = { ...(spec.clips ?? {}), [clip.id]: { durationBeats: duration, fadeOut: duration >= 4 ? 2 : 0 } };
   }
