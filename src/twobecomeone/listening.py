@@ -808,7 +808,27 @@ def for_track(service, track_id: str, *, compute: bool, env: dict | None = None)
     analysis = dict(analysis)
     analysis["trackId"] = track_id
     analysis["title"] = track.get("name")
-    return apply_corrections(analysis, store.corrections(sha))
+    corrected = apply_corrections(analysis, store.corrections(sha))
+    # The effective key is already on the track. Attach it when the document
+    # is read so a cached analysis can be compared without being recomputed.
+    key = effective_key_name(track)
+    if key:
+        corrected = dict(corrected)
+        corrected["key"] = key
+    return corrected
+
+
+def effective_key_name(track: dict) -> str | None:
+    """``C major`` from the track's effective key, or None when it has no key."""
+    key = track.get("key") if isinstance(track, dict) else None
+    if not isinstance(key, dict):
+        return None
+    tonic = key.get("tonic")
+    mode = key.get("mode")
+    if not isinstance(tonic, str) or not isinstance(mode, str):
+        return None
+    text = f"{tonic.strip()} {mode.strip()}".strip()
+    return text or None
 
 
 def save_corrections(service, track_id: str, sections: list[dict] | None, env: dict | None = None) -> dict:

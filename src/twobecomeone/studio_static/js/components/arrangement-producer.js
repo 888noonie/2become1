@@ -18,7 +18,7 @@ import { GROUP_BASE, ROLES, SAMPLE_RATE, peaksFor } from '../arrangement/daw-ses
 import { beatsToSourceSeconds, sourceAdvanceRate } from '../arrangement/time-math.js';
 import { MIN_CLIP_DURATION_BEATS } from '../arrangement/time-math.js';
 import { applyIntent, buildIdea, clipObject, entranceRequest, halfBeatOnly, laneIndex, localCommand, mmss, projectSummary, refusalText } from '../arrangement/producer-intent.js';
-import { bedDipPoints, chorusUtterance, deckChoice, descriptorFrom, entrancePoints, explainCandidate, pitchFor, scoredRows, targetSection } from '../arrangement/chorus-fit.js';
+import { bedDipPoints, chorusUtterance, deckChoice, descriptorFrom, entrancePoints, explainCandidate, pitchFor, playbackSpeed, scoredRows, targetSection } from '../arrangement/chorus-fit.js';
 
 /**
  * The same musical rule as the accepted Stem Desk suggester, as arrangement
@@ -691,7 +691,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const previous = conv.harmony;
     const sameTarget = previous && previous.target?.id === found.target.id && previous.sourceSong === found.sourceSong;
     const pitch = pitchFor(picked.row, { auto: commit });
-    const speed = picked.row.tempo?.applyStretch != null ? 'fit' : 'natural';
+    const sourceBpm = Number(found.groups[found.sourceSong]?.bpm) || picked.row.tempo?.sourceBpm;
+    const projectRatio = sourceBpm > 0 ? session.state.transport.masterBpm / sourceBpm : null;
+    const speed = playbackSpeed(picked.row.tempo?.applyStretch, projectRatio);
     const intent = {
       action: 'propose', song: found.sourceSong, stem: previous?.stem || 'vocals', section: `${found.sourceSong}:${section.id}`, speed,
     };
@@ -699,9 +701,11 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       intent.bar = found.target.startBar || 1;
       intent.beat = 1;
     }
-    if (pitch.semitones) intent.pitch = pitch.semitones;
-    if (commit) intent.fade_in = 1;
     const spec = absorbHumanMoves(conv.spec ? structuredClone(conv.spec) : null);
+    const mainField = idea?.fields?.find((field) => field.main);
+    const handsOnClip = Boolean(mainField && idea.touched.has(mainField.key));
+    if (!handsOnClip) intent.pitch = pitch.semitones;
+    if (commit) intent.fade_in = 1;
     const outcome = applyIntent(spec, intent, {
       state: session.state, analyses: conv.analyses, groups: found.groups, sentence: '', mine: mineGroup(),
     });
@@ -734,33 +738,37 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const alt = runner?.harmonic?.cosine != null
       ? ` Next is ${runner.label || runner.id} (cosine ${runner.harmonic.cosine.toFixed(2)}).`
       : '';
+    const qualified = picked.row.tempo?.applyStretch;
+    const tempoNote = speed === 'natural' && typeof qualified === 'number'
+      ? ` The project tempo would play this at ${projectRatio == null ? 'an unknown rate' : projectRatio.toFixed(3)} rather than the qualified ${qualified.toFixed(3)}, so the passage keeps its own speed.`
+      : '';
     if (commit) {
-      const checkpoint = conv.decks?.origin ?? editingSerial();
+      const before = editingSerial();
       const heard = await realise(outcome.spec);
       if (!idea) return heard.text || text;
       if (idea.hearing !== 'idea') hearToggle();
       if (!idea || idea.hearing !== 'idea') return `${text}${pitchNote}${alt} The arrangement did not change.`;
       const playing = typeof session.play === 'function' ? await session.play() : false;
-      conv.decks = { origin: checkpoint, after: editingSerial(), steps: (conv.decks?.steps ?? 0) + 1 };
+      conv.decks = { before, after: editingSerial(), steps: (conv.decks?.steps ?? 0) + 1 };
       const surprise = deckChoice(found.rank);
       const extra = surprise?.adventurous ? ' I took a playable neighbour of the closest chroma match, not only the safest one.' : '';
       const unsure = found.rank.ask ? ' The readings were close, so this is a choice, not a proof.' : '';
       const heardWord = playing ? "It's playing." : "It's on the lanes.";
-      return `${text}${pitchNote}${alt}${extra}${unsure} ${heardWord} Take back returns the decks, or change anything and I will leave that control alone.`;
+      return `${text}${pitchNote}${alt}${tempoNote}${extra}${unsure} ${heardWord} Take back returns the decks, or change anything and I will leave that control alone.`;
     }
     const heard = await realise(outcome.spec);
-    return `${text}${pitchNote}${alt} ${heard.text || ''}`.trim();
+    return `${text}${pitchNote}${alt}${tempoNote} ${heard.text || ''}`.trim();
   }
 
   async function harmonyTurn(request) {
     if (request.kind === 'you-play') { setMode('you-play'); return 'You play. I will not move a clip until you jam with me or hand me the decks.'; }
     if (request.kind === 'jam') { setMode('jam'); return 'Jam together. I will show an idea, and nothing is written until you press Hear it.'; }
     if (request.kind === 'take-back') {
-      if (!conv.decks?.origin) return 'I have not taken the decks in this session.';
+      if (!conv.decks?.before) return 'I have not taken the decks in this session.';
       if (editingSerial() !== conv.decks.after) {
         return 'You have changed the arrangement since I played. I will not take that away. Undo walks one step when you want it to.';
       }
-      const checkpoint = conv.decks.origin;
+      const checkpoint = conv.decks.before;
       let guard = 0;
       while (editingSerial() !== checkpoint && guard < 6) {
         if (!session.undo()) break;
@@ -798,9 +806,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       if (!outcome.spec) return outcome.ask || outcome.say || 'I could not change that.';
       const heard = await realise(outcome.spec);
       if (conv.mode === 'decks' && idea && idea.hearing !== 'idea') {
-        const origin = conv.decks?.origin;
+        const before = editingSerial();
         hearToggle();
-        if (origin) conv.decks = { ...conv.decks, origin, after: editingSerial() };
+        if (conv.decks) conv.decks = { ...conv.decks, before, after: editingSerial() };
       }
       return heard.text;
     }

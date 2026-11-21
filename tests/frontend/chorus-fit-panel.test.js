@@ -235,3 +235,42 @@ test('Take the decks writes one arrangement and Take back restores it', async ()
   assert.equal(strip(fresh.s.edit.serialize()), origin);
   assert.equal(fresh.prod.querySelector('button[aria-pressed="true"]').textContent, 'Jam together');
 });
+
+test('Take back undoes the latest take and leaves a hand edit made before it', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const drums = s.state.clips.find((clip) => clip.trackIndex === 1);
+  s.apply({ name: 'setClipGain', args: { clipId: drums.id, gainDb: -9 } });
+  await tell('Take the decks');
+  assert.match(await tell('Take back'), /decks are yours/);
+  assert.equal(s.state.clips.find((clip) => clip.id === drums.id).clipGainDb, -9);
+});
+
+test('a project tempo outside the qualified ratio does not beat-sync the passage', async () => {
+  const { s, btn, tell } = await mounted();
+  s.state.transport.masterBpm = 220;
+  const said = await tell('Try the strongest match');
+  assert.match(said, /keeps its own speed/);
+  btn('Hear it').click();
+  const clip = ideaClip(s);
+  assert.equal(clip.stretchMode, 'manual');
+  assert.equal(clip.customStretchRatio, 1);
+});
+
+test('the next passage can put the pitch back to zero', async () => {
+  const originalKey = ANALYSIS.B.key;
+  const originalChroma = ANALYSIS.B.sections[0].meanChroma;
+  ANALYSIS.B.key = 'D major';
+  ANALYSIS.B.sections[0].meanChroma = originalChroma.slice(10).concat(originalChroma.slice(0, 10));
+  try {
+    const { s, btn, tell } = await mounted();
+    await tell('Try the strongest match');
+    btn('Hear it').click();
+    assert.equal(ideaClip(s).pitchSemitones, -2);
+    await tell('Try the next best match instead');
+    assert.equal(ideaClip(s).pitchSemitones, 0);
+  } finally {
+    ANALYSIS.B.key = originalKey;
+    ANALYSIS.B.sections[0].meanChroma = originalChroma;
+  }
+});

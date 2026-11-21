@@ -184,6 +184,8 @@ test('a different passage on a heard idea swaps the clip’s source under the sa
   e.run({ name: 'batch', args: { commands: cmds } });
   const c = e.state.clips.find((x) => x.id === id);
   assert.equal(c.pitchSemitones, 2, 'the pitch the musician asked for survives the new passage');
+  ({ spec } = applyIntent(spec, { action: 'propose', song: 'B', stem: 'vocals', section: 'B:s3', bar: 17, pitch: 0 }, { ...ctx, state: e.state }));
+  assert.equal(spec.main.pitch, 0, 'an explicit zero clears a previous shift');
   assert.match(e.state.assets[c.assetId].name, /chorus 1/);
 });
 

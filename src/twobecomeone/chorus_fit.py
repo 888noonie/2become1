@@ -153,17 +153,27 @@ def _number(section: Mapping[str, Any], *names: str) -> float | None:
     return value
 
 
+def _text(section: Mapping[str, Any], *names: str) -> str | None:
+    raw = _first(section, *names)
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    return text or None
+
+
 def _view(section: Mapping[str, Any], fallback_id: str) -> dict[str, Any]:
     ident = _first(section, "id")
+    if isinstance(ident, bool) or not isinstance(ident, (str, int)):
+        ident = fallback_id
     return {
-        "id": str(ident) if ident is not None else fallback_id,
-        "label": _first(section, "label", "name"),
+        "id": str(ident),
+        "label": _text(section, "label", "name"),
         "chroma": _chroma(section),
         "bars": _number(section, "bars", "barCount"),
         "vocal": _number(section, "vocalPresence", "vocal_presence"),
         "bpm": _number(section, "bpm"),
         "swing": _number(section, "swing", "swingRatio"),
-        "key": _first(section, "key"),
+        "key": _text(section, "key"),
         "startSec": _number(section, "startSec", "start_sec"),
         "endSec": _number(section, "endSec", "end_sec"),
         "downbeatSec": _number(section, "downbeatSec", "downbeat_sec"),
@@ -397,6 +407,21 @@ def _sort_key(row: dict[str, Any]):
     return (0, -cosine, swing_penalty, bar_penalty, vocal_penalty, row["id"])
 
 
+def _swing_separates(cluster: list[dict[str, Any]]) -> bool:
+    winner = cluster[0]["swing"]
+    if winner["source"] is None or winner["distance"] is None:
+        return False
+    for row in cluster[1:]:
+        other = row["swing"]
+        if other["source"] is None or other["distance"] is None:
+            return False
+        if abs(winner["source"] - other["source"]) < SWING_DECISIVE_GAP:
+            return False
+        if winner["distance"] >= other["distance"]:
+            return False
+    return True
+
+
 def _decision(rows: list[dict[str, Any]]) -> tuple[bool, bool, str | None, str | None]:
     scored = [row for row in rows if row["harmonic"]["cosine"] is not None]
     if not scored:
@@ -406,15 +431,11 @@ def _decision(rows: list[dict[str, Any]]) -> tuple[bool, bool, str | None, str |
         if best["evidence"] == "weak":
             return True, False, None, "The only resemblance is weak. Ask which passage to try."
         return False, True, "harmony", None
-    delta = best["harmonic"]["cosine"] - scored[1]["harmonic"]["cosine"]
-    if delta < CHROMA_AMBIGUITY_GAP:
-        first, second = best["swing"], scored[1]["swing"]
-        if (
-            first["source"] is not None and second["source"] is not None
-            and abs(first["source"] - second["source"]) >= SWING_DECISIVE_GAP
-            and first["distance"] is not None and second["distance"] is not None
-            and first["distance"] < second["distance"]
-        ):
+    peak = max(row["harmonic"]["cosine"] for row in scored)
+    cluster = [row for row in scored if peak - row["harmonic"]["cosine"] < CHROMA_AMBIGUITY_GAP]
+    if len(cluster) > 1:
+        # The winner has to clear every other close candidate, not only the next row.
+        if _swing_separates(cluster):
             return False, True, "swing", None
         return True, False, None, (
             "The closest pitch-class matches are within "

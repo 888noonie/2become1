@@ -74,6 +74,18 @@ export function scoredRows(rank) {
  * pitch stays at zero. A higher cosine that needs an unqualified pitch does
  * not automatically win.
  */
+/**
+ * `fit` only when the project's tempo ratio is the ratio the ranker qualified.
+ * A later master-tempo change must not turn 0.909 into a 2× beat-sync.
+ */
+export function playbackSpeed(qualifiedStretch, projectRatio) {
+  if (typeof qualifiedStretch !== 'number' || typeof projectRatio !== 'number') return 'natural';
+  if (!Number.isFinite(qualifiedStretch) || !Number.isFinite(projectRatio)) return 'natural';
+  if (qualifiedStretch < 0.857 || qualifiedStretch > 1.2) return 'natural';
+  if (Math.abs(projectRatio - qualifiedStretch) > 0.02) return 'natural';
+  return 'fit';
+}
+
 export function deckChoice(rank) {
   const rows = scoredRows(rank);
   if (!rows.length) return null;

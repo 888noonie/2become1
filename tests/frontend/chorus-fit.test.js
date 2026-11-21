@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { chorusUtterance, deckChoice, pitchFor, scoredRows } from '../../src/twobecomeone/studio_static/js/arrangement/chorus-fit.js';
+import { chorusUtterance, deckChoice, pitchFor, playbackSpeed, scoredRows } from '../../src/twobecomeone/studio_static/js/arrangement/chorus-fit.js';
 
 test('the musician’s phrases stay deterministic', () => {
   assert.deepEqual(chorusUtterance('Which part of B fits this chorus?'), { kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
@@ -49,4 +49,11 @@ test('a large agreed pitch is shown in a jam and left alone when the decks are p
   const small = pitchFor({ pitch: { autoApply: true, suggested: -1, note: 'one down' } }, { auto: true });
   assert.equal(small.semitones, -1);
   assert.equal(small.unqualified, true);
+});
+
+test('beat-sync is used only when the project tempo is the qualified ratio', () => {
+  assert.equal(playbackSpeed(0.909, 100 / 110), 'fit');
+  assert.equal(playbackSpeed(0.909, 220 / 110), 'natural');
+  assert.equal(playbackSpeed(2, 2), 'natural');
+  assert.equal(playbackSpeed(null, 1), 'natural');
 });

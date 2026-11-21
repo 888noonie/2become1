@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -259,12 +260,40 @@ class ConverseBody(BaseModel):
     history: list[dict[str, Any]] = Field(default_factory=list, max_length=16)
 
 
+class ChorusFitSection(BaseModel):
+    """One section's numbers. Nested audio, PCM, or any other field is refused."""
+
+    model_config = ConfigDict(extra="forbid")
+    id: str | None = None
+    label: str | None = Field(default=None, max_length=200)
+    name: str | None = Field(default=None, max_length=200)
+    meanChroma: list[float] | None = Field(default=None, max_length=12, min_length=12)
+    bars: float | None = None
+    vocalPresence: float | None = None
+    bpm: float | None = None
+    swing: float | None = None
+    swingRatio: float | None = None
+    key: str | None = Field(default=None, max_length=40)
+    startSec: float | None = None
+    endSec: float | None = None
+    downbeatSec: float | None = None
+
+    @field_validator("meanChroma")
+    @classmethod
+    def _finite_chroma(cls, value: list[float] | None) -> list[float] | None:
+        if value is None:
+            return None
+        if any(not math.isfinite(item) for item in value):
+            raise ValueError("meanChroma must be twelve finite numbers")
+        return value
+
+
 class ChorusFitBody(BaseModel):
     """Descriptors only. Audio is never accepted on this route."""
 
     model_config = ConfigDict(extra="forbid")
-    target: dict[str, Any]
-    candidates: list[dict[str, Any]] = Field(min_length=1, max_length=64)
+    target: ChorusFitSection
+    candidates: list[ChorusFitSection] = Field(min_length=1, max_length=64)
 
 
 def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = None, trusted_hosts: list[str] | None = None):
@@ -609,7 +638,7 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
     @app.post("/api/chorus-fit")
     def chorus_fit_route(body: ChorusFitBody):
         """Rank one target section against other sections. No audio, no model, no project write."""
-        return rank_fit(body.target, body.candidates)
+        return rank_fit(body.target.model_dump(), [item.model_dump() for item in body.candidates])
 
     @app.get("/api/producer/model")
     def producer_model():

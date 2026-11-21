@@ -10,6 +10,7 @@ import copy
 import numpy as np
 import pytest
 
+from twobecomeone.listening import effective_key_name
 from twobecomeone.chorus_fit import (
     CHROMA_AMBIGUITY_GAP,
     QUALIFIED_STRETCH_MAX,
@@ -157,6 +158,37 @@ def test_close_chroma_asks_until_swing_separates_them():
     assert separated["distinguishedBy"] == "swing"
 
 
+def test_a_third_close_swing_keeps_the_rank_a_question():
+    """Clearing the runner-up is not enough when another close candidate is still near."""
+    base = np.array([1.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0])
+    target = _section("a", base.tolist(), swing=0.63)
+    near = _section("near", base.tolist(), swing=0.59, startSec=1)
+    far = _section("far", base.tolist(), swing=0.72, startSec=2)
+    still = _section("still", base.tolist(), swing=0.50, startSec=3)
+    result = rank_fit(target, [far, still, near])
+    assert result["ask"] is True
+    assert result["decisive"] is False
+    assert result["distinguishedBy"] is None
+    assert "does not separate" in result["askReason"]
+
+
+def test_the_listening_document_can_carry_the_track_key_it_already_has():
+    assert effective_key_name({"key": {"tonic": "C", "mode": "major"}}) == "C major"
+    assert effective_key_name({"key": {"tonic": "F#", "mode": "minor"}}) == "F# minor"
+    assert effective_key_name({"key": {"tonic": None, "mode": "major"}}) is None
+    assert effective_key_name({"key": {"tonic": " ", "mode": " "}}) is None
+    assert effective_key_name({}) is None
+
+
+def test_a_nested_label_is_not_echoed_as_audio():
+    chroma = _chroma([1, 0, 0, 0, 0, 0, 0, 0])
+    result = rank_fit(
+        {"id": "a", "meanChroma": chroma, "label": {"pcm": [0.25, -0.25]}},
+        [{"id": "b", "meanChroma": chroma, "label": {"audio": [0.25, -0.25]}}],
+    )
+    assert result["candidates"][0]["label"] is None
+
+
 def test_swing_does_not_rescue_a_different_harmony():
     target_ch = _chroma([1, 0, 0, 0, 1, 0, 0, 1])
     target = _section("a", target_ch, swing=0.50)
@@ -292,4 +324,15 @@ def test_chorus_fit_route_accepts_descriptors_and_refuses_extra_fields(tmp_path)
     assert payload["candidates"][0]["downbeatSec"] == 4.8
     refused = client.post("/api/chorus-fit", json={**body, "audio": "not-allowed"})
     assert refused.status_code == 422
+    nested = client.post("/api/chorus-fit", json={
+        "target": {"audio": [0, 0.25, -0.25]},
+        "candidates": [{"id": "B", "label": {"pcm": [0, 0.25, -0.25]}}],
+    })
+    assert nested.status_code == 422
+    missing = client.post("/api/chorus-fit", json={
+        "target": {"id": "a", "meanChroma": None, "label": "chorus"},
+        "candidates": [{"id": "b", "label": "verse"}],
+    })
+    assert missing.status_code == 200
+    assert missing.json()["candidates"][0]["evidence"] == "missing"
     app.state.studio.close()
