@@ -366,7 +366,10 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       else { say('The idea could not be applied as it stands; nothing changed.'); }
       if (idea.hearing === 'idea') say('Hearing the idea. Move anything you like; your moves stay yours.');
     }
-    if (conv.spec) conv.spec.heard = idea.hearing === 'idea';
+    if (conv.spec) {
+      conv.spec.heard = idea.hearing === 'idea';
+      if (idea.hearing === 'idea') delete conv.spec.fresh;
+    }
     sync();
     rerender();
     return true;
@@ -556,6 +559,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const stopped = () => ({ ok: false, text: 'You play is on, so I have not placed it.' });
     const replaced = () => ({ ok: false, text: 'A new arrangement is open, so I have not placed it.' });
     const engine = session.edit;
+    const bank = ['A', 'B'].map((key) => session.groups()[key]?.trackId ?? '').join('|');
     const groups = session.groups();
     const ctx = { analyses: conv.analyses, groups, records: session.buffers };
     let built = buildIdea(session.state, spec, ctx);
@@ -563,6 +567,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       say('Fetching that passage of the stem…');
       try { await session.loadSource(built.needsSource); } catch (err) { return { ok: false, text: `I couldn't load that passage: ${err.message}` }; }
       if (session.edit !== engine) return replaced();
+      if (['A', 'B'].map((key) => session.groups()[key]?.trackId ?? '').join('|') !== bank) {
+        return { ok: false, text: 'The songs on the lanes changed, so I have not placed it.' };
+      }
       if (stale(guard)) return stopped();
     }
     if (session.edit !== engine) return replaced();
@@ -595,6 +602,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       if (writeAll((f) => f.value, false, key)) idea.hearing = 'idea';
       session.endGesture();
       spec.heard = true;
+      delete spec.fresh;
       say(`Hearing the new version: ${built.rationale}`);
     }
     sync();
@@ -603,6 +611,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   }
 
   async function commitIdea() {
+    if (conv.mode === 'you-play') { say('You play is on, so I have not placed it.'); return false; }
     if (idea && idea.hearing !== 'idea' && idea.hearing !== 'kept') {
       const next = followTempo(conv.spec);
       if (next && next !== conv.spec) {
@@ -616,6 +625,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   async function control(kind) {
     if (!idea) return 'There is no idea to do that with yet.';
     if (kind === 'hear_idea') {
+      if (conv.mode === 'you-play') return 'You play is on, so I have not placed it.';
       if (idea.hearing !== 'idea' && idea.hearing !== 'kept') {
         return (await commitIdea()) ? 'Hearing the idea.' : 'The idea could not be applied as it stands; nothing changed.';
       }
@@ -711,7 +721,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (!spec?.main || !conv.harmony) return spec;
     const mainField = idea?.fields?.find((field) => field.main);
     if (mainField && idea.touched.has(mainField.key)) return spec;
-    const speed = currentFitSpeed();
+    const speed = spec.main.speedLock ? null : currentFitSpeed();
     let start = spec.main.startBeat;
     if (spec.main.chorusAlign && conv.harmony.target?.startSec != null) {
       const beat = arrangementBeatForSource(session.state, conv.harmony.targetSong, conv.harmony.target.startSec);
@@ -727,13 +737,15 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
 
   function rememberWrite(beforeWrite, count) {
     const after = editingSerial();
+    const revision = session.edit.revision;
     if (!conv.decks) {
-      conv.decks = { before: beforeWrite, after, steps: count ? 1 : 0 };
+      conv.decks = { before: beforeWrite, after, revision, steps: count ? 1 : 0 };
       return;
     }
     // A hand edit between two Producer writes is the new floor. Take back stops there.
     if (beforeWrite !== conv.decks.after) conv.decks.before = beforeWrite;
     conv.decks.after = after;
+    conv.decks.revision = revision;
     if (count) conv.decks.steps += 1;
   }
 
@@ -862,7 +874,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (request.kind === 'jam') { setMode('jam'); return 'Jam together. I will show an idea, and nothing is written until you press Hear it.'; }
     if (request.kind === 'take-back') {
       if (!conv.decks?.before) return 'I have not taken the decks in this session.';
-      if (editingSerial() !== conv.decks.after) {
+      if (editingSerial() !== conv.decks.after || session.edit.revision !== conv.decks.revision) {
         return 'You have changed the arrangement since I played. I will not take that away. Undo walks one step when you want it to.';
       }
       const checkpoint = conv.decks.before;
@@ -894,6 +906,16 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     if (conv.mode === 'you-play' && (request.kind === 'place' || request.kind === 'gentler' || request.kind === 'nudge' || request.kind === 'choose')) {
       return 'You play is on, so I will not move that. Say “jam together” when you want an idea.';
+    }
+    if (request.kind === 'speed') {
+      if (conv.mode === 'you-play') return 'You play is on, so I will not move that. Say “jam together” when you want an idea.';
+      if (!conv.spec?.main) return 'I do not have a passage in mind yet. Ask which part of B fits this chorus.';
+      const spec = absorbHumanMoves(structuredClone(conv.spec));
+      spec.main.speed = request.speed;
+      spec.main.speedLock = true;
+      const heard = await realise(spec);
+      if (conv.mode === 'decks' && conv.decks && heard.ok && heard.wrote) rememberWrite(heard.before, false);
+      return heard.ok ? 'The passage keeps its own speed.' : heard.text;
     }
     if (request.kind === 'place' || request.kind === 'gentler' || request.kind === 'nudge') {
       if (!conv.spec?.main && !conv.harmony) return 'I do not have a passage in mind yet. Ask which part of B fits this chorus.';
@@ -991,7 +1013,15 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       // A curve, a refused effect on that curve, or a half-beat nudge we can
       // already name must not wait on the model. The matcher says the effect
       // is unavailable and does not offer Hear it.
-      if (entranceRequest(message) || halfBeatOnly(message) !== null) {
+      const chorusNudge = halfBeatOnly(message);
+      if (chorusNudge !== null && (conv.harmony || conv.decks) && conv.mode !== 'you-play') {
+        conv.spec = spec;
+        const reply = await harmonyTurn({ kind: 'nudge', beats: chorusNudge });
+        line('producer', reply, 'is-local');
+        say(reply);
+        return;
+      }
+      if (entranceRequest(message) || chorusNudge !== null) {
         const outcome = applyIntent(spec, { action: 'adjust' }, { ...intentCtx(), resolved: {} });
         if (entranceRequest(message)?.refused && idea && idea.hearing !== 'idea' && idea.hearing !== 'kept') {
           idea = null;

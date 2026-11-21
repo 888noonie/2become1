@@ -34,7 +34,8 @@ export function chorusUtterance(text) {
   if (n === 'keep the chorus but choose a different vocal phrase') return { kind: 'choose', index: 'next', stem: 'vocals' };
   const bar = n.match(/^put it at bar (\d+)$/);
   if (bar) return { kind: 'place', bar: Number(bar[1]) };
-  if (n === 'move it half a beat earlier' || n === 'move the idea half a beat earlier') return { kind: 'nudge', beats: -0.5 };
+  if (n === 'move it half a beat earlier' || n === 'move the idea half a beat earlier' || n === 'half a beat earlier') return { kind: 'nudge', beats: -0.5 };
+  if (n === 'play the idea at its own speed' || n === 'play it at its own speed') return { kind: 'speed', speed: 'natural' };
   if (n === 'make the fade gentler' || n === 'make the entrance gentler') return { kind: 'gentler' };
   return null;
 }

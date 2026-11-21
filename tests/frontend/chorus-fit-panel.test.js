@@ -477,3 +477,76 @@ test('a new arrangement during a take does not receive the old passage', async (
     ANALYSIS.B.sections[1].meanChroma = decoy;
   }
 });
+
+test('Half a beat earlier keeps the take and moves it', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  await tell('Put it at bar 17');
+  const said = await tell('Half a beat earlier');
+  assert.doesNotMatch(said, /press Hear it/i);
+  const clip = ideaClip(s);
+  assert.ok(Math.abs(clip.timelineStartBeat - 63.5) < 1e-6, `placed at ${clip.timelineStartBeat}`);
+  assert.ok(s.state.tracks[4].gainPoints[0].beat >= 63);
+});
+
+test('You play does not write when Hear it is typed', async () => {
+  const { s, prod, tell } = await mounted();
+  await tell('Try the strongest match');
+  const count = s.state.clips.length;
+  [...prod.querySelectorAll('button')].find((b) => b.textContent === 'You play').click();
+  const said = await tell('Hear it');
+  assert.match(said, /You play is on/);
+  assert.equal(s.state.clips.length, count);
+});
+
+test('setting a gain and putting it back does not let Take back unwind those edits', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const drums = s.state.clips.find((clip) => clip.trackIndex === 1);
+  s.apply({ name: 'setClipGain', args: { clipId: drums.id, gainDb: -9 } });
+  s.apply({ name: 'setClipGain', args: { clipId: drums.id, gainDb: 0 } });
+  assert.match(await tell('Take back'), /will not take that away/);
+  assert.ok(ideaClip(s));
+  assert.equal(s.state.clips.find((clip) => clip.id === drums.id).clipGainDb, 0);
+});
+
+test('an explicit natural speed is not fitted again', async () => {
+  const { s, btn, tell } = await mounted();
+  await tell('Try the strongest match');
+  btn('Hear it').click();
+  const said = await tell('Play the idea at its own speed');
+  assert.match(said, /own speed/);
+  assert.equal(ideaClip(s).stretchMode, 'manual');
+  assert.equal(ideaClip(s).customStretchRatio, 1);
+});
+
+test('replacing a song during a take does not bring the old passage back', async () => {
+  const match = ANALYSIS.B.sections[0].meanChroma.slice();
+  const decoy = ANALYSIS.B.sections[1].meanChroma.slice();
+  ANALYSIS.B.sections[0].meanChroma = decoy.slice();
+  ANALYSIS.B.sections[1].meanChroma = match.slice();
+  try {
+    const { s, tell } = await mounted();
+    const original = s.loadSource.bind(s);
+    let release;
+    s.loadSource = (spec) => new Promise((resolve, reject) => {
+      release = () => original(spec).then(resolve, reject);
+    });
+    const pending = tell('Take the decks');
+    for (let i = 0; i < 150 && !release; i += 1) await new Promise((r) => setTimeout(r, 20));
+    const doc = ANALYSIS.B;
+    await s.importGroup('B', {
+      trackId: 'tC', title: 'Song C', bpm: 100, section: { startSec: 0, seconds: 30 },
+      stems: ['vocals', 'drums', 'bass', 'other'].map((role) => ({ role, url: `/api/stems/setC/audio?name=${role}&start=0&duration=30`, stemSetId: 'setC' })),
+    });
+    release();
+    const said = await pending;
+    assert.match(said, /lanes changed/);
+    assert.equal(s.state.clips.filter((clip) => clip.trackIndex >= 4).length, 4);
+    assert.equal(ideaClip(s), undefined);
+    void doc;
+  } finally {
+    ANALYSIS.B.sections[0].meanChroma = match;
+    ANALYSIS.B.sections[1].meanChroma = decoy;
+  }
+});

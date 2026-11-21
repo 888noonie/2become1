@@ -14,6 +14,8 @@ test('the musician’s phrases stay deterministic', () => {
   assert.equal(chorusUtterance('Keep the chorus but choose a different vocal phrase').stem, 'vocals');
   assert.deepEqual(chorusUtterance('Put it at bar 17'), { kind: 'place', bar: 17 });
   assert.deepEqual(chorusUtterance('Move the idea half a beat earlier'), { kind: 'nudge', beats: -0.5 });
+  assert.deepEqual(chorusUtterance('Half a beat earlier'), { kind: 'nudge', beats: -0.5 });
+  assert.deepEqual(chorusUtterance('Play the idea at its own speed'), { kind: 'speed', speed: 'natural' });
   assert.equal(chorusUtterance('Make the fade gentler').kind, 'gentler');
   assert.equal(chorusUtterance('Make something beautiful from these two songs').kind, 'decks');
   assert.equal(chorusUtterance('Take back').kind, 'take-back');
