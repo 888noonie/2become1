@@ -27,3 +27,13 @@ node tests/browser/black_tie_ux.js "$capture_dir" "$demo_url"
 ```
 
 Inspect the actual empty and loaded desk, proposal preview, acquisition dialog and focus captures. Compare the central instrument at 1440×900 and 1280×800, inspect tablet switch sizes and follow both banks at 390×844. Exercise a refused reload with eight lanes already present. Pair the visual review with the [prepared musical journey](for-your-ears-only.md). Record the candidate revision, findings and fixes. Automated accessibility results, independent engineering review and the PM's visual acceptance are separate evidence.
+
+## Draw levels (Black Tie Encore)
+
+Draw levels (the toolbar chip or G) lifts each lane's gain curve above its clips and holds the clips still, so a levels gesture can never move, trim, slip or fade a clip. Escape or G returns to clip editing; Escape leaves the mode without stopping playback. G does nothing while a text field, select or another panel has focus.
+
+A new point lands on the Snap grid and a pointer-placed level is stored in tenths of a dB, with a detent on the fader; Alt places either freely. A press that does not travel only selects a point. A drag snaps the beat only once the pointer moves sideways, and one drag is one undo step. On touch, an empty-lane tap adds a point when the finger lifts without travelling, and a point drag the browser cancels for a pan is taken back. Keyboard: arrows move the focused point by the Snap step and 1 dB, Shift gives 1/16 beat and 0.1 dB, and Delete moves focus to the nearest remaining point. Phones and coarse pointers get 44 px point targets around the same small dot.
+
+Positions in the inspector, point labels and announcements read as bars and beats ("bar 4, beat 2½"); off-grid positions keep three decimals. Levels are said against the fader ("-9.0 dB, 3.0 dB under the fader"). The transport counter keeps its bar · beat · tick display.
+
+The Producer's four-bar entrance is dashed and labelled "Idea · not playing" before Hear it, and "Idea · playing, not kept" while it sounds. A hand edit, Keep or Reject removes the mark. A hand edit retires the pending curve, so the Producer can't write it back. Draw levels changes presentation and edit gestures only. The automation scheduler, live and offline gain, ProjectState and the stored point format are unchanged. Real-browser coverage: `node tests/browser/black_tie_encore.js <studio-url> <out-dir>`.
