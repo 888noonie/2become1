@@ -460,7 +460,11 @@ export class RealtimeEngine {
       return { track: tr, beat };
     };
     const epoch = this.active;
-    const handover = epoch && epoch.originSec > now + 1 / this.sr;
+    // A seek whose planned origin has passed is still a handover until its
+    // voices are armed. The outgoing curve keeps the fader until then.
+    const handover = Boolean(epoch && this._wired && this._wired.rec !== epoch && (
+      epoch.originSec > now + 1 / this.sr || epoch.firstBatchDone !== true
+    ));
     if (handover) this.#scheduleEpochGains(epoch);
     for (const t of plan.tracks) {
       const gain = bb.trackInputs[`gain-${t.trackIndex}`]?.gain;
@@ -727,7 +731,8 @@ export class RealtimeEngine {
     // A future epoch is not sounding yet. The initial slow start moves with
     // its voices; a seek keeps the curve whose origin is already in the past.
     const sounding = wired && wired.originSec <= anchor + 1 / this.sr ? wired : null;
-    const preserve = Boolean(sounding) && takeover > anchor + 1 / this.sr;
+    const unarmed = Boolean(sounding && sounding.rec !== rec && rec.firstBatchDone !== true);
+    const preserve = Boolean(sounding) && (takeover > anchor + 1 / this.sr || unarmed);
     // The incoming curve waits until this epoch's voices are armed. Until
     // then the outgoing rise keeps going, so a build that runs past the
     // planned origin cannot switch the fader early.

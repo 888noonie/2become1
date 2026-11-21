@@ -1135,3 +1135,43 @@ test('a seek build that passes the planned takeover stays on the outgoing rise',
   assert.ok(engine.active.originSec > at + 0.125, 'the incoming origin moved past the probe');
   engine.dispose();
 });
+
+test('a master move while a seek build is overdue keeps the outgoing rise', async () => {
+  const box = { hold: false, release: null };
+  const factory = fakeStretchFactory({ beforeResolve: (audio) => {
+    if (!box.hold) return undefined;
+    audio.currentTime += 0.110;
+    return new Promise((resolve) => { box.release = resolve; });
+  } });
+  const { ctx, engine, plan } = await makeEngine({
+    clips: [planClip({ clipId: 'arp', start: 0, length: 20 * SR, rate: 1.2 })],
+    factory,
+  });
+  const track = { volumeDb: 0, gainPoints: [{ beat: 0, db: -60 }, { beat: 16, db: 0 }] };
+  plan.tracks[0].gainPoints = track.gainPoints;
+  engine.play();
+  await engine.settle();
+  const at = engine.active.originSec + 4;
+  await advance(ctx, engine, at);
+  box.hold = true;
+  engine.seek(0);
+  for (let i = 0; i < 30 && !box.release; i += 1) await Promise.resolve();
+  assert.ok(box.release, 'the seek build is held open');
+  assert.equal(engine.active.firstBatchDone, false);
+  const edited = structuredClone(plan);
+  edited.master.gainLinear = 0.7;
+  await engine.replacePlan(edited);
+  ctx.currentTime = at + 0.111;
+  const gain = trackGain(engine);
+  const want = gainLinearAtBeat(track, 4.111 * 2);
+  const armed = [...engine.voices.values()].filter((v) => v.armed);
+  assert.ok(Math.abs(want - 0.514361125) < 1e-4);
+  assert.ok(armed.length > 0 && armed.every((v) => Math.abs(v.gate.gain.valueAt(at + 0.111) - 1) < 1e-6));
+  assert.equal(engine.active.firstBatchDone, false);
+  assert.ok(Math.abs(gain.valueAt(at + 0.111) - want) < 1e-3, `overdue master edit is ${gain.valueAt(at + 0.111)}, want ${want}`);
+  assert.ok(Math.abs(gain.valueAt(at + 0.111) - 0.001874125) > 0.4, 'the unarmed entrance must not take the fader');
+  box.release();
+  await engine.settle();
+  void ctx;
+  engine.dispose();
+});
