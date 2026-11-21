@@ -583,6 +583,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (wasHearing && conv.absorbed) idea.touched.delete(conv.absorbed);
     conv.absorbed = null;
     const beforeWrite = editingSerial();
+    const beforeRevision = session.edit.revision;
     if (wasHearing) {
       // Swap the heard version for the refined one as ONE undo step.
       writeAll((f) => idea.before.get(f.key), true, key);
@@ -607,11 +608,19 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     sync();
     rerender();
-    return { ok: true, wrote: wasHearing, before: beforeWrite, text: `${wasHearing ? 'Now playing' : 'Idea'}: ${built.rationale}.${wasHearing ? '' : ' Press Hear it to listen.'}` };
+    conv.bank = bankStamp();
+    return { ok: true, wrote: wasHearing, before: beforeWrite, revision: beforeRevision, text: `${wasHearing ? 'Now playing' : 'Idea'}: ${built.rationale}.${wasHearing ? '' : ' Press Hear it to listen.'}` };
   }
 
   async function commitIdea() {
     if (conv.mode === 'you-play') { say('You play is on, so I have not placed it.'); return false; }
+    if (conv.bank && bankStamp() !== conv.bank) {
+      idea = null;
+      conv.spec = null;
+      rerender();
+      say('The songs on the lanes changed, so I have not placed it.');
+      return false;
+    }
     if (idea && idea.hearing !== 'idea' && idea.hearing !== 'kept') {
       const next = followTempo(conv.spec);
       if (next && next !== conv.spec) {
@@ -626,6 +635,12 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (!idea) return 'There is no idea to do that with yet.';
     if (kind === 'hear_idea') {
       if (conv.mode === 'you-play') return 'You play is on, so I have not placed it.';
+      if (conv.bank && bankStamp() !== conv.bank) {
+        idea = null;
+        conv.spec = null;
+        rerender();
+        return 'The songs on the lanes changed, so I have not placed it.';
+      }
       if (idea.hearing !== 'idea' && idea.hearing !== 'kept') {
         return (await commitIdea()) ? 'Hearing the idea.' : 'The idea could not be applied as it stands; nothing changed.';
       }
@@ -735,23 +750,29 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     return next;
   }
 
-  function rememberWrite(beforeWrite, count) {
+  function bankStamp() {
+    return ['A', 'B'].map((key) => session.groups()[key]?.trackId ?? '').join('|');
+  }
+
+  function rememberWrite(beforeWrite, beforeRevision, count) {
     const after = editingSerial();
     const revision = session.edit.revision;
     if (!conv.decks) {
       conv.decks = { before: beforeWrite, after, revision, steps: count ? 1 : 0 };
       return;
     }
-    // A hand edit between two Producer writes is the new floor. Take back stops there.
-    if (beforeWrite !== conv.decks.after) conv.decks.before = beforeWrite;
+    // Same values can hide a fader edit that was put back. The revision catches it.
+    if (beforeWrite !== conv.decks.after || beforeRevision !== conv.decks.revision) conv.decks.before = beforeWrite;
     conv.decks.after = after;
     conv.decks.revision = revision;
     if (count) conv.decks.steps += 1;
   }
 
   async function rankedFit(request) {
+    const stamp = bankStamp();
     const groups = session.groups();
     await analysesFor(groups, { compute: true });
+    if (bankStamp() !== stamp) return { say: 'The songs on the lanes changed, so I have not placed it.' };
     const targetSong = conv.harmony?.targetSong ?? request.targetSong ?? 'A';
     const sourceSong = conv.harmony?.sourceSong ?? request.sourceSong ?? 'B';
     const targetAnalysis = conv.analyses[targetSong];
@@ -762,6 +783,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       ? targetAnalysis.sections.find((s) => s.id === conv.harmony.target.id) ?? targetSection(targetAnalysis, label)
       : targetSection(targetAnalysis, label);
     if (!target) return { say: `I can't find a ${label} in song ${targetSong}. Name the passage and I'll use that.` };
+    if (bankStamp() !== stamp) return { say: 'The songs on the lanes changed, so I have not placed it.' };
     const rank = await json('/api/chorus-fit', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -769,7 +791,8 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         candidates: sourceAnalysis.sections.map((section) => descriptorFrom(sourceAnalysis, section)),
       }),
     });
-    return { groups, targetSong, sourceSong, target, targetAnalysis, sourceAnalysis, rank };
+    if (bankStamp() !== stamp) return { say: 'The songs on the lanes changed, so I have not placed it.' };
+    return { groups: session.groups(), targetSong, sourceSong, target, targetAnalysis, sourceAnalysis, rank };
   }
 
   function rowAt(rank, index) {
@@ -851,12 +874,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       if (!heard.ok) return `${text}${pitchNote}${alt}${tempoNote} ${heard.text}`.trim();
       if (session.edit !== engine) return 'A new arrangement is open, so I have not placed it.';
       if (!idea || idea.hearing === 'kept') return heard.text || text;
-      if (heard.wrote) rememberWrite(heard.before, true);
+      if (heard.wrote) rememberWrite(heard.before, heard.revision, true);
       else {
         const beforeWrite = editingSerial();
+        const beforeRevision = session.edit.revision;
         if (idea.hearing !== 'idea') hearToggle();
         if (!idea || idea.hearing !== 'idea') return `${text}${pitchNote}${alt} The arrangement did not change.`;
-        rememberWrite(beforeWrite, true);
+        rememberWrite(beforeWrite, beforeRevision, true);
       }
       const playing = typeof session.play === 'function' ? await session.play() : false;
       const surprise = deckChoice(found.rank);
@@ -914,7 +938,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       spec.main.speed = request.speed;
       spec.main.speedLock = true;
       const heard = await realise(spec);
-      if (conv.mode === 'decks' && conv.decks && heard.ok && heard.wrote) rememberWrite(heard.before, false);
+      if (conv.mode === 'decks' && conv.decks && heard.ok && heard.wrote) rememberWrite(heard.before, heard.revision, false);
       return heard.ok ? 'The passage keeps its own speed.' : heard.text;
     }
     if (request.kind === 'place' || request.kind === 'gentler' || request.kind === 'nudge') {
@@ -933,11 +957,12 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       }
       const heard = await realise(outcome.spec);
       if (conv.mode === 'decks' && conv.decks && heard.ok) {
-        if (heard.wrote) rememberWrite(heard.before, false);
+        if (heard.wrote) rememberWrite(heard.before, heard.revision, false);
         else if (idea && idea.hearing !== 'idea' && idea.hearing !== 'kept') {
           const beforeWrite = editingSerial();
+          const beforeRevision = session.edit.revision;
           hearToggle();
-          rememberWrite(beforeWrite, false);
+          rememberWrite(beforeWrite, beforeRevision, false);
         }
       }
       return heard.text;

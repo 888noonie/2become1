@@ -550,3 +550,29 @@ test('replacing a song during a take does not bring the old passage back', async
     ANALYSIS.B.sections[1].meanChroma = decoy;
   }
 });
+
+test('Hear it does not place a preview after the song on that bank has changed', async () => {
+  const { s, btn, tell } = await mounted();
+  await tell('Try the strongest match');
+  await s.importGroup('B', {
+    trackId: 'tC', title: 'Song C', bpm: 100, section: { startSec: 0, seconds: 30 },
+    stems: ['vocals', 'drums', 'bass', 'other'].map((role) => ({ role, url: `/api/stems/setC/audio?name=${role}&start=0&duration=30`, stemSetId: 'setC' })),
+  });
+  btn('Hear it').click();
+  for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(ideaClip(s), undefined);
+  assert.equal(s.state.clips.filter((clip) => clip.trackIndex >= 4).length, 4);
+});
+
+test('a later move does not let Take back cross a fader that was put back', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const drums = s.state.clips.find((clip) => clip.trackIndex === 1);
+  s.apply({ name: 'setClipGain', args: { clipId: drums.id, gainDb: -9 } });
+  s.apply({ name: 'setClipGain', args: { clipId: drums.id, gainDb: 0 } });
+  await tell('Put it at bar 17');
+  assert.match(await tell('Take back'), /decks are yours/);
+  assert.equal(s.state.clips.find((clip) => clip.id === drums.id).clipGainDb, 0);
+  assert.ok(ideaClip(s));
+  assert.notEqual(ideaClip(s).timelineStartBeat, 64);
+});
