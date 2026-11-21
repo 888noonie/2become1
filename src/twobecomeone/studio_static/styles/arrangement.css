@@ -387,3 +387,32 @@
 .is-drawing-levels .daw__lane { cursor: crosshair; }
 .is-drawing-levels .daw__env-handle { pointer-events: auto; opacity: 1; width: 14px; height: 14px; margin: -7px 0 0 -7px; }
 .is-drawing-levels .daw__env-line { stroke-width: 2.5; }
+
+/* BLACK TIE ENCORE: the mode reads at a glance, a finger can drag a point,
+   and the Producer's curve is told apart from the musician's. */
+.daw__levels[aria-pressed="true"] { background: var(--color-action); border-color: var(--color-action); color: var(--color-background); }
+.is-drawing-levels .daw__env-handle { touch-action: none; }
+.daw__env-handle.is-selected { box-shadow: 0 0 0 4px var(--color-surface), 0 0 0 6px var(--color-focus); outline: none; }
+.is-drawing-levels .daw__env-handle.is-selected { width: 16px; height: 16px; margin: -8px 0 0 -8px; }
+.daw__env-line--idea { stroke-dasharray: 6 5; stroke-width: 2; opacity: 0.9; }
+.daw__env-line.is-idea { stroke-dasharray: 6 5; }
+.daw__env-idea {
+  position: absolute; bottom: 2px; padding: 0 6px; border-radius: 4px; white-space: nowrap;
+  font: 11px var(--font-mono); pointer-events: none; z-index: 3;
+  background: var(--color-surface); color: var(--color-text); border: 1px dashed var(--color-focus);
+}
+.daw__ins-point .daw__hint { margin-top: 0; }
+/* On a phone (or any coarse pointer) a point in Draw levels is a 44 px touch
+   target; the visible dot stays the same size, drawn in the middle of it. */
+.daw__env-handle--A { --env-dot: var(--color-anchor); }
+.daw__env-handle--B { --env-dot: var(--color-lead); }
+@media (max-width: 640px), (pointer: coarse) {
+  .is-drawing-levels .daw__env-handle,
+  .is-drawing-levels .daw__env-handle.is-selected {
+    width: 44px; height: 44px; margin: -22px 0 0 -22px; border: 0; box-shadow: none;
+    background: radial-gradient(circle, var(--env-dot) 0 6px, var(--color-surface) 6px 8px, transparent 8.5px);
+  }
+  .is-drawing-levels .daw__env-handle.is-selected {
+    background: radial-gradient(circle, var(--env-dot) 0 7px, var(--color-surface) 7px 9px, var(--color-focus) 9px 11px, transparent 11.5px);
+  }
+}

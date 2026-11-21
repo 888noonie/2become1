@@ -77,7 +77,7 @@ test('the source in-point is editable by value; the clip stays where it is; Undo
   assert.equal(after.timelineStartBeat, before.timelineStartBeat);
   assert.equal(after.durationBeats, before.durationBeats);
   assert.match(inspector().textContent, /Plays from3\.000 s · frame 144000/);
-  assert.match(inspector().textContent, /In the stembar 2 · beat 1 at 84\.3 BPM/, 'musical position uses the stem tempo');
+  assert.match(inspector().textContent, /In the stembar 2, beat 1\.215 of the stem at its own 84\.3 BPM/, 'musical position uses the stem tempo');
   // The slider moves the in-point as one undo step.
   const depth = s.edit.historyDepth.past;
   const slider = inspector().querySelector('input[aria-label="Slip"]');

@@ -694,9 +694,9 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
       label: (st) => `${st.tracks[index].name} entrance`,
       read: (st) => (st.tracks[index].gainPoints ?? []).map((p) => ({ beat: p.beat, db: p.db })),
       command: (_st, v) => ({ name: 'setTrackGainEnvelope', args: { trackIndex: index, points: v ?? [] } }),
-      show: (v) => (Array.isArray(v) && v.length ? v.map((p) => `beat ${p.beat}: ${p.db} dB`).join(' → ') : 'cleared'),
+      show: (v) => (Array.isArray(v) && v.length ? v.map((p) => `${fmtPos(p.beat, bpb)} ${p.db === 0 ? 'at the fader' : `${Math.abs(p.db)} dB ${p.db < 0 ? 'under' : 'over'} the fader`}`).join(' → ') : 'cleared'),
     });
-    notes.push(`${track.name} comes in from ${points[0].db} dB offset at beat ${points[0].beat} to the fader at beat ${end.beat}. The fader stays at ${track.volumeDb} dB.`);
+    notes.push(`${track.name} rises from ${Math.abs(points[0].db)} dB under its fader at ${fmtPos(points[0].beat, bpb)} to the fader by ${fmtPos(end.beat, bpb)}. The fader stays at ${track.volumeDb} dB`);
   }
   return { fields, rationale: notes.join('; '), clipId: spec.main?.clipId };
 }

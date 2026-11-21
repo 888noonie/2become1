@@ -58,6 +58,37 @@ export function formatPosition(beat, beatsPerBar) {
   return `${bar} · ${b} · ${String(tick).padStart(3, '0')}`;
 }
 
+const BEAT_FRACTIONS = Object.freeze([
+  [1 / 8, '⅛'], [1 / 4, '¼'], [1 / 3, '⅓'], [3 / 8, '⅜'], [1 / 2, '½'],
+  [5 / 8, '⅝'], [2 / 3, '⅔'], [3 / 4, '¾'], [7 / 8, '⅞'],
+]);
+
+/**
+ * Arrangement position in a musician's words: "bar 5", "bar 5, beat 3",
+ * "bar 5, beat 2½". Off-grid positions keep their precision as a decimal
+ * beat ("beat 2.371"). Read to the nearest of 960 ticks, the same grid as
+ * the transport counter, so float noise never shows as 2.999.
+ */
+export function musicalPosition(beat, beatsPerBar) {
+  const ticks = Math.round(Math.max(0, beat) * 960);
+  const perBar = Math.round(beatsPerBar * 960);
+  const bar = Math.floor(ticks / perBar) + 1;
+  const inBar = ticks - (bar - 1) * perBar;
+  const b = Math.floor(inBar / 960) + 1;
+  const rest = (inBar % 960) / 960;
+  if (rest === 0) return b === 1 ? `bar ${bar}` : `bar ${bar}, beat ${b}`;
+  const glyph = BEAT_FRACTIONS.find(([v]) => Math.abs(v - rest) <= 0.5 / 960)?.[1];
+  if (glyph) return `bar ${bar}, beat ${b}${glyph}`;
+  return `bar ${bar}, beat ${String(Number((b + rest).toFixed(3)))}`;
+}
+
+/** A gain point's level, said against the fader it rides on. */
+export function pointLevelText(absoluteDb, offsetDb) {
+  const off = Math.round(offsetDb * 10) / 10;
+  const rel = off === 0 ? 'at the fader' : `${Math.abs(off).toFixed(1)} dB ${off < 0 ? 'under' : 'over'} the fader`;
+  return `${fmtDb(absoluteDb)}, ${rel}`;
+}
+
 function withSection(url, start, seconds) {
   const [path, query = ''] = String(url).split('?');
   const params = new URLSearchParams(query);
@@ -105,6 +136,7 @@ export function mountArrangementPanel(opts) {
     envDrag: null,
     selectedPoint: null,
     drawLevels: false,
+    pendingTap: null,
     rafId: null,
     tracks: [],
     disposed: false,
@@ -169,9 +201,9 @@ export function mountArrangementPanel(opts) {
   const zoomText = h('span', { class: 'daw__chip-text', 'data-field': 'zoom' });
   const loopBtn = h('button', { type: 'button', class: 'button daw__chip', 'aria-pressed': 'false', 'aria-label': 'Loop' });
   const levelsBtn = h('button', {
-    type: 'button', class: 'button daw__chip', text: 'Draw levels', 'aria-pressed': 'false',
+    type: 'button', class: 'button daw__chip daw__levels', text: 'Draw levels', 'aria-pressed': 'false',
     'aria-keyshortcuts': 'G',
-    title: 'Draw volume changes over time: click a lane to add a point, drag to move it, double-click to remove. Clips are held still while this is on.',
+    title: 'Draw volume changes over time (G): click a lane to add a point, drag to move it, double-click to remove. Clips are held still while this is on; Esc returns to clip editing.',
   });
   const undoBtn = h('button', { type: 'button', class: 'button', text: 'Undo', 'aria-keyshortcuts': 'Control+Z' });
   const redoBtn = h('button', { type: 'button', class: 'button', text: 'Redo', 'aria-keyshortcuts': 'Control+Shift+Z' });
@@ -296,7 +328,7 @@ export function mountArrangementPanel(opts) {
     const m = Math.floor(sec / 60);
     posSec.textContent = `${m}:${(sec - m * 60).toFixed(2).padStart(5, '0')} heard`;
     ruler.setAttribute('aria-valuenow', String(Math.round(beat * 100) / 100));
-    ruler.setAttribute('aria-valuetext', `bar ${formatPosition(beat, beatsPerBar())}`);
+    ruler.setAttribute('aria-valuetext', musicalPosition(beat, beatsPerBar()));
     return x;
   }
 
@@ -401,7 +433,7 @@ export function mountArrangementPanel(opts) {
       role: 'button',
       tabindex: '0',
       'aria-pressed': String(selected),
-      'aria-label': `${asset?.name ?? clip.id}, bar ${formatPosition(clip.timelineStartBeat, beatsPerBar())}, ${fmtBeats(clip.durationBeats)}`,
+      'aria-label': `${asset?.name ?? clip.id}, ${musicalPosition(clip.timelineStartBeat, beatsPerBar())}, ${fmtBeats(clip.durationBeats)}`,
       dataset: { clipId: clip.id },
       style: { left: `${left}px`, width: `${width}px` },
     }, [
@@ -420,6 +452,7 @@ export function mountArrangementPanel(opts) {
   }
 
   let producerPreview = () => [];
+  let producerEnvelopes = () => [];
   let producerHandle = null;
 
   function dropEnvelopePreview(trackIndex) {
@@ -444,6 +477,18 @@ export function mountArrangementPanel(opts) {
     const lin = linearFloor() + Math.min(1, Math.max(0, t)) * (linearCeil() - linearFloor());
     const absolute = 20 * Math.log10(Math.max(lin, linearFloor()));
     return clampTo(absolute - track.volumeDb, MIN_VOLUME_DB, MAX_VOLUME_DB);
+  }
+
+  /**
+   * A pointer-placed level: tenths of a dB (what the readout shows is what is
+   * stored), with a detent on the fader so "back to the fader" is exact.
+   * Alt keeps the raw pointer value.
+   */
+  function pointerDb(y, track, free) {
+    const db = yToOffsetDb(y, track, LANE_HEIGHT);
+    if (free) return db;
+    if (Math.abs(db) < 0.5) return 0;
+    return clampTo(Math.round(db * 10) / 10, MIN_VOLUME_DB, MAX_VOLUME_DB);
   }
 
   function pointLinear(track, point) {
@@ -494,18 +539,40 @@ export function mountArrangementPanel(opts) {
       class: 'daw__env-layer',
       dataset: { track: String(track.trackIndex) },
     }, [svg]);
+    // The Producer's entrance, while it is still an idea: a dashed curve the
+    // musician can see before Hear it, and a marked curve while it sounds.
+    const idea = producerEnvelopes().find((e) => e.trackIndex === track.trackIndex);
+    if (idea?.status === 'proposed') {
+      const ghost = doc.createElementNS(SVG_NS, 'polyline');
+      ghost.setAttribute('class', `daw__env-line daw__env-line--idea daw__env-line--${trackGroup(track.trackIndex)}`);
+      ghost.setAttribute('fill', 'none');
+      const gv = curveVertices({ ...track, gainPoints: idea.points }, width);
+      ghost.setAttribute('points', gv.map((v) => `${v.x.toFixed(2)},${v.y.toFixed(2)}`).join(' '));
+      svg.append(ghost);
+    } else if (idea?.status === 'hearing') {
+      poly.classList.add('is-idea');
+    }
+    if (idea) {
+      const first = idea.points[0]?.beat ?? 0;
+      layer.append(h('span', {
+        class: `daw__env-idea daw__env-idea--${idea.status}`,
+        style: { left: `${first * pxPerBeat()}px` },
+        text: idea.status === 'proposed' ? 'Idea · not playing' : 'Idea · playing, not kept',
+      }));
+    }
     const selPoint = ui.selectedPoint?.trackIndex === track.trackIndex
       ? track.gainPoints?.[ui.selectedPoint.index] : null;
     if (selPoint && (ui.envDrag || ui.drawLevels)) {
       layer.append(h('span', {
         class: 'daw__env-readout',
         style: { left: `${selPoint.beat * pxPerBeat()}px` },
-        text: `${formatPosition(selPoint.beat, beatsPerBar())} · ${fmtDb(clampTo(track.volumeDb + selPoint.db, MIN_VOLUME_DB, MAX_VOLUME_DB))}`,
+        text: `${musicalPosition(selPoint.beat, beatsPerBar())} · ${fmtDb(clampTo(track.volumeDb + selPoint.db, MIN_VOLUME_DB, MAX_VOLUME_DB))}`,
       }));
     }
     (track.gainPoints ?? []).forEach((point, index) => {
       const absolute = clampTo(track.volumeDb + point.db, MIN_VOLUME_DB, MAX_VOLUME_DB);
       const selected = ui.selectedPoint?.trackIndex === track.trackIndex && ui.selectedPoint?.index === index;
+      const said = `${musicalPosition(point.beat, beatsPerBar())}: ${pointLevelText(absolute, point.db)}`;
       const handle = h('button', {
         type: 'button',
         class: `daw__env-handle daw__env-handle--${trackGroup(track.trackIndex)}${selected ? ' is-selected' : ''}`,
@@ -513,8 +580,10 @@ export function mountArrangementPanel(opts) {
           left: `${point.beat * pxPerBeat()}px`,
           top: `${linearToY(pointLinear(track, point), height)}px`,
         },
-        title: `${formatPosition(point.beat, beatsPerBar())}, ${fmtDb(absolute)} absolute`,
-        'aria-label': `Level point ${formatPosition(point.beat, beatsPerBar())}, ${fmtDb(absolute)} absolute`,
+        title: said,
+        'aria-label': `${track.name} level point at ${said}`,
+        'aria-pressed': String(selected),
+        'aria-keyshortcuts': 'ArrowLeft ArrowRight ArrowUp ArrowDown Delete',
         dataset: { track: String(track.trackIndex), index: String(index), envPoint: '1' },
       });
       layer.append(handle);
@@ -575,11 +644,12 @@ export function mountArrangementPanel(opts) {
     let best = Infinity;
     for (let i = 1; i < verts.length; i += 1) best = Math.min(best, distToSegment(x, y, verts[i - 1], verts[i]));
     if (best > 10 && !ui.drawLevels) return null;
+    // A new point lands on the Snap grid, like a clip; Alt places it freely.
     return {
       kind: 'add',
       trackIndex,
-      beat: Math.max(0, x / pxPerBeat()),
-      db: yToOffsetDb(y, track, LANE_HEIGHT),
+      beat: snap(x / pxPerBeat(), ev.altKey ? 'off' : false),
+      db: pointerDb(y, track, ev.altKey),
     };
   }
 
@@ -600,7 +670,15 @@ export function mountArrangementPanel(opts) {
     }
     ui.selectedPoint = { trackIndex: hit.trackIndex, index };
     ui.selectedTrack = hit.trackIndex;
-    ui.envDrag = { trackIndex: hit.trackIndex, index, pointerId: ev.pointerId };
+    ui.envDrag = {
+      trackIndex: hit.trackIndex, index, pointerId: ev.pointerId,
+      // Where the pointer grabbed the point, so a press without a move never
+      // shifts it, and the curve before the gesture, so a cancelled touch can
+      // be taken back.
+      grabX: ev.clientX, grabY: ev.clientY, moved: hit.kind === 'add', slid: false,
+      startBeat: points[index]?.beat ?? 0,
+      before: (track.gainPoints ?? []).map((p) => ({ beat: p.beat, db: p.db })),
+    };
     const outcome = session.apply({
       name: 'setTrackGainEnvelope',
       args: { trackIndex: hit.trackIndex, points },
@@ -609,17 +687,22 @@ export function mountArrangementPanel(opts) {
     else dropEnvelopePreview(hit.trackIndex);
   }
 
-  function nudgeSelectedPoint(key) {
+  function nudgeSelectedPoint(key, fine = false) {
     const sel = ui.selectedPoint;
     if (!sel) return;
     const track = session.state.tracks[sel.trackIndex];
     const points = (track.gainPoints ?? []).map((p) => ({ beat: p.beat, db: p.db }));
     const point = points[sel.index];
     if (!point) return;
-    if (key === 'ArrowLeft') point.beat = Math.max(0, point.beat - 0.25);
-    if (key === 'ArrowRight') point.beat += 0.25;
-    if (key === 'ArrowUp') point.db = Math.min(MAX_VOLUME_DB, point.db + 1);
-    if (key === 'ArrowDown') point.db = Math.max(MIN_VOLUME_DB, point.db - 1);
+    // Left/Right step by the Snap grid (¼ beat when Snap is off), Up/Down by
+    // 1 dB. Shift is fine: 1/16 beat and 0.1 dB.
+    const beatStep = fine ? 1 / 16 : (snapBeats() || 0.25);
+    const dbStep = fine ? 0.1 : 1;
+    const r = (v) => Math.round(v * 1e6) / 1e6; // float noise only; the value keeps its precision
+    if (key === 'ArrowLeft') point.beat = Math.max(0, roundNs(point.beat - beatStep));
+    if (key === 'ArrowRight') point.beat = roundNs(point.beat + beatStep);
+    if (key === 'ArrowUp') point.db = Math.min(MAX_VOLUME_DB, r(point.db + dbStep));
+    if (key === 'ArrowDown') point.db = Math.max(MIN_VOLUME_DB, r(point.db - dbStep));
     const outcome = session.apply({
       name: 'setTrackGainEnvelope',
       args: { trackIndex: sel.trackIndex, points },
@@ -627,17 +710,32 @@ export function mountArrangementPanel(opts) {
     if (outcome.ok) dropEnvelopePreview(sel.trackIndex);
   }
 
-  function deleteSelectedPoint() {
+  function deleteSelectedPoint({ refocus = false } = {}) {
     const sel = ui.selectedPoint;
     if (!sel) return;
     const track = session.state.tracks[sel.trackIndex];
+    const gone = track.gainPoints?.[sel.index];
     const points = (track.gainPoints ?? []).filter((_, i) => i !== sel.index);
-    ui.selectedPoint = null;
+    // Keyboard removal moves focus to the nearest remaining point on that
+    // lane, so the next Delete or arrow keeps working.
+    let next = null;
+    if (refocus && gone && points.length) {
+      next = points.reduce((best, p, i) => (Math.abs(p.beat - gone.beat) < Math.abs(points[best].beat - gone.beat) ? i : best), 0);
+    }
+    ui.selectedPoint = next === null ? null : { trackIndex: sel.trackIndex, index: next };
     const outcome = session.apply({
       name: 'setTrackGainEnvelope',
       args: { trackIndex: sel.trackIndex, points },
     });
     if (outcome.ok) dropEnvelopePreview(sel.trackIndex);
+    if (outcome.ok) onAnnounce(`Removed the level point at ${musicalPosition(gone?.beat ?? 0, beatsPerBar())}.`);
+    if (refocus) {
+      const target = next === null
+        ? null
+        : lanes.querySelector(`[data-env-point][data-track="${sel.trackIndex}"][data-index="${next}"]`);
+      if (target) target.focus({ preventScroll: true });
+      else lanes.querySelector(`.daw__lane[data-track="${sel.trackIndex}"]`)?.focus?.({ preventScroll: true });
+    }
   }
 
   function selectedPointLine(track) {
@@ -646,10 +744,16 @@ export function mountArrangementPanel(opts) {
     const point = track.gainPoints?.[sel.index];
     if (!point) return null;
     const absolute = clampTo(track.volumeDb + point.db, MIN_VOLUME_DB, MAX_VOLUME_DB);
-    return h('p', {
-      class: 'daw__ins-sub',
-      text: `Point ${formatPosition(point.beat, beatsPerBar())}, ${fmtDb(absolute)} absolute`,
-    });
+    return h('div', { class: 'daw__ins-point' }, [
+      h('p', {
+        class: 'daw__ins-sub',
+        text: `Level point at ${musicalPosition(point.beat, beatsPerBar())} · ${pointLevelText(absolute, point.db)}`,
+      }),
+      h('p', {
+        class: 'daw__hint',
+        text: 'Arrows move it along the Snap grid and by 1 dB; hold Shift for fine steps. Delete removes it.',
+      }),
+    ]);
   }
 
   function renderLanes() {
@@ -850,9 +954,9 @@ export function mountArrangementPanel(opts) {
       h('dt', { text: 'Plays from' }),
       h('dd', { text: `${clip.sourceOffsetSec.toFixed(3)} s · frame ${Math.round(clip.sourceOffsetSec * SAMPLE_RATE)}` }),
       h('dt', { text: 'In the stem' }),
-      h('dd', { text: stemBeats === null ? 'tempo unknown' : `bar ${formatPosition(stemBeats, bpb).split(' · ').slice(0, 2).join(' · beat ')} at ${asset.nativeBpm} BPM` }),
+      h('dd', { text: stemBeats === null ? 'tempo unknown' : `${musicalPosition(stemBeats, bpb)} of the stem at its own ${asset.nativeBpm} BPM` }),
       h('dt', { text: 'Room to slip' }),
-      h('dd', { text: lim.max <= 0 ? 'none: trim the end first' : `${clip.sourceOffsetSec.toFixed(2)} s earlier · ${(lim.max - clip.sourceOffsetSec).toFixed(2)} s later` }),
+      h('dd', { text: lim.max <= 0 ? 'none: trim the end first' : `${clip.sourceOffsetSec.toFixed(2)} s earlier · ${Math.max(0, lim.max - clip.sourceOffsetSec).toFixed(2)} s later` }),
     ];
     const formants = h('input', { type: 'checkbox', 'aria-label': 'Keep formants' });
     formants.checked = clip.preserveFormants;
@@ -865,7 +969,7 @@ export function mountArrangementPanel(opts) {
       h('h3', { class: `daw__ins-title daw__ins-title--${group}`, text: `Clip · ${session.state.tracks[clip.trackIndex].name}` }),
       h('p', { class: 'daw__ins-sub', text: [src.title, src.method, src.stemSetId ? `set ${String(src.stemSetId).slice(0, 8)}` : null, `lane ${clip.trackIndex + 1}`].filter(Boolean).join(' · ') }),
       h('dl', { class: 'daw__facts' }, [
-        h('dt', { text: 'Starts' }), h('dd', { text: `bar ${formatPosition(clip.timelineStartBeat, bpb)}` }),
+        h('dt', { text: 'Starts' }), h('dd', { text: musicalPosition(clip.timelineStartBeat, bpb) }),
         h('dt', { text: 'Length' }), h('dd', { text: `${(clip.durationBeats / bpb).toFixed(2)} bars` }),
         h('dt', { text: 'Source tempo' }), h('dd', { text: tempoText }),
       ]),
@@ -878,7 +982,7 @@ export function mountArrangementPanel(opts) {
         }) : null,
         h('label', { class: 'daw__row' }, [h('span', { class: 'daw__row-label', text: 'In-point' }), inPoint, h('span', { class: 'daw__unit', text: 's' })]),
         h('div', { class: 'daw__ins-actions' }, [slipEarlier, slipLater]),
-        h('p', { class: 'daw__hint', text: `Changes which audio plays. The clip stays at bar ${formatPosition(clip.timelineStartBeat, bpb).split(' · ')[0]} and keeps its length.` }),
+        h('p', { class: 'daw__hint', text: `Changes which audio plays. The clip stays at ${musicalPosition(clip.timelineStartBeat, bpb)} and keeps its length.` }),
       ]),
       rangeRow('Gain', {
         min: MIN_CLIP_GAIN_DB, max: MAX_CLIP_GAIN_DB, step: 0.5, value: clip.clipGainDb, format: fmtDb,
@@ -987,7 +1091,7 @@ export function mountArrangementPanel(opts) {
     if (!clip) return;
     const at = session.playheadBeat();
     const outcome = session.apply({ name: 'splitClipAtBeat', args: { clipId: clip.id, splitBeat: at } });
-    if (outcome.ok) onAnnounce(`Split at ${formatPosition(at, beatsPerBar())}.`);
+    if (outcome.ok) onAnnounce(`Split at ${musicalPosition(at, beatsPerBar())}.`);
   }
 
   function duplicateSelected() {
@@ -1046,6 +1150,12 @@ export function mountArrangementPanel(opts) {
     const onClip = !ui.drawLevels && ev.target.closest?.('.daw__clip');
     if (!onGrip && !onClip) {
       const hit = envelopeHit(ev);
+      if (hit && hit.kind === 'add' && ev.pointerType === 'touch') {
+        // A finger on an empty stretch of lane may be the start of a pan.
+        // The point is placed on lift, only if the finger did not travel.
+        ui.pendingTap = { hit, pointerId: ev.pointerId, x: ev.clientX, y: ev.clientY };
+        return;
+      }
       if (hit) {
         ev.preventDefault();
         ev.stopPropagation();
@@ -1087,15 +1197,38 @@ export function mountArrangementPanel(opts) {
     deleteSelectedPoint();
   });
 
+  /** Take back a point gesture the browser cancelled (a touch that became a pan). */
+  function cancelEnvelopeDrag() {
+    const env = ui.envDrag;
+    if (!env) return;
+    ui.envDrag = null;
+    const now = session.state.tracks[env.trackIndex]?.gainPoints ?? [];
+    session.endGesture();
+    if (env.moved && JSON.stringify(now) !== JSON.stringify(env.before)) {
+      session.undo();
+      ui.selectedPoint = null;
+    }
+    render();
+  }
+
   on(win, 'pointermove', (ev) => {
+    const tap = ui.pendingTap;
+    if (tap && ev.pointerId === tap.pointerId && Math.hypot(ev.clientX - tap.x, ev.clientY - tap.y) > 8) ui.pendingTap = null;
     const env = ui.envDrag;
     if (env && ev.pointerId === env.pointerId) {
+      // A press that has not travelled is a selection, not a move: the point
+      // keeps its exact position (a click must not re-snap or re-quantise it).
+      if (!env.moved && Math.hypot(ev.clientX - env.grabX, ev.clientY - env.grabY) < 3) return;
+      env.moved = true;
       const laneEl = lanes.querySelector(`.daw__lane[data-track="${env.trackIndex}"]`);
       const track = session.state.tracks[env.trackIndex];
       if (!laneEl || !track) return;
       const rect = laneEl.getBoundingClientRect();
-      const beat = Math.max(0, (ev.clientX - rect.left) / pxPerBeat());
-      const db = yToOffsetDb(ev.clientY - rect.top, track, LANE_HEIGHT);
+      // A level-only drag keeps the point's exact beat; it snaps to the grid
+      // only once the pointer has travelled sideways.
+      if (!env.slid && Math.abs(ev.clientX - env.grabX) >= 4) env.slid = true;
+      const beat = env.slid ? snap((ev.clientX - rect.left) / pxPerBeat(), ev.altKey ? 'off' : false) : env.startBeat;
+      const db = pointerDb(ev.clientY - rect.top, track, ev.altKey);
       const points = (track.gainPoints ?? []).map((p) => ({ beat: p.beat, db: p.db }));
       if (!points[env.index]) return;
       points[env.index] = { beat, db };
@@ -1158,9 +1291,17 @@ export function mountArrangementPanel(opts) {
   });
 
   const endDrag = (ev) => {
+    const tap = ui.pendingTap;
+    if (tap && (!ev || ev.pointerId === tap.pointerId)) {
+      ui.pendingTap = null;
+      beginEnvelopeDrag(tap.hit, { pointerId: tap.pointerId, clientX: tap.x, clientY: tap.y });
+    }
     if (ui.envDrag && (!ev || ev.pointerId === ui.envDrag.pointerId)) {
+      const { trackIndex, moved } = ui.envDrag;
       ui.envDrag = null;
       session.endGesture();
+      // A hand-shaped curve is the musician's from the moment the pointer lifts.
+      if (moved) dropEnvelopePreview(trackIndex);
       render();
       const sp = ui.selectedPoint;
       if (sp) lanes.querySelector(`[data-env-point][data-track="${sp.trackIndex}"][data-index="${sp.index}"]`)?.focus({ preventScroll: true });
@@ -1175,7 +1316,7 @@ export function mountArrangementPanel(opts) {
     let outcome = null;
     if (d.grip === 'move' && d.start !== undefined) {
       outcome = session.apply({ name: 'moveClip', args: { clipId: c.id, newTrackIndex: d.lane, newStartBeat: d.start } });
-      if (outcome.ok) onAnnounce(`Moved to ${session.state.tracks[d.lane].name}, bar ${formatPosition(d.start, beatsPerBar())}.`);
+      if (outcome.ok) onAnnounce(`Moved to ${session.state.tracks[d.lane].name}, ${musicalPosition(d.start, beatsPerBar())}.`);
     } else if (d.grip === 'start' && d.start !== undefined) {
       outcome = session.apply({ name: 'trimClip', args: { clipId: c.id, edge: 'start', deltaBeats: d.start - c.timelineStartBeat } });
     } else if (d.grip === 'end' && d.end !== undefined) {
@@ -1183,7 +1324,7 @@ export function mountArrangementPanel(opts) {
     } else if (d.grip === 'slip') {
       if (d.slip !== undefined && d.slip !== c.sourceOffsetSec) {
         outcome = session.apply({ name: 'slipClip', args: { clipId: c.id, sourceOffsetSec: d.slip } });
-        if (outcome.ok) onAnnounce(`Source in-point ${d.slip.toFixed(3)} seconds. The clip stayed at bar ${formatPosition(c.timelineStartBeat, beatsPerBar())}.`);
+        if (outcome.ok) onAnnounce(`Source in-point ${d.slip.toFixed(3)} seconds. The clip stayed at ${musicalPosition(c.timelineStartBeat, beatsPerBar())}.`);
       } else { render(); return; }
     } else if (d.grip === 'gain') {
       if (d.gain !== undefined && d.gain !== c.clipGainDb) {
@@ -1198,7 +1339,8 @@ export function mountArrangementPanel(opts) {
   };
   on(win, 'pointerup', endDrag);
   on(win, 'pointercancel', (ev) => {
-    if (ui.envDrag) { ui.envDrag = null; session.endGesture(); render(); }
+    if (ui.pendingTap && ev.pointerId === ui.pendingTap.pointerId) ui.pendingTap = null;
+    if (ui.envDrag && ev.pointerId === ui.envDrag.pointerId) cancelEnvelopeDrag();
     if (ui.drag) { ui.drag = null; render(); }
     void ev;
   });
@@ -1214,18 +1356,20 @@ export function mountArrangementPanel(opts) {
     fadeOut: 'Fade out: drag to set how long the sound takes to go.',
     gain: 'Clip gain: drag up or down (Alt for fine). Track level is separate.',
     slip: 'Slip: drag to choose which part of the stem plays here. The clip stays where it is.',
+    levels: 'Draw levels: click a lane to add a point on the Snap grid (Alt places it freely), drag a point to shape the curve, double-click or Delete removes it. Clips stay still. Esc or G returns to clip editing.',
   };
   hintLine.textContent = HINTS.idle;
   on(timeline, 'pointerover', (ev) => {
     if (ui.drag) return;
     const grip = ev.target.dataset?.grip;
-    let key = 'idle';
+    let key = ui.drawLevels ? 'levels' : 'idle';
     if (ev.target.closest?.('.daw__ruler')) key = 'ruler';
+    else if (ui.drawLevels) key = 'levels';
     else if (grip && HINTS[grip]) key = grip;
     else if (ev.target.closest?.('.daw__clip')) key = 'move';
     hintLine.textContent = HINTS[key];
   });
-  on(timeline, 'pointerleave', () => { if (!ui.drag) hintLine.textContent = HINTS.idle; });
+  on(timeline, 'pointerleave', () => { if (!ui.drag) hintLine.textContent = ui.drawLevels ? HINTS.levels : HINTS.idle; });
 
   // Ruler: click cues, drag sets the loop.
   on(ruler, 'pointerdown', (ev) => {
@@ -1254,7 +1398,7 @@ export function mountArrangementPanel(opts) {
     if (d.moved && d.range && d.range[1] - d.range[0] > 0) {
       ui.lastLoop = d.range;
       const outcome = session.setLoop(d.range[0], d.range[1]);
-      if (outcome.ok) onAnnounce(`Loop bars ${formatPosition(d.range[0], beatsPerBar())} to ${formatPosition(d.range[1], beatsPerBar())}.`);
+      if (outcome.ok) onAnnounce(`Loop from ${musicalPosition(d.range[0], beatsPerBar())} to ${musicalPosition(d.range[1], beatsPerBar())}.`);
     } else {
       session.seek(d.start);
     }
@@ -1317,8 +1461,9 @@ export function mountArrangementPanel(opts) {
     ui.drawLevels = Boolean(on);
     root.classList.toggle('is-drawing-levels', ui.drawLevels);
     levelsBtn.setAttribute('aria-pressed', String(ui.drawLevels));
+    hintLine.textContent = ui.drawLevels ? HINTS.levels : HINTS.idle;
     onAnnounce(ui.drawLevels
-      ? 'Draw levels on. Click a lane to add a point, drag to move it, double-click to remove it. Clips are held still.'
+      ? 'Draw levels on. Click a lane to add a point, drag to move it, double-click to remove it. Clips are held still. Escape returns to clip editing.'
       : 'Draw levels off. Clips can be moved again.');
   }
   levelsBtn.addEventListener('click', () => setDrawLevels(!ui.drawLevels));
@@ -1483,7 +1628,13 @@ export function mountArrangementPanel(opts) {
   on(doc, 'keydown', (ev) => {
     if (ui.disposed || !root.isConnected || root.closest('[hidden]')) return;
     const mod = ev.ctrlKey || ev.metaKey;
-    if (ev.key === 'Escape') { session.stop(); return; }
+    if (ev.key === 'Escape') {
+      // Leaving Draw levels is a mode change, not a transport command: the
+      // music keeps playing. A second Escape stops as it always has.
+      if (ui.drawLevels && !typing(ev.target)) { ev.preventDefault(); setDrawLevels(false); return; }
+      session.stop();
+      return;
+    }
     if (typing(ev.target)) return;
     const onClipTarget = ev.target.closest?.('.daw__clip');
     const pointHandle = ev.target.closest?.('[data-env-point]');
@@ -1497,12 +1648,12 @@ export function mountArrangementPanel(opts) {
     if (!mod && pointHandle && !onClipTarget) {
       if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight' || ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
         ev.preventDefault();
-        nudgeSelectedPoint(ev.key);
+        nudgeSelectedPoint(ev.key, ev.shiftKey);
         return;
       }
       if (ev.key === 'Delete' || ev.key === 'Backspace') {
         ev.preventDefault();
-        deleteSelectedPoint();
+        deleteSelectedPoint({ refocus: true });
         return;
       }
     }
@@ -1524,7 +1675,11 @@ export function mountArrangementPanel(opts) {
       ev.preventDefault(); splitSelected();
     } else if (!mod && (ev.key === ',' || ev.key === '.') && ui.selectedClipId) {
       ev.preventDefault(); slipSelectedBy(ev.key === ',' ? -1 : 1);
-    } else if (!mod && (ev.key === 'g' || ev.key === 'G')) {
+    } else if (!mod && !ev.altKey && (ev.key === 'g' || ev.key === 'G')
+      && (ev.target === doc || ev.target === doc.body || ev.target === doc.documentElement || root.contains(ev.target))) {
+      // Only from the arrangement (or nowhere in particular): G pressed on
+      // the Performance desk or in another panel is not a levels gesture.
+      ev.preventDefault();
       setDrawLevels(!ui.drawLevels);
     } else if (!mod && (ev.key === 'l' || ev.key === 'L')) {
       toggleLoop();
@@ -1540,9 +1695,10 @@ export function mountArrangementPanel(opts) {
   // through the same command path.
   // OPERATION THE LISTENING ROOM: the producer may also draw its idea on the
   // timeline (outlines of clips that are not playing yet).
-  producerHandle = opts.producer?.({ container: producerMount, session, onAnnounce, rerender: () => render(), selectedClipId: () => ui.selectedClipId }) ?? null;
+  producerHandle = opts.producer?.({ container: producerMount, session, onAnnounce, rerender: () => (ui.envDrag ? paintLiveEnvelope(ui.envDrag.trackIndex) : render()), selectedClipId: () => ui.selectedClipId }) ?? null;
   const producerDispose = typeof producerHandle === 'function' ? producerHandle : producerHandle?.dispose ?? null;
   producerPreview = typeof producerHandle?.preview === 'function' ? producerHandle.preview : () => [];
+  producerEnvelopes = typeof producerHandle?.envelopes === 'function' ? producerHandle.envelopes : () => [];
 
   render();
 

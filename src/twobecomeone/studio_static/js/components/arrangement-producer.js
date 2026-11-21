@@ -265,6 +265,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       conv.spec = null;
       say('Your edit stands. That level move is set aside.');
     }
+    rerender(); // the lane stops marking that curve as an idea
   }
 
   /**
@@ -329,6 +330,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     };
     say(`Idea: ${proposal.rationale} Nothing changes until you press Hear it.`);
     sync();
+    rerender();
     return true;
   }
 
@@ -702,12 +704,25 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     dispose: () => container.ownerDocument.defaultView.clearInterval(timer),
     /** The idea's clips that are not playing yet, for the timeline outline. */
     preview: () => (idea && idea.hearing === 'mine' ? idea.fields.filter((f) => f.preview && !idea.touched.has(f.key)).map((f) => f.preview) : []),
+    /**
+     * The idea's gain curves while they are still an idea, so the lane can
+     * draw them apart from the musician's own: 'proposed' before Hear it (not
+     * in the project), 'hearing' while Hear it has written them. Kept, rejected
+     * or hand-edited curves are the musician's and are not listed.
+     */
+    envelopes: () => (idea && (idea.hearing === 'mine' || idea.hearing === 'idea')
+      ? idea.fields.filter((f) => f.envelope).map((f) => ({
+        trackIndex: f.trackIndex,
+        points: f.value.map((p) => ({ beat: p.beat, db: p.db })),
+        status: idea.hearing === 'idea' ? 'hearing' : 'proposed',
+      }))
+      : []),
     /** The lane calls this after a point or fader edit, before the next poll. */
     dropEnvelopePreview(trackIndex) {
       if (!idea) return;
       const field = idea.fields.find((f) => f.envelope && f.trackIndex === trackIndex);
       if (!field) return;
-      noteHumanMoves();
+      sync(); // notes the hand move and refreshes Hear it / Keep at once
     },
     converse,
     get idea() { return idea; },
