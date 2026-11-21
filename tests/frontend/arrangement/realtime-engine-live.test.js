@@ -993,8 +993,10 @@ test('seeking while a rise is sounding keeps the outgoing level until the handov
   assert.ok(Math.abs(outgoing - 0.50674375) < 1e-4, 'negative control still names the handover level');
   assert.ok(Math.abs(gain.valueAt(probe) - outgoing) < 1e-3, `outgoing at +50 ms is ${gain.valueAt(probe)}, want ${outgoing}`);
   assert.ok(Math.abs(gain.valueAt(probe) - snapped) > 0.4, 'the handover must not snap to the new entrance');
+  await engine.settle();
   const takeover = engine.active.originSec;
   assert.ok(Math.abs(gain.valueAt(takeover) - snapped) < 1e-3, 'the incoming epoch starts on its own curve');
+  assert.ok(Math.abs(gain.valueAt(probe) - outgoing) < 1e-3, 'arming the incoming voices does not rewrite the outgoing level');
   engine.dispose();
 });
 
@@ -1050,5 +1052,86 @@ test('a slow first batch moves the gain step with the voices', async () => {
   assert.ok(Math.abs(gain.valueAt(step) - 1) < 1e-3, `the step is at ${step}, value ${gain.valueAt(step)}`);
   assert.ok(Math.abs(gain.valueAt(staleStep) - floor) < 1e-3, `the old step time ${staleStep} is still the hold (${gain.valueAt(staleStep)})`);
   void ctx;
+  engine.dispose();
+});
+
+test('a master move during a seek keeps the outgoing track curve', async () => {
+  const { ctx, engine, plan } = await makeEngine({
+    clips: [planClip({ clipId: 'vox', start: 0, length: 20 * SR })],
+  });
+  const track = { volumeDb: 0, gainPoints: [{ beat: 0, db: -60 }, { beat: 16, db: 0 }] };
+  plan.tracks[0].gainPoints = track.gainPoints;
+  engine.play();
+  await engine.settle();
+  const at = engine.active.originSec + 4;
+  await advance(ctx, engine, at);
+  engine.seek(0);
+  await engine.settle();
+  ctx.currentTime = at + 0.025;
+  const edited = structuredClone(plan);
+  edited.master.gainLinear = 0.7;
+  await engine.replacePlan(edited);
+  const gain = trackGain(engine);
+  const want = gainLinearAtBeat(track, 4.05 * 2);
+  assert.ok(Math.abs(want - 0.50674375) < 1e-4);
+  assert.ok(Math.abs(gain.valueAt(at + 0.05) - want) < 1e-3, `master edit at +50 ms is ${gain.valueAt(at + 0.05)}, want ${want}`);
+  assert.ok(Math.abs(gain.valueAt(at + 0.05) - FLOOR) > 0.4, 'the track must not snap to the incoming entrance');
+  engine.dispose();
+});
+
+test('a step exactly at the handover is not smeared across the outgoing voice', async () => {
+  const { ctx, engine, plan } = await makeEngine({
+    clips: [planClip({ clipId: 'vox', start: 0, length: 20 * SR })],
+  });
+  plan.tracks[0].gainPoints = [{ beat: 8.208, db: -60 }, { beat: 8.208, db: 0 }];
+  engine.play();
+  await engine.settle();
+  const at = engine.active.originSec + 4;
+  await advance(ctx, engine, at);
+  engine.seek(0);
+  await engine.settle();
+  const gain = trackGain(engine);
+  assert.ok(Math.abs(gain.valueAt(at + 0.025) - FLOOR) < 1e-3, `+25 ms is ${gain.valueAt(at + 0.025)}, want the hold`);
+  assert.ok(Math.abs(gain.valueAt(at + 0.075) - FLOOR) < 1e-3, `+75 ms is ${gain.valueAt(at + 0.075)}, want the hold`);
+  assert.ok(Math.abs(gain.valueAt(at + 0.025) - 0.24114423) > 0.2);
+  engine.dispose();
+});
+
+test('a seek build that passes the planned takeover stays on the outgoing rise', async () => {
+  const box = { slow: false };
+  const factory = fakeStretchFactory({ beforeResolve: (audio) => {
+    if (!box.slow) return;
+    audio.currentTime += 0.110;
+    box.during = box.gain.valueAt(box.at + 0.105);
+    box.batch = box.engine.active.firstBatchDone;
+    box.gates = [...box.engine.voices.values()]
+      .filter((v) => v.armed)
+      .map((v) => v.gate.gain.valueAt(box.at + 0.105));
+  } });
+  const { ctx, engine, plan } = await makeEngine({
+    clips: [planClip({ clipId: 'arp', start: 0, length: 20 * SR, rate: 1.2 })],
+    factory,
+  });
+  const track = { volumeDb: 0, gainPoints: [{ beat: 0, db: -60 }, { beat: 16, db: 0 }] };
+  plan.tracks[0].gainPoints = track.gainPoints;
+  engine.play();
+  await engine.settle();
+  const at = engine.active.originSec + 4;
+  await advance(ctx, engine, at);
+  box.slow = true;
+  box.engine = engine;
+  box.gain = trackGain(engine);
+  box.at = at;
+  engine.seek(0);
+  await engine.settle();
+  const during = gainLinearAtBeat(track, 4.105 * 2);
+  const after = gainLinearAtBeat(track, 4.125 * 2);
+  assert.ok(Math.abs(during - 0.513611875) < 1e-4);
+  assert.ok(Math.abs(after - 0.516109375) < 1e-4);
+  assert.equal(box.batch, false, 'the incoming voices are not armed while the build is still running');
+  assert.ok(box.gates.length > 0 && box.gates.every((g) => Math.abs(g - 1) < 1e-6), 'the outgoing gate is still open');
+  assert.ok(Math.abs(box.during - during) < 1e-3, `during the build at +105 ms is ${box.during}, want ${during}`);
+  assert.ok(Math.abs(box.gain.valueAt(at + 0.125) - after) < 1e-3, `after the late build at +125 ms is ${box.gain.valueAt(at + 0.125)}, want ${after}`);
+  assert.ok(engine.active.originSec > at + 0.125, 'the incoming origin moved past the probe');
   engine.dispose();
 });

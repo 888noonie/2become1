@@ -445,3 +445,19 @@ test('a later epoch keeps the outgoing curve until the handover', () => {
   assert.ok(Math.abs(param.valueAt(4.05) - outgoing) < 1e-4, `outgoing at 4.050 s is ${param.valueAt(4.05)}, want ${outgoing}`);
   assert.ok(Math.abs(param.valueAt(4.104) - gainLinearAtBeat(track, 0)) < 1e-6);
 });
+
+test('a step that lands exactly on the handover stays a hold until that instant', () => {
+  const step = { volumeDb: 0, gainPoints: [{ beat: 8.208, db: -60 }, { beat: 8.208, db: 0 }] };
+  const map = createTransportMap({ startFrame: 0, loop: null, sampleRate: SR });
+  const param = new FakeAudioParam({ currentTime: 4 }, 0);
+  scheduleGainEnvelope(param, entranceTrack(), {
+    originSec: 4.104, map, sampleRate: SR, bpm: BPM, audible: true,
+    anchorSec: 4, takeoverSec: 4.104,
+    outgoing: { kind: 'gain', track: step, originSec: 0, map, bpm: BPM, audible: true },
+  });
+  const floor = dbToLinear(-60);
+  const smeared = 0.24114423;
+  assert.ok(Math.abs(param.valueAt(4.025) - floor) < 1e-4, `25 ms before the step is ${param.valueAt(4.025)}, want ${floor}`);
+  assert.ok(Math.abs(param.valueAt(4.075) - floor) < 1e-4, `75 ms before the step is ${param.valueAt(4.075)}, want ${floor}`);
+  assert.ok(Math.abs(param.valueAt(4.025) - smeared) > 0.2, 'the step must not be smeared back across the handover');
+});

@@ -460,10 +460,14 @@ export class RealtimeEngine {
       return { track: tr, beat };
     };
     const epoch = this.active;
+    const handover = epoch && epoch.originSec > now + 1 / this.sr;
+    if (handover) this.#scheduleEpochGains(epoch);
     for (const t of plan.tracks) {
       const gain = bb.trackInputs[`gain-${t.trackIndex}`]?.gain;
       const automated = Array.isArray(t.gainPoints) && t.gainPoints.length > 0;
-      if (automated && epoch) {
+      if (automated && epoch && handover) {
+        // #scheduleEpochGains already kept the sounding curve until this epoch.
+      } else if (automated && epoch) {
         const scheduled = scheduleGainEnvelope(gain, t, {
           originSec: epoch.originSec,
           map: epoch.map,
@@ -484,7 +488,9 @@ export class RealtimeEngine {
       }
       const pan = bb.trackInputs[`pan-${t.trackIndex}`]?.pan;
       const panAutomated = Array.isArray(t.panPoints) && t.panPoints.length > 0;
-      if (panAutomated && epoch && pan) {
+      if (panAutomated && epoch && pan && handover) {
+        // The pan curve was held with the gain curve above.
+      } else if (panAutomated && epoch && pan) {
         const scheduled = schedulePanEnvelope(pan, t, {
           originSec: epoch.originSec,
           map: epoch.map,
@@ -508,11 +514,11 @@ export class RealtimeEngine {
       }
     }
     glide(bb.master.gain, plan.master.gainLinear);
-    if (epoch && epoch.originSec <= now + 1 / this.sr) {
-      this._wired = { plan, originSec: epoch.originSec, map: epoch.map, bpm: plan.masterBpm };
+    if (epoch && epoch.firstBatchDone && epoch.originSec <= now + 1 / this.sr) {
+      this._wired = { plan, originSec: epoch.originSec, map: epoch.map, bpm: plan.masterBpm, rec: epoch };
       this._pendingWire = null;
     } else if (this._wired) {
-      this._wired = { ...this._wired, plan };
+      this._wired = { ...this._wired, plan: this.#soundingPlan(this._wired.plan, plan) };
       if (this._pendingWire) this._pendingWire = { ...this._pendingWire, plan };
     }
   }
@@ -666,13 +672,34 @@ export class RealtimeEngine {
    * is originSec (when this map starts), not transport.playheadBeat. Tracks
    * with no points keep the constant the backbone or the last glide set.
    */
-  /** Once a scheduled epoch has started, it is the curve a later seek must leave. */
+  /** Once a scheduled epoch is armed and its origin has arrived, it is the curve a later seek must leave. */
   #promoteSounding(now) {
     const pending = this._pendingWire;
-    if (pending && now + 1 / this.sr >= pending.originSec) {
+    if (!pending?.rec?.firstBatchDone) return;
+    if (now + 1 / this.sr >= pending.originSec) {
       this._wired = pending;
       this._pendingWire = null;
     }
+  }
+
+  /**
+   * The plan a later read treats as already sounding. An edit during a
+   * handover updates mixer values, but the curve still in the speakers stays
+   * the one that was scheduled before that edit.
+   */
+  #soundingPlan(previous, next) {
+    if (!previous?.tracks || !next?.tracks) return next;
+    return {
+      ...next,
+      tracks: next.tracks.map((track, index) => {
+        const old = previous.tracks[index];
+        if (!old) return track;
+        const gainPoints = track.gainPoints?.length && old.gainPoints?.length ? old.gainPoints : track.gainPoints;
+        const panPoints = track.panPoints?.length && old.panPoints?.length ? old.panPoints : track.panPoints;
+        if (gainPoints === track.gainPoints && panPoints === track.panPoints) return track;
+        return { ...track, gainPoints, panPoints };
+      }),
+    };
   }
 
   #wiredAt(wired, trackIndex, time) {
@@ -701,6 +728,11 @@ export class RealtimeEngine {
     // its voices; a seek keeps the curve whose origin is already in the past.
     const sounding = wired && wired.originSec <= anchor + 1 / this.sr ? wired : null;
     const preserve = Boolean(sounding) && takeover > anchor + 1 / this.sr;
+    // The incoming curve waits until this epoch's voices are armed. Until
+    // then the outgoing rise keeps going, so a build that runs past the
+    // planned origin cannot switch the fader early.
+    const commitIncoming = !preserve || rec.firstBatchDone === true;
+    const holdUntil = commitIncoming ? takeover : Math.max(takeover, anchor + 1);
     const clock = {
       originSec: rec.originSec,
       map: rec.map,
@@ -720,6 +752,8 @@ export class RealtimeEngine {
       const scheduled = scheduleGainEnvelope(gain, t, {
         ...clock,
         audible: t.audible,
+        commitIncoming,
+        holdUntilSec: holdUntil,
         outgoing: old?.gainPoints?.length ? {
           kind: 'gain',
           track: old,
@@ -737,6 +771,8 @@ export class RealtimeEngine {
       if (!pan) continue;
       const scheduled = schedulePanEnvelope(pan, t, {
         ...clock,
+        commitIncoming,
+        holdUntilSec: holdUntil,
         outgoing: preserve && sounding.plan.tracks[t.trackIndex]?.panPoints?.length ? {
           kind: 'pan',
           track: sounding.plan.tracks[t.trackIndex],
@@ -748,7 +784,7 @@ export class RealtimeEngine {
       });
       this._panUntil.set(t.trackIndex, scheduled.untilSec);
     }
-    const next = { plan: this.plan, originSec: rec.originSec, map: rec.map, bpm: this.plan.masterBpm };
+    const next = { plan: this.plan, originSec: rec.originSec, map: rec.map, bpm: this.plan.masterBpm, rec };
     if (preserve) this._pendingWire = next;
     else {
       this._wired = next;
@@ -1064,6 +1100,10 @@ export class RealtimeEngine {
     if (this.armBatches.length > 64) this.armBatches.shift();
     if (!rec.firstBatchDone) {
       rec.firstBatchDone = true;
+      // The curve may now take over at this origin. A seek that was only
+      // holding the outgoing rise commits the incoming envelope here, once
+      // the voices that play it are armed.
+      this.#scheduleEpochGains(rec);
       // Seek handover (N1): fade the outgoing side over the SAME window the
       // incoming voices fade in, from the new origin — now + startLead.
       for (const v of rec.outgoing) {
