@@ -689,6 +689,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     dispose: () => container.ownerDocument.defaultView.clearInterval(timer),
     /** The idea's clips that are not playing yet, for the timeline outline. */
     preview: () => (idea && idea.hearing === 'mine' ? idea.fields.filter((f) => f.preview && !idea.touched.has(f.key)).map((f) => f.preview) : []),
+    /** The lane calls this after a point or fader edit, before the next poll. */
+    dropEnvelopePreview(trackIndex) {
+      if (!idea) return;
+      const field = idea.fields.find((f) => f.envelope && f.trackIndex === trackIndex);
+      if (!field) return;
+      noteHumanMoves();
+    },
     converse,
     get idea() { return idea; },
     get spec() { return conv.spec; },

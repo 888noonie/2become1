@@ -399,6 +399,13 @@ test('a four-bar vocal entrance is setTrackGainEnvelope from the vocal clip, and
   }]);
   assert.equal(e.state.tracks[4].volumeDb, -6);
   assert.equal(e.state.tracks[4].gainPoints, undefined);
+  const past = e.historyDepth.past;
+  e.run(commandsOf(e.state, built)[0]);
+  assert.deepEqual(e.state.tracks[4].gainPoints, [{ beat: 64, db: -60 }, { beat: 80, db: 0 }]);
+  assert.equal(e.state.tracks[4].volumeDb, -6);
+  assert.equal(e.undo(), true);
+  assert.equal(e.state.tracks[4].gainPoints, undefined);
+  assert.equal(e.historyDepth.past, past);
   const first = applyIntent(null, { action: 'propose' }, {
     ...ctx, state: e.state, sentence: 'fade song B vocals in across the first four bars',
   });
