@@ -559,7 +559,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const stopped = () => ({ ok: false, text: 'You play is on, so I have not placed it.' });
     const replaced = () => ({ ok: false, text: 'A new arrangement is open, so I have not placed it.' });
     const engine = session.edit;
-    const bank = ['A', 'B'].map((key) => session.groups()[key]?.trackId ?? '').join('|');
+    const bank = bankStamp();
     const groups = session.groups();
     const ctx = { analyses: conv.analyses, groups, records: session.buffers };
     let built = buildIdea(session.state, spec, ctx);
@@ -568,7 +568,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       say('Fetching that passage of the stem…');
       try { await session.loadSource(built.needsSource); } catch (err) { return { ok: false, text: `I couldn't load that passage: ${err.message}` }; }
       if (session.edit !== engine) return replaced();
-      if (['A', 'B'].map((key) => session.groups()[key]?.trackId ?? '').join('|') !== bank) {
+      if (bankStamp() !== bank) {
         return { ok: false, text: 'The songs on the lanes changed, so I have not placed it.' };
       }
       if (stale(guard)) return stopped();
@@ -712,6 +712,12 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     sync();
   }
 
+  function clipSpeed(applyStretch, song) {
+    const sourceBpm = Number(session.groups()[song]?.bpm);
+    const projectRatio = sourceBpm > 0 ? session.state.transport.masterBpm / sourceBpm : null;
+    return playbackSpeed(applyStretch ?? null, projectRatio);
+  }
+
   function currentFitSpeed() {
     const row = conv.harmony?.rank ? scoredRows(conv.harmony.rank)[conv.harmony.index ?? 0] : null;
     if (!row || !conv.harmony) return null;
@@ -745,21 +751,29 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       const beat = arrangementBeatForSource(session.state, conv.harmony.targetSong, conv.harmony.target.startSec);
       if (beat != null) start = Math.round(beat * 1e9) / 1e9;
     }
-    if ((!speed || spec.main.speed === speed) && start === spec.main.startBeat) return spec;
+    const partsNeed = Array.isArray(spec.parts) && spec.parts.some((part) => part.applyStretch !== undefined && clipSpeed(part.applyStretch, part.song) !== part.speed);
+    if ((!speed || spec.main.speed === speed) && start === spec.main.startBeat && !partsNeed) return spec;
     const next = structuredClone(spec);
     const previous = spec.main.startBeat;
     if (speed) next.main.speed = speed;
     next.main.startBeat = start;
-    if (Array.isArray(next.parts) && Number.isFinite(previous) && start !== previous) {
-      const delta = start - previous;
-      next.parts = next.parts.map((part) => ({ ...part, startBeat: part.startBeat + delta }));
+    if (Array.isArray(next.parts)) {
+      const delta = Number.isFinite(previous) ? start - previous : 0;
+      next.parts = next.parts.map((part) => ({
+        ...part,
+        speed: part.applyStretch !== undefined ? clipSpeed(part.applyStretch, part.song) : part.speed,
+        startBeat: part.afterVocal ? part.startBeat : part.startBeat + delta,
+      }));
     }
     slideCurves(next);
     return next;
   }
 
   function bankStamp() {
-    return ['A', 'B'].map((key) => session.groups()[key]?.trackId ?? '').join('|');
+    return ['A', 'B'].map((key) => {
+      const group = session.groups()[key];
+      return `${group?.trackId ?? ''}:${group?.stemSetId ?? ''}`;
+    }).join('|');
   }
 
   function rememberWrite(beforeWrite, beforeRevision, count) {
@@ -949,18 +963,11 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       outcome.spec.parts.push({
         song: part.song, stem: part.stem, passage: { ...source, evidence: source.evidence ?? [] },
         startBeat: part.startBeat, pitch: 0, fadeIn: Math.min(part.fadeIn, bpb), fadeOut: part.fadeOut || 0,
-        gainDb: 0, speed: part.speed, clipId: freshId(),
+        gainDb: 0, speed: clipSpeed(part.applyStretch, part.song), applyStretch: part.applyStretch ?? null,
+        afterVocal: part.afterVocal === true, clipId: freshId(),
       });
     }
-    outcome.spec.clips = {};
-    for (const trim of plan.trims) {
-      const lane = laneIndex(trim.song, trim.stem);
-      const clip = session.state.clips.find((item) => item.trackIndex === lane && !String(item.id).startsWith('idea-'));
-      if (!clip) continue;
-      const duration = Math.round((trim.endBeat - clip.timelineStartBeat) * 1e9) / 1e9;
-      if (!(duration >= 1) || duration >= clip.durationBeats - 0.05) continue;
-      outcome.spec.clips[clip.id] = { durationBeats: duration, fadeOut: 2 };
-    }
+    outcome.spec.trims = plan.trims;
     const kept = new Set([outcome.spec.main.clipId, ...outcome.spec.parts.map((part) => part.clipId)]);
     outcome.spec.drop = (conv.partIds ?? []).filter((id) => !kept.has(id));
     const start = outcome.spec.main.startBeat;
@@ -996,7 +1003,8 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const issue = plan.issues[0] ? ` ${plan.issues[0]}` : '';
     const unsure = found.rank.ask ? ' The readings were close, so this is a choice, not a proof.' : '';
     const heardWord = playing ? "It's playing." : "It's on the lanes.";
-    return `${plan.title}. ${reading.count} measurable checks held: both songs are in it, the handoff is a real edit, and no pitch was applied. I did not audition the audio.${issue}${unsure} ${heardWord} Say “try another arrangement”, or take back.`;
+    const handoff = plan.transition ? 'the handoff is a real edit' : 'this sketch has no later handoff';
+    return `${plan.title}. ${reading.count} measurable checks held: both songs are in it, ${handoff}, and no pitch was applied. I did not audition the audio.${issue}${unsure} ${heardWord} Say “try another arrangement”, or take back.`;
   }
 
   async function harmonyTurn(request) {
@@ -1155,7 +1163,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       // already name must not wait on the model. The matcher says the effect
       // is unavailable and does not offer Hear it.
       const chorusNudge = halfBeatOnly(message);
-      if (chorusNudge !== null && (conv.harmony || conv.decks) && conv.mode !== 'you-play') {
+      if (chorusNudge !== null && conv.mode === 'you-play') {
+        const reply = 'You play is on, so I will not move that. Say “jam together” when you want an idea.';
+        line('producer', reply, 'is-local');
+        say(reply);
+        return;
+      }
+      if (chorusNudge !== null && (conv.harmony || conv.decks)) {
         conv.spec = spec;
         const reply = await harmonyTurn({ kind: 'nudge', beats: chorusNudge });
         line('producer', reply, 'is-local');

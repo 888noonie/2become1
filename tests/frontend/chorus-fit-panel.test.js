@@ -221,6 +221,9 @@ test('Take the decks writes both songs, and another sketch keeps a hand edit', a
   assert.ok(ideas.length >= 2, `expected a vocal and a handoff, saw ${ideas.map((clip) => clip.id).join(', ')}`);
   assert.ok(ideas.some((clip) => clip.trackIndex === 4), 'B vocals are in the arrangement');
   assert.ok(ideas.some((clip) => clip.trackIndex === 5), 'B drums take over later');
+  const vocalIdea = ideas.find((clip) => clip.trackIndex === 4);
+  const drumIdea = ideas.find((clip) => clip.trackIndex === 5);
+  assert.ok(Math.abs(drumIdea.timelineStartBeat - (vocalIdea.timelineStartBeat + vocalIdea.durationBeats)) < 0.05, 'the drums follow the vocal that was placed');
   assert.ok(s.state.clips.find((clip) => clip.id === vocal.id).durationBeats < vocalBefore - 1);
   assert.ok(s.state.clips.find((clip) => clip.id === drums.id).durationBeats < drumsBefore - 1);
   s.apply({ name: 'setTrackVolume', args: { trackIndex: 1, volumeDb: -9 } });
@@ -231,6 +234,65 @@ test('Take the decks writes both songs, and another sketch keeps a hand edit', a
   assert.match(await tell('Take back'), /decks are yours/);
   assert.equal(s.state.tracks[1].volumeDb, -9);
   assert.ok(s.state.clips.some((clip) => String(clip.id).startsWith('idea-')), 'the first sketch stays after the hand edit');
+});
+
+test('You play does not nudge a take', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const starts = s.state.clips.filter((clip) => String(clip.id).startsWith('idea-')).map((clip) => [clip.id, clip.timelineStartBeat]);
+  await tell('You play');
+  assert.match(await tell('Half a beat earlier'), /You play is on/);
+  for (const [id, beat] of starts) assert.equal(s.state.clips.find((clip) => clip.id === id).timelineStartBeat, beat);
+});
+
+test('returning to the first sketch trims the bed to the same handoff', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const bed = () => s.state.clips.find((clip) => clip.trackIndex === 1 && !String(clip.id).startsWith('idea-'));
+  const first = bed().durationBeats;
+  await tell('Try another arrangement');
+  assert.ok(bed().durationBeats < first - 1);
+  await tell('Try another arrangement');
+  assert.ok(Math.abs(bed().durationBeats - first) < 0.05, `bed ${bed().durationBeats} first ${first}`);
+});
+
+test('a one-and-a-half-beat remainder still accepts the sketch', async () => {
+  const { s, tell } = await mounted();
+  const vocal = s.state.clips.find((clip) => clip.trackIndex === 0);
+  s.apply({ name: 'moveClip', args: { clipId: vocal.id, newTrackIndex: 0, newStartBeat: 14.5 } });
+  assert.match(await tell('Take the decks'), /on the lanes|playing/);
+  assert.ok(s.state.clips.some((clip) => String(clip.id).startsWith('idea-')));
+});
+
+test('an in-flight take does not write a stem set that has been replaced', async () => {
+  const { s, tell } = await mounted();
+  const original = s.loadSource.bind(s);
+  let release;
+  let paused = false;
+  s.loadSource = (spec) => {
+    if (paused) return original(spec);
+    paused = true;
+    return new Promise((resolve, reject) => { release = () => original(spec).then(resolve, reject); });
+  };
+  const pending = tell('Take the decks');
+  for (let i = 0; i < 150 && !release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  const clip = s.state.clips.find((item) => item.trackIndex >= 4);
+  s.state.assets[clip.assetId].source.stemSetId = 'replaced-set';
+  release();
+  assert.match(await pending, /lanes changed|have not placed/);
+  assert.equal(s.state.clips.filter((item) => String(item.id).startsWith('idea-')).length, 0);
+});
+
+test('a fast project keeps the handoff at the passage’s own speed', async () => {
+  const { s, tell } = await mounted();
+  s.state.transport.masterBpm = 220;
+  await tell('Take the decks');
+  const ideas = s.state.clips.filter((clip) => String(clip.id).startsWith('idea-'));
+  assert.ok(ideas.length >= 2);
+  for (const clip of ideas) {
+    assert.equal(clip.stretchMode, 'manual');
+    assert.equal(clip.customStretchRatio, 1);
+  }
 });
 
 test('Take the decks writes one arrangement and Take back restores it', async () => {

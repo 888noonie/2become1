@@ -116,4 +116,8 @@ test('an arrangement is two different sketches, and a pitch reading is not appli
   const energetic = stylePlan(plans[0], 'energy');
   assert.equal(energetic.entranceBars, 1);
   assert.match(energetic.issues.at(-1), /not a measurement of energy/);
+  const second = arrangementPlans({ rank, sections, chorusBeat: 16, bpb: 4, secondChorusId: 'verse' });
+  assert.equal(second.plans[0].vocal.sectionId, 'verse');
+  assert.equal(second.plans[0].parts[0].sectionId, 'chorus');
+  assert.equal(second.plans[0].transition, true);
 });

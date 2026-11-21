@@ -581,6 +581,7 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
   const passages = [];
   if (spec.main && spec.main.startBeat !== null) passages.push(spec.main);
   for (const part of spec.parts ?? []) if (part && part.startBeat !== null) passages.push(part);
+  let vocalEnd = null;
   for (const m of passages) {
     const analysis = analyses[m.song];
     const group = groups[m.song];
@@ -611,8 +612,9 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
       durationBeats = Math.max(MIN_CLIP_DURATION_BEATS, durationBeats);
     }
     const trackIndex = laneIndex(m.song, m.stem);
+    const startBeat = m.afterVocal && vocalEnd != null ? vocalEnd : m.startBeat;
     const want = ordered({
-      exists: true, ref: src.url, trackIndex, startBeat: rt(m.startBeat), sourceOffsetSec: rt(inPoint), durationBeats,
+      exists: true, ref: src.url, trackIndex, startBeat: rt(startBeat), sourceOffsetSec: rt(inPoint), durationBeats,
       pitch: m.pitch, fadeIn: m.fadeIn, fadeOut: m.fadeOut, gainDb: m.gainDb, speed: m.speed,
     });
     const load = {
@@ -650,8 +652,9 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
         notes.push(`another ${state.tracks[trackIndex].name} clip also plays from ${fmtPos(c.timelineStartBeat, bpb)}`);
       }
     }
+    if (spec.main && m.clipId === spec.main.clipId) vocalEnd = want.startBeat + want.durationBeats;
     fields.push({
-      key: `${m.clipId}:clip`, value: want, main: true,
+      key: `${m.clipId}:clip`, value: want, main: Boolean(spec.main && m.clipId === spec.main.clipId),
       label: () => `${m.song} ${ROLE_LABEL[m.stem]} idea`,
       read: (st) => clipObject(st, m.clipId),
       command: (st, v) => clipCommands(st, m.clipId, v, load),
@@ -663,6 +666,14 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
     const extras = [m.pitch ? `${signed(m.pitch)} semitones` : null, m.fadeIn ? `fade in ${plural(r3(m.fadeIn), 'beat')}` : null,
       m.fadeOut ? `fade out ${plural(r3(m.fadeOut), 'beat')}` : null, m.gainDb ? `${signed(m.gainDb)} dB` : null].filter(Boolean);
     notes.unshift(`${m.song} ${ROLE_LABEL[m.stem]}: ${m.passage.name} of “${group.title}” (song bars ${m.passage.startBar}–${m.passage.startBar + m.passage.bars - 1}, ${mmss(m.passage.startSec)}–${mmss(m.passage.endSec)}; ${evidence})${m.heardNote ? `, ${m.heardNote}` : ''}, at ${fmtPos(want.startBeat, bpb)}${fit}${extras.length ? `, ${extras.join(', ')}` : ''}`);
+  }
+  for (const trim of spec.trims ?? []) {
+    const lane = laneIndex(trim.song, trim.stem);
+    const clip = state.clips.find((item) => item.trackIndex === lane && !String(item.id).startsWith('idea-'));
+    if (!clip) continue;
+    const duration = rt(trim.endBeat - clip.timelineStartBeat);
+    if (!(duration >= 1) || duration >= clip.durationBeats - 0.05) continue;
+    spec.clips = { ...(spec.clips ?? {}), [clip.id]: { durationBeats: duration, fadeOut: duration >= 4 ? 2 : 0 } };
   }
   for (const clipId of spec.drop ?? []) {
     const before = clipObject(state, clipId);

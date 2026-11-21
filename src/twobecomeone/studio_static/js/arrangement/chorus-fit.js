@@ -142,7 +142,7 @@ export function arrangementPlans({ rank, sections = [], chorusBeat, bpb = 4, sec
   const vocalRow = second ?? vocal;
   const bars = section(vocalRow)?.bars || 4;
   const handoff = chorusBeat + bars * bpb;
-  const handoffRow = other && other.id !== vocalRow.id ? other : null;
+  const handoffRow = rows.find((row) => row.id !== vocalRow.id) ?? null;
   const vocalOf = (row, fadeBars) => ({
     song: 'B', sectionId: row.id, stem: 'vocals', startBeat: chorusBeat,
     fadeIn: fadeBars * bpb, fadeOut: 1, speed: speedFor(row), pitch: 0,
@@ -155,6 +155,7 @@ export function arrangementPlans({ rank, sections = [], chorusBeat, bpb = 4, sec
     parts: handoffRow ? [{
       song: 'B', sectionId: handoffRow.id, stem: 'drums', startBeat: handoff,
       fadeIn: 2 * bpb, fadeOut: 0, speed: speedFor(handoffRow), pitch: 0,
+      afterVocal: true, applyStretch: handoffRow.tempo?.applyStretch ?? null,
     }] : [],
     trims: [
       { song: 'A', stem: 'vocals', endBeat: chorusBeat },
