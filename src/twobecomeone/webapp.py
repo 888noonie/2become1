@@ -22,12 +22,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
 from . import __version__
-from .common import UserError
+from .common import NotFoundError, UserError
 from .contracts import TERMINAL_JOB_STATES
 from .http_safety import RequestSafetyMiddleware
 from .arrangements import ArrangementStore
 from . import listening, producer_brain
-from .common import NotFoundError
+from .chorus_fit import rank_fit
 from .studio import RenderOptions, StudioService
 
 
@@ -257,6 +257,14 @@ class ConverseBody(BaseModel):
     message: str = Field(min_length=1, max_length=400)
     project: dict[str, Any]
     history: list[dict[str, Any]] = Field(default_factory=list, max_length=16)
+
+
+class ChorusFitBody(BaseModel):
+    """Descriptors only. Audio is never accepted on this route."""
+
+    model_config = ConfigDict(extra="forbid")
+    target: dict[str, Any]
+    candidates: list[dict[str, Any]] = Field(min_length=1, max_length=64)
 
 
 def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = None, trusted_hosts: list[str] | None = None):
@@ -597,6 +605,11 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
     @app.delete("/api/tracks/{track_id}/listening/sections")
     def reset_sections(track_id: str):
         return listening.save_corrections(service, track_id, None)
+
+    @app.post("/api/chorus-fit")
+    def chorus_fit_route(body: ChorusFitBody):
+        """Rank one target section against other sections. No audio, no model, no project write."""
+        return rank_fit(body.target, body.candidates)
 
     @app.get("/api/producer/model")
     def producer_model():

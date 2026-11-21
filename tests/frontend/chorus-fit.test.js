@@ -1,0 +1,52 @@
+// Pure Chorus Fit decisions. The rank math stays in chorus_fit.py.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { chorusUtterance, deckChoice, pitchFor, scoredRows } from '../../src/twobecomeone/studio_static/js/arrangement/chorus-fit.js';
+
+test('the musician’s phrases stay deterministic', () => {
+  assert.deepEqual(chorusUtterance('Which part of B fits this chorus?'), { kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
+  assert.equal(chorusUtterance('Find another section that would work with A').another, true);
+  assert.deepEqual(chorusUtterance('Try the strongest match'), { kind: 'choose', index: 0 });
+  assert.equal(chorusUtterance('Use the second-best option.').index, 'next');
+  assert.equal(chorusUtterance('Try the next best match instead').index, 'next');
+  assert.equal(chorusUtterance('Keep the chorus but choose a different vocal phrase').stem, 'vocals');
+  assert.deepEqual(chorusUtterance('Put it at bar 17'), { kind: 'place', bar: 17 });
+  assert.deepEqual(chorusUtterance('Move the idea half a beat earlier'), { kind: 'nudge', beats: -0.5 });
+  assert.equal(chorusUtterance('Make the fade gentler').kind, 'gentler');
+  assert.equal(chorusUtterance('Make something beautiful from these two songs').kind, 'decks');
+  assert.equal(chorusUtterance('Take back').kind, 'take-back');
+  assert.equal(chorusUtterance('You play').kind, 'you-play');
+  assert.equal(chorusUtterance('bring the vocals in gradually across four bars'), null);
+  assert.equal(chorusUtterance('Find the second chorus in the other song'), null);
+});
+
+test('Take the Decks can prefer a playable neighbour of a closer but unplayable match', () => {
+  const rank = {
+    ask: true,
+    ambiguityGap: 0.05,
+    candidates: [
+      { id: 'closest', evidence: 'estimate', harmonic: { cosine: 0.99 }, tempo: { qualified: false }, pitch: { suggested: 5 }, vocal: { status: 'present' } },
+      { id: 'playable', evidence: 'estimate', harmonic: { cosine: 0.95 }, tempo: { qualified: true }, pitch: { suggested: 0 }, vocal: { status: 'present' } },
+      { id: 'blank', evidence: 'missing', harmonic: { cosine: null } },
+    ],
+  };
+  const choice = deckChoice(rank);
+  assert.equal(choice.id, 'playable');
+  assert.equal(choice.adventurous, true);
+  assert.equal(choice.uncertain, true);
+  assert.deepEqual(scoredRows(rank).map((row) => row.id), ['closest', 'playable']);
+});
+
+test('a large agreed pitch is shown in a jam and left alone when the decks are playing', () => {
+  const row = { pitch: { autoApply: true, suggested: 5, note: 'A shift of +5 semitones is outside the qualified range.' } };
+  assert.equal(pitchFor(row, { auto: false }).semitones, 5);
+  const held = pitchFor(row, { auto: true });
+  assert.equal(held.semitones, 0);
+  assert.equal(held.applied, false);
+  assert.match(held.note, /leaving the pitch alone/);
+  const small = pitchFor({ pitch: { autoApply: true, suggested: -1, note: 'one down' } }, { auto: true });
+  assert.equal(small.semitones, -1);
+  assert.equal(small.unqualified, true);
+});

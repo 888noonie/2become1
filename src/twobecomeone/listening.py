@@ -42,7 +42,7 @@ import numpy as np
 from .analyzer import decode_mono
 from .common import UserError
 
-ANALYSIS_VERSION = 1
+ANALYSIS_VERSION = 2
 SR = 22050
 N_FFT = 4096
 HOP = 1024
@@ -122,6 +122,20 @@ def _per_bar(values: np.ndarray, starts: list[float], bar: float) -> np.ndarray:
         chunk = values[a:b]
         out.append(chunk.mean(axis=0) if len(chunk) else np.zeros(values.shape[1:]))
     return np.asarray(out)
+
+
+def _section_mean_chroma(chroma: np.ndarray, a: int, b: int) -> list[float] | None:
+    """Mean of the per-bar chroma rows for bars ``a:b``.
+
+    A non-finite mean is missing evidence: callers store null, never NaN.
+    """
+    rows = chroma[a:b]
+    if getattr(rows, "ndim", 0) != 2 or rows.shape[1] != 12 or rows.shape[0] == 0:
+        return None
+    mean = rows.mean(axis=0)
+    if not np.all(np.isfinite(mean)):
+        return None
+    return [float(f"{float(value):.6f}") for value in mean]
 
 
 def _cos(m: np.ndarray) -> np.ndarray:
@@ -533,8 +547,13 @@ def analyse(
             "startSec": round(seg_start, 4), "endSec": round(seg_end, 4),
             "energyDb": round(float(np.mean(energy[a:b])), 2),
             "vocalPresence": round(float(np.mean(presence[a:b])), 2),
+            "meanChroma": _section_mean_chroma(chroma, a, b),
             "_rep": float(np.mean(rep[a:b])),
         })
+    from .chorus_fit import section_swings
+    for seg, swing in zip(segs, section_swings(mix, SR, bpm, [(s["startSec"], s["endSec"]) for s in segs])):
+        if swing is not None:
+            seg["swingRatio"] = round(float(swing), 4)
     if vocals_path is not None and whisper is not None:
         try:
             vocals_16k = decode_mono(vocals_path, sr=16000).astype(np.float32)
@@ -567,6 +586,12 @@ def analyse(
         "durationSec": round(duration, 4),
         "bars": n,
         "sections": segs,
+        "descriptors": {
+            "chromaBins": 12,
+            "field": "meanChroma",
+            "swingField": "swingRatio",
+            "kind": "section-mean pitch-class energy",
+        },
         "words": words,
         "lyrics": {
             "available": len(words) >= 6,
@@ -584,6 +609,48 @@ def analyse(
 
 # ---------------------------------------------------------------- corrections
 
+def _usable_mean_chroma(value: object) -> list[float] | None:
+    """Twelve finite pitch-class weights, or nothing when the evidence is absent."""
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)) or len(value) != 12:
+        return None
+    numbers: list[float] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+        number = float(item)
+        if not math.isfinite(number):
+            return None
+        numbers.append(number)
+    return numbers
+
+
+def _corrected_mean_chroma(analysis: dict, start: float, bars: int) -> list[float] | None:
+    """Chroma from the nearest estimate that still matches this span.
+
+    A document older than version 2, or a section with no finite 12-bin mean,
+    is missing evidence. Nothing is invented, and a distant section is not copied.
+    """
+    version = analysis.get("version")
+    if isinstance(version, bool) or not isinstance(version, (int, float)) or version < 2:
+        return None
+    half = float(analysis["barSec"]) / 2
+    candidates = []
+    for section in analysis["sections"]:
+        if abs(float(section["startSec"]) - start) > half:
+            continue
+        try:
+            estimated_bars = int(section["bars"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if abs(estimated_bars - bars) > 1:
+            continue
+        candidates.append(section)
+    if not candidates:
+        return None
+    nearest = min(candidates, key=lambda section: abs(float(section["startSec"]) - start))
+    return _usable_mean_chroma(nearest.get("meanChroma"))
+
+
 def apply_corrections(analysis: dict, corrections: list[dict] | None) -> dict:
     """The musician's sections replace the estimates; words are re-sliced."""
     if not corrections:
@@ -598,15 +665,28 @@ def apply_corrections(analysis: dict, corrections: list[dict] | None) -> dict:
         start, end = float(c["startSec"]), float(c["endSec"])
         near = min(analysis["sections"], key=lambda s: abs(s["startSec"] - start))
         mine = _words_between(words, start, end)
-        sections.append({
+        bars = max(1, int(round((end - start) / bar)))
+        row = {
             "id": f"s{k + 1}", "index": k, "letter": near["letter"] if abs(near["startSec"] - start) < bar / 2 else "?",
-            "startBar": int(round((start - first) / bar)) + 1, "bars": max(1, int(round((end - start) / bar))),
+            "startBar": int(round((start - first) / bar)) + 1, "bars": bars,
             "startSec": round(start, 4), "endSec": round(end, 4),
             "energyDb": near["energyDb"], "vocalPresence": near["vocalPresence"],
             "lyrics": _lyric_summary(mine),
             "label": c["label"], "confidence": 1.0,
             "evidence": ["named by you"], "basis": "musician",
-        })
+        }
+        chroma = _corrected_mean_chroma(analysis, start, bars)
+        if chroma is not None:
+            row["meanChroma"] = chroma
+            matched = [
+                s for s in analysis["sections"]
+                if _usable_mean_chroma(s.get("meanChroma")) == chroma
+            ]
+            nearest = min(matched, key=lambda s: abs(float(s["startSec"]) - start), default=None)
+            swing = nearest.get("swingRatio") if isinstance(nearest, dict) else None
+            if isinstance(swing, (int, float)) and not isinstance(swing, bool) and math.isfinite(float(swing)):
+                row["swingRatio"] = round(float(swing), 4)
+        sections.append(row)
     _number(sections)
     out["sections"] = sections
     out["estimatedSections"] = list(estimated.values())

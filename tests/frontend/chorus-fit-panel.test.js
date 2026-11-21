@@ -1,0 +1,237 @@
+// Chorus Fit on the real Producer card.
+//
+// Listening documents are fixtures. POST /api/chorus-fit is the worktree's
+// rank_fit, not a scripted winner. The language model is not called.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+import { setupDom, teardownDom } from './helpers/dom.js';
+import { mountArrangementPanel } from '../../src/twobecomeone/studio_static/js/components/arrangement-panel.js';
+import { mountArrangementProducer } from '../../src/twobecomeone/studio_static/js/components/arrangement-producer.js';
+import { DawSession } from '../../src/twobecomeone/studio_static/js/arrangement/daw-session.js';
+
+const ROOT = fileURLToPath(new URL('../..', import.meta.url));
+const MAJOR = [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0];
+const CLUSTER = [1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const SR = 48000;
+const SHARED = new Float32Array(30 * SR).map((_, i) => 0.2 * Math.sin(i / 18));
+
+function section(id, name, label, startBar, chroma, vocal) {
+  const bar = 2.4;
+  const start = (startBar - 1) * bar;
+  return {
+    id, name, label, startBar, bars: 4, startSec: start, endSec: start + 4 * bar,
+    basis: 'estimated', confidence: 0.8, evidence: ['synthetic chroma'], vocalPresence: vocal,
+    meanChroma: chroma, swingRatio: 0.5, lyrics: null,
+  };
+}
+
+function analysis(trackId, title, bpm, sections) {
+  return {
+    trackId, title, bpm, barSec: 2.4, firstBarSec: 0, stemSetId: `set${trackId}`, stemSampleRate: 44100,
+    key: 'C major', lyrics: { available: false, note: 'synthetic' }, sections,
+  };
+}
+
+const ANALYSIS = {
+  A: analysis('tA', 'Song A', 100, [
+    section('a-verse', 'verse 1', 'verse', 1, CLUSTER, 0.1),
+    section('a-chorus', 'chorus 1', 'chorus', 5, MAJOR, 0.9),
+  ]),
+  B: analysis('tB', 'Song B', 110, [
+    section('b-match', 'chorus 1', 'chorus', 1, MAJOR, 0.8),
+    section('b-decoy', 'verse 1', 'verse', 5, CLUSTER, 0.9),
+    section('b-blank', 'bridge 1', 'bridge', 9, null, 0.2),
+  ]),
+};
+
+function rankFit(body) {
+  const run = spawnSync('.venv/bin/python', ['-c', `
+import json, sys
+from twobecomeone.chorus_fit import rank_fit
+body = json.loads(sys.stdin.read())
+json.dump(rank_fit(body["target"], body["candidates"]), sys.stdout)
+`], {
+    input: JSON.stringify(body),
+    cwd: ROOT,
+    env: { ...process.env, PYTHONPATH: `${ROOT}/src` },
+    encoding: 'utf8',
+  });
+  if (run.status !== 0) throw new Error(run.stderr || 'rank_fit failed');
+  return JSON.parse(run.stdout);
+}
+
+function cut(song, sectionId) {
+  const doc = ANALYSIS[song];
+  const section = doc.sections.find((item) => item.id === sectionId);
+  const lead = Math.min(doc.barSec, section.startSec);
+  const startFrame = Math.round((section.startSec - lead) * doc.stemSampleRate);
+  return { startFrame, inPoint: section.startSec - startFrame / doc.stemSampleRate, startSec: section.startSec };
+}
+
+let dom;
+test.beforeEach(() => { dom = setupDom(); });
+test.afterEach(() => teardownDom(dom));
+
+async function mounted() {
+  const calls = [];
+  const reply = (status, body) => ({ ok: status < 400, status, json: async () => body, arrayBuffer: async () => new ArrayBuffer(8) });
+  const fetchImpl = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : null;
+    calls.push({ url, method: init.method ?? 'GET', body });
+    if (url === '/api/producer/model') return reply(200, { provider: 'ollama', model: 'unavailable', local: true, available: false, note: 'not used by this path' });
+    if (url === '/api/chorus-fit') return reply(200, rankFit(body));
+    if (url === '/api/tracks/tA/listening') return reply(200, ANALYSIS.A);
+    if (url === '/api/tracks/tB/listening') return reply(200, ANALYSIS.B);
+    if (url === '/api/producer/converse') return reply(503, { error: { code: 'PRODUCER_MODEL_UNAVAILABLE', message: 'model not running' } });
+    return reply(200, {});
+  };
+  const s = new DawSession({
+    fetchImpl, decodeAudio: async () => ({ sampleRate: SR, numberOfChannels: 1, length: SHARED.length, getChannelData: () => SHARED }),
+    createContext: () => { throw new Error('no audio in this test'); },
+    RealtimeEngine: class {}, renderOffline: async () => { throw new Error('not used'); }, StretchFactory: () => null, modules: {},
+  });
+  const container = document.getElementById('main');
+  const api = mountArrangementPanel({
+    container, session: s, listTracks: async () => ({ items: [] }), listStems: async () => ({ variants: [] }),
+    producer: mountArrangementProducer,
+  });
+  for (const song of ['A', 'B']) {
+    const doc = ANALYSIS[song];
+    await s.importGroup(song, {
+      trackId: doc.trackId, title: doc.title, bpm: doc.bpm, section: { startSec: 0, seconds: 30 },
+      stems: ['vocals', 'drums', 'bass', 'other'].map((role) => ({ role, url: `/api/stems/set${doc.trackId}/audio?name=${role}&start=0&duration=30`, stemSetId: `set${doc.trackId}` })),
+    });
+  }
+  api.render();
+  const prod = container.querySelector('.daw__producer');
+  const btn = (text) => [...prod.querySelectorAll('button')].find((b) => b.textContent === text);
+  const tell = async (text) => {
+    const input = prod.querySelector('.daw__talk-input');
+    input.value = text;
+    prod.querySelector('.daw__talk').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+    for (let i = 0; i < 80 && (input.disabled || prod.querySelectorAll('.daw__talk-log li').length % 2); i += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return [...prod.querySelectorAll('.daw__talk-log li')].at(-1)?.textContent ?? '';
+  };
+  return { api, s, calls, container, prod, btn, tell };
+}
+
+const ideaClip = (s) => s.state.clips.find((c) => c.id.startsWith('idea-'));
+const assetOf = (s, clip) => s.state.assets[clip.assetId];
+
+test('a chorus fit uses the real ranker, keeps the target, and stays reversible', async () => {
+  const { s, calls, container, btn, tell } = await mounted();
+  const before = s.state.clips.map((c) => c.id);
+  const said = await tell('Which part of B fits this chorus?');
+  assert.match(said, /chorus 1/);
+  assert.match(said, /verse 1/);
+  assert.match(said, /not a chord-by-chord proof/);
+  assert.match(said, /fitted from 110 to 100 BPM|Stretch 0\.909/);
+  assert.equal(calls.filter((c) => c.url === '/api/producer/converse').length, 0);
+  const fit = calls.find((c) => c.url === '/api/chorus-fit');
+  assert.equal(fit.body.target.id, 'a-chorus');
+  assert.equal(fit.body.target.startSec, ANALYSIS.A.sections[1].startSec);
+  assert.ok(fit.body.candidates.some((c) => c.meanChroma == null));
+  assert.deepEqual(s.state.clips.map((c) => c.id), before, 'the idea is not written before Hear it');
+  assert.ok(container.querySelector('.daw__lane[data-track="4"] .daw__ghost'));
+
+  btn('Hear it').click();
+  let clip = ideaClip(s);
+  assert.equal(clip.timelineStartBeat, 16);
+  assert.equal(clip.pitchSemitones, 0);
+  assert.equal(clip.stretchMode, 'beat_sync');
+  const match = cut('B', 'b-match');
+  assert.equal(clip.sourceOffsetSec, match.inPoint);
+  assert.equal(match.startFrame, 0);
+  assert.match(assetOf(s, clip).bufferReference, /start=0/);
+
+  const next = await tell('Try the next best match instead');
+  assert.match(next, /verse 1/);
+  assert.match(next, /chorus 1 of song A/);
+  clip = ideaClip(s);
+  const decoy = cut('B', 'b-decoy');
+  assert.equal(assetOf(s, clip).source.section.startFrame, decoy.startFrame);
+  assert.equal(assetOf(s, clip).source.passage.startSec, decoy.startSec);
+  assert.ok(Math.abs(clip.sourceOffsetSec - decoy.inPoint) < 1e-6);
+  assert.equal(clip.timelineStartBeat, 16, 'the chorus target stays put');
+  assert.notEqual(decoy.startFrame, match.startFrame);
+
+  await tell('Put it at bar 17');
+  assert.equal(ideaClip(s).timelineStartBeat, 64);
+  await tell('Make the fade gentler');
+  assert.equal(ideaClip(s).fadeInBeats, 4);
+  await tell('Move the idea half a beat earlier');
+  clip = ideaClip(s);
+  assert.equal(clip.timelineStartBeat, 63.5);
+  assert.equal(clip.fadeInBeats, 4);
+  assert.equal(clip.pitchSemitones, 0);
+
+  s.apply({ name: 'moveClip', args: { clipId: clip.id, newTrackIndex: 4, newStartBeat: 70 } });
+  await tell('Try the strongest match');
+  clip = ideaClip(s);
+  assert.equal(clip.timelineStartBeat, 70, 'the hand move wins');
+  assert.match(assetOf(s, clip).bufferReference, /name=vocals&start=0/);
+  assert.ok(Math.abs(clip.sourceOffsetSec - match.inPoint) < 1e-6);
+
+  assert.match(await tell('Hear mine'), /your version/);
+  assert.equal(ideaClip(s), undefined);
+  btn('Hear it').click();
+  assert.equal(ideaClip(s).timelineStartBeat, 70);
+  assert.match(await tell('Keep this version'), /Kept/);
+  assert.ok(ideaClip(s));
+  assert.match(await tell('undo it'), /Undone|Back to your version/);
+  assert.equal(ideaClip(s), undefined);
+  assert.equal(calls.filter((c) => c.url === '/api/producer/converse').length, 0);
+});
+
+test('You play explains a fit and writes nothing', async () => {
+  const { s, calls, container, btn, tell } = await mounted();
+  const before = s.edit.serialize();
+  btn('You play').click();
+  const said = await tell('Which part of song B fits this chorus');
+  assert.match(said, /You play is on/);
+  assert.match(said, /cosine/);
+  assert.equal(container.querySelector('.daw__ghost'), null);
+  assert.equal(s.edit.serialize(), before);
+  assert.equal(calls.filter((c) => c.url === '/api/producer/converse').length, 0);
+});
+
+test('a rejected preview does not change the arrangement', async () => {
+  const { s, btn, tell } = await mounted();
+  const before = s.edit.serialize();
+  await tell('Which part of B fits this chorus?');
+  btn('Reject').click();
+  assert.equal(s.edit.serialize(), before);
+});
+
+test('Take the decks writes one arrangement and Take back restores it', async () => {
+  const { s, prod, btn, tell } = await mounted();
+  const strip = (text) => {
+    const copy = JSON.parse(text);
+    delete copy.transport.playheadBeat;
+    delete copy.transport.isPlaying;
+    return JSON.stringify(copy);
+  };
+  const before = strip(s.edit.serialize());
+  const said = await tell('Make something beautiful from these two songs');
+  assert.match(said, /on the lanes|playing/);
+  assert.ok(ideaClip(s), 'the decks write without a separate Hear it');
+  assert.equal(prod.querySelector('button[aria-pressed="true"]').textContent, 'Take the decks');
+  const entrance = s.state.tracks[4].gainPoints;
+  assert.ok(entrance.length >= 2 && entrance[0].db < entrance[entrance.length - 1].db, 'the vocal entrance rises');
+  s.apply({ name: 'moveClip', args: { clipId: ideaClip(s).id, newTrackIndex: 4, newStartBeat: 80 } });
+  assert.match(await tell('Take back'), /will not take that away/);
+  assert.equal(ideaClip(s).timelineStartBeat, 80);
+  const fresh = await mounted();
+  const origin = strip(fresh.s.edit.serialize());
+  await fresh.tell('Take the decks');
+  assert.notEqual(strip(fresh.s.edit.serialize()), origin);
+  assert.match(await fresh.tell('Take back'), /decks are yours/);
+  assert.equal(strip(fresh.s.edit.serialize()), origin);
+  assert.equal(fresh.prod.querySelector('button[aria-pressed="true"]').textContent, 'Jam together');
+});

@@ -280,6 +280,8 @@
   background: var(--color-surface);
 }
 .daw__producer-card { border-style: dashed; border-color: var(--color-ghost); }
+.daw__modes { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.daw__modes .is-on { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 .daw__ins-title { margin: 0; font-size: var(--text-md); }
 .daw__ins-title--A { color: var(--color-anchor); }
 .daw__ins-title--B { color: var(--color-lead); }
