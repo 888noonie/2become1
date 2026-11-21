@@ -564,6 +564,19 @@ test('Hear it does not place a preview after the song on that bank has changed',
   assert.equal(s.state.clips.filter((clip) => clip.trackIndex >= 4).length, 4);
 });
 
+test('a bar move does not apply the previous song after the bank is replaced', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  await s.importGroup('B', {
+    trackId: 'tC', title: 'Song C', bpm: 100, section: { startSec: 0, seconds: 30 },
+    stems: ['vocals', 'drums', 'bass', 'other'].map((role) => ({ role, url: `/api/stems/setC/audio?name=${role}&start=0&duration=30`, stemSetId: 'setC' })),
+  });
+  const said = await tell('Put it at bar 17');
+  assert.match(said, /lanes changed/);
+  assert.equal(s.state.clips.filter((clip) => clip.trackIndex >= 4).length, 4);
+  assert.equal(ideaClip(s), undefined);
+});
+
 test('a later move does not let Take back cross a fader that was put back', async () => {
   const { s, tell } = await mounted();
   await tell('Take the decks');

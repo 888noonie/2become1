@@ -932,6 +932,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       return 'You play is on, so I will not move that. Say “jam together” when you want an idea.';
     }
     if (request.kind === 'speed') {
+      if (conv.bank && bankStamp() !== conv.bank) return 'The songs on the lanes changed, so I have not moved that passage.';
       if (conv.mode === 'you-play') return 'You play is on, so I will not move that. Say “jam together” when you want an idea.';
       if (!conv.spec?.main) return 'I do not have a passage in mind yet. Ask which part of B fits this chorus.';
       const spec = absorbHumanMoves(structuredClone(conv.spec));
@@ -942,6 +943,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       return heard.ok ? 'The passage keeps its own speed.' : heard.text;
     }
     if (request.kind === 'place' || request.kind === 'gentler' || request.kind === 'nudge') {
+      if (conv.bank && bankStamp() !== conv.bank) return 'The songs on the lanes changed, so I have not moved that passage.';
       if (!conv.spec?.main && !conv.harmony) return 'I do not have a passage in mind yet. Ask which part of B fits this chorus.';
       const intent = { action: 'adjust' };
       if (request.kind === 'place') { intent.bar = request.bar; intent.beat = 1; }
