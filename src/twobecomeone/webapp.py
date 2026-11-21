@@ -26,6 +26,8 @@ from .common import UserError
 from .contracts import TERMINAL_JOB_STATES
 from .http_safety import RequestSafetyMiddleware
 from .arrangements import ArrangementStore
+from . import listening, producer_brain
+from .common import NotFoundError
 from .studio import RenderOptions, StudioService
 
 
@@ -243,6 +245,18 @@ class RenderResultPatchBody(BaseModel):
 
 # SSE heartbeat interval (seconds). Keeps proxies from closing idle streams.
 SSE_HEARTBEAT_SEC = 15.0
+
+
+class SectionCorrectionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sections: list[dict[str, Any]] = Field(min_length=1, max_length=64)
+
+
+class ConverseBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str = Field(min_length=1, max_length=400)
+    project: dict[str, Any]
+    history: list[dict[str, Any]] = Field(default_factory=list, max_length=16)
 
 
 def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = None, trusted_hosts: list[str] | None = None):
@@ -560,6 +574,46 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
     @app.put("/api/arrangements/{arrangement_id}")
     def save_arrangement(arrangement_id: str, body: ArrangementSaveBody):
         return arrangements.save(arrangement_id, body.name, body.project)
+
+    # ------------------------------------------------------------------
+    # The Listening Room: source analysis and the conversational Producer
+    # ------------------------------------------------------------------
+
+    @app.get("/api/tracks/{track_id}/listening")
+    def get_listening(track_id: str):
+        analysis = listening.for_track(service, track_id, compute=False)
+        if analysis is None:
+            raise NotFoundError("this recording has not been listened to yet", code="NOT_ANALYSED")
+        return analysis
+
+    @app.post("/api/tracks/{track_id}/listening")
+    def run_listening(track_id: str):
+        return listening.for_track(service, track_id, compute=True)
+
+    @app.put("/api/tracks/{track_id}/listening/sections")
+    def correct_sections(track_id: str, body: SectionCorrectionBody):
+        return listening.save_corrections(service, track_id, body.sections)
+
+    @app.delete("/api/tracks/{track_id}/listening/sections")
+    def reset_sections(track_id: str):
+        return listening.save_corrections(service, track_id, None)
+
+    @app.get("/api/producer/model")
+    def producer_model():
+        return producer_brain.status()
+
+    @app.post("/api/producer/converse")
+    def producer_converse(body: ConverseBody):
+        analyses = {}
+        for key, group in (body.project.get("groups") or {}).items():
+            if key in ("A", "B") and isinstance(group, dict) and isinstance(group.get("trackId"), str):
+                analyses[key] = listening.for_track(service, group["trackId"], compute=True)
+        try:
+            return producer_brain.converse(body.message, body.project, analyses, body.history)
+        except producer_brain.ProducerUnavailable as exc:
+            err = UserError(str(exc), code=exc.code)
+            err.status = 503 if exc.code == "PRODUCER_MODEL_UNAVAILABLE" else 422
+            raise err from exc
 
     @app.get("/api/projects")
     def list_projects(

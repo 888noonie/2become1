@@ -319,6 +319,30 @@ export class DawSession {
     return outcome;
   }
 
+  /**
+   * Decode one more source (a passage the Producer found) under the same
+   * per-stem and total budgets, before any edit refers to it. Makes no sound.
+   */
+  async loadSource(url, { signal } = {}) {
+    const usesFull = Object.values(this.edit.state.assets).some((a) => a.source?.section === 'full');
+    return this.#decode(url, usesFull ? DECODE_LIMITS.full : DECODE_LIMITS.section, signal);
+  }
+
+  /** Which library track each bank holds, read from the clips on its lanes. */
+  groups() {
+    const out = {};
+    for (const [group, base] of Object.entries(GROUP_BASE)) {
+      const clip = this.edit.state.clips.find((c) => c.trackIndex >= base && c.trackIndex < base + 4
+        && this.edit.state.assets[c.assetId]?.source?.trackId);
+      const src = clip ? this.edit.state.assets[clip.assetId].source : null;
+      if (src) {
+        out[group] = { trackId: src.trackId, title: src.title, stemSetId: src.stemSetId ?? null,
+          bpm: this.edit.state.assets[clip.assetId].nativeBpm ?? null };
+      }
+    }
+    return out;
+  }
+
   // ---------------------------------------------------------------- transport
 
   async #ensureEngine() {

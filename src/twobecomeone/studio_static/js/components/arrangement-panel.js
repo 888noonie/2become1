@@ -403,6 +403,8 @@ export function mountArrangementPanel(opts) {
     return el;
   }
 
+  let producerPreview = () => [];
+
   function renderLanes() {
     const ppb = pxPerBeat();
     const bpb = beatsPerBar();
@@ -436,6 +438,15 @@ export function mountArrangementPanel(opts) {
         'aria-label': `Lane ${track.name}`,
       });
       for (const clip of session.state.clips) if (clip.trackIndex === track.trackIndex) row.append(clipEl(clip));
+      for (const ghost of producerPreview()) {
+        if (ghost.trackIndex !== track.trackIndex) continue;
+        row.append(h('div', {
+          class: `daw__ghost daw__ghost--${trackGroup(track.trackIndex)}`,
+          dataset: { ghostFor: ghost.clipId },
+          style: { left: `${ghost.startBeat * ppb}px`, width: `${Math.max(4, ghost.durationBeats * ppb)}px` },
+          title: 'The Producer’s idea: press Hear it to play it here',
+        }, [h('span', { class: 'daw__ghost-label', text: `Idea · ${ghost.label}` })]));
+      }
       return row;
     });
     const focused = doc.activeElement?.dataset?.clipId;
@@ -1187,7 +1198,11 @@ export function mountArrangementPanel(opts) {
 
   // AI Producer mount point (Stage D): given the session, it proposes edits
   // through the same command path.
-  const producerDispose = opts.producer?.({ container: producerMount, session, onAnnounce, rerender: () => render(), selectedClipId: () => ui.selectedClipId }) ?? null;
+  // OPERATION THE LISTENING ROOM: the producer may also draw its idea on the
+  // timeline (outlines of clips that are not playing yet).
+  const producerHandle = opts.producer?.({ container: producerMount, session, onAnnounce, rerender: () => render(), selectedClipId: () => ui.selectedClipId }) ?? null;
+  const producerDispose = typeof producerHandle === 'function' ? producerHandle : producerHandle?.dispose ?? null;
+  producerPreview = typeof producerHandle?.preview === 'function' ? producerHandle.preview : () => [];
 
   render();
 

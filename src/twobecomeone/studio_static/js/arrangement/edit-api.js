@@ -164,13 +164,26 @@ const COMMANDS = {
     }
     const detectedKey = audioFile.detectedKey ?? null;
 
-    const assetId = h.nextId('asset', 'assets');
-    const asset = makeAsset({ id: assetId, name, durationSec, bufferReference, nativeBpm: measuredBpm, detectedKey });
-    // Provenance the Studio shows next to a tempo or a source (optional fields).
-    if (measuredBpm !== null) asset.nativeBpmSource = audioFile.nativeBpmSource ?? 'analysis';
-    if (audioFile.source && typeof audioFile.source === 'object') asset.source = structuredClone(audioFile.source);
-    Object.freeze(asset);
-    const clipId = h.nextId('clip', 'clips');
+    // The same source loaded again (a Producer idea heard twice) reuses its
+    // asset record instead of piling up copies.
+    const reuse = args.reuseAsset === true
+      ? Object.values(draft.assets).find((a) => a.bufferReference === bufferReference
+        && a.nativeBpm === measuredBpm && Math.abs(a.durationSec - durationSec) < 1e-9)
+      : null;
+    const assetId = reuse ? reuse.id : h.nextId('asset', 'assets');
+    let asset = reuse;
+    if (!asset) {
+      asset = makeAsset({ id: assetId, name, durationSec, bufferReference, nativeBpm: measuredBpm, detectedKey });
+      // Provenance the Studio shows next to a tempo or a source (optional fields).
+      if (measuredBpm !== null) asset.nativeBpmSource = audioFile.nativeBpmSource ?? 'analysis';
+      if (audioFile.source && typeof audioFile.source === 'object') asset.source = structuredClone(audioFile.source);
+      Object.freeze(asset);
+    }
+    const wanted = requireNewId(args);
+    if (wanted && draft.clips.some((c) => c.id === wanted)) {
+      throw new InvalidEditError(`clip ${wanted} already exists`, 'DUPLICATE_ID');
+    }
+    const clipId = wanted ?? h.nextId('clip', 'clips');
     // A measured BPM gives beat_sync with the musical beat length; an unmeasured
     // BPM stays unknown and the clip starts in manual mode at ratio 1.
     const stretchMode = measuredBpm === null ? 'manual' : 'beat_sync';
@@ -179,7 +192,6 @@ const COMMANDS = {
         ? durationSec * (draft.transport.masterBpm / 60)
         : (durationSec * measuredBpm) / 60,
     );
-    draft.assets[assetId] = asset;
     const clip = makeClip({
       id: clipId,
       trackIndex,
@@ -199,6 +211,25 @@ const COMMANDS = {
       clip.durationBeats = roundTime(durationSec * (draft.transport.masterBpm / 60));
       Object.assign(clip, clampMicroFades(clip.fadeInBeats, clip.fadeOutBeats, clip.durationBeats));
     }
+    // A passage of the source, placed exactly: an in-point (source seconds)
+    // and a length (timeline beats), validated against the asset like a slip
+    // and a trim.
+    if (args.sourceOffsetSec !== undefined || args.durationBeats !== undefined) {
+      if (args.sourceOffsetSec !== undefined) {
+        requireFinite(args.sourceOffsetSec, 'sourceOffsetSec');
+        clip.sourceOffsetSec = roundTime(Math.max(0, args.sourceOffsetSec));
+      }
+      if (args.durationBeats !== undefined) {
+        requireFinite(args.durationBeats, 'durationBeats');
+        if (args.durationBeats < MIN_CLIP_DURATION_BEATS) {
+          throw new InvalidEditError(`a clip is at least ${MIN_CLIP_DURATION_BEATS} beats long`, 'OUT_OF_RANGE');
+        }
+        clip.durationBeats = roundTime(args.durationBeats);
+      }
+      requireSourceBounds(draft, clip, asset, clip.sourceOffsetSec, clip.durationBeats);
+      Object.assign(clip, clampMicroFades(clip.fadeInBeats, clip.fadeOutBeats, clip.durationBeats));
+    }
+    if (!reuse) draft.assets[assetId] = asset;
     draft.clips.push(clip);
     return { assetId, clipId };
   },

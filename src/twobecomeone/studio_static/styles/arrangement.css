@@ -317,3 +317,43 @@
 @media (max-width: 640px) {
   .daw__levels input[type="range"] { width: 140px; }
 }
+
+/* OPERATION THE LISTENING ROOM: talking to the Producer, its idea on the
+   timeline, and what it heard in the songs. Tokens only. */
+.daw__talk { display: flex; gap: var(--space-2); margin: var(--space-2) 0 0; }
+.daw__talk-input {
+  flex: 1 1 auto; min-width: 0; min-height: 44px; box-sizing: border-box; padding: 0 var(--space-2);
+  border: 1px solid var(--color-control-border); border-radius: var(--radius-md);
+  background: var(--color-well); color: var(--color-text); font: inherit; font-size: var(--text-sm);
+}
+.daw__talk-input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.daw__talk .button { min-height: 44px; }
+.daw__talk-model { margin: var(--space-1) 0 0; }
+.daw__talk-log { list-style: none; margin: var(--space-2) 0 0; padding: 0; display: grid; gap: var(--space-1); font-size: var(--text-sm); }
+.daw__talk-log:empty { display: none; }
+.daw__talk-log li { padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); line-height: 1.4; }
+.daw__talk-you { justify-self: end; max-width: 90%; background: var(--color-surface-raised); color: var(--color-text); }
+.daw__talk-producer { max-width: 100%; border-left: 2px solid var(--color-action); color: var(--color-text); }
+.daw__talk-producer.is-clarify { border-left-color: var(--color-waiting); }
+.daw__talk-producer.is-unsupported, .daw__talk-producer.is-error { border-left-color: var(--color-danger); }
+.daw__producer-examples { opacity: 0.85; }
+.daw__ghost {
+  position: absolute; top: 4px; bottom: 4px; box-sizing: border-box; pointer-events: none; z-index: 1;
+  border: 1px dashed; border-radius: var(--radius-sm); overflow: hidden;
+}
+.daw__ghost--A { border-color: var(--color-anchor); background: color-mix(in srgb, var(--color-anchor) 6%, transparent); }
+.daw__ghost--B { border-color: var(--color-lead); background: color-mix(in srgb, var(--color-lead) 6%, transparent); }
+.daw__ghost-label {
+  position: absolute; left: 6px; top: 2px; right: 6px;
+  font: 11px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--color-text);
+}
+.daw__heard { margin-top: var(--space-2); font-size: var(--text-sm); }
+.daw__heard summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; color: var(--color-muted); }
+.daw__heard-song + .daw__heard-song { margin-top: var(--space-2); }
+.daw__heard-list { margin: 0; padding-left: 18px; display: grid; gap: var(--space-1); }
+.daw__heard-list li { line-height: 1.4; }
+.daw__heard-list .is-yours { color: var(--color-action); }
+.daw__heard-list select {
+  min-height: 44px; margin-right: var(--space-1);
+  background: var(--color-well); color: var(--color-text); border: 1px solid var(--color-control-border); border-radius: var(--radius-sm);
+}

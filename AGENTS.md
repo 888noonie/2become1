@@ -253,6 +253,45 @@ Evidence and the demo: `docs/first-cut-direct-control.md`.
   and reversible. Phrase starts are a loudness heuristic on decoded peaks. It
   does not read free text.
 
+### The conversational Producer (OPERATION THE LISTENING ROOM)
+
+Evidence, model choice, limits and the demo: `docs/listening-room.md`.
+
+- The model only reads and answers. `producer_brain.converse` sends a short
+  session description plus the musician's words to an Ollama-compatible daemon
+  on LOOPBACK (`TWOBECOMEONE_PRODUCER_MODEL`, default `qwen2.5:3b-instruct`;
+  `TWOBECOMEONE_PRODUCER_URL`, loopback hosts only) with a JSON-schema
+  `format` whose enums are the session's real section, clip and lane ids. The
+  answer is ONE intent. It never edits anything.
+- `producer-intent.js` turns intents into a spec that survives follow-ups and
+  then into ordinary edit-API fields. Every edit is dry-run with `propose`,
+  applied as one batch by Hear it, and kept, rejected or undone with the
+  existing buttons (or by voice). A refinement while the idea is heard swaps
+  it in as ONE undo step. A musician's own move on the idea is absorbed into
+  the next version; Hear mine / Undo still return to the pre-idea arrangement.
+- The edit description shown to the musician is built from what validated, not
+  from the model's reply. `reconcile` drops fields the request did not ask for
+  and turns effect requests (reverb, reverse, upload) into `unsupported`.
+- A passage is cut from the stem file at a SAMPLE index of that file
+  (`startFrame / sampleRate`), one source bar early, so the in-point inside the
+  cut is nonzero and the first heard sample is the section start.
+  `loadStemToTrack` takes `newClipId`, `sourceOffsetSec`, `durationBeats` and
+  `reuseAsset` for this; it validates bounds like a slip and a trim.
+- Source analysis (`listening.py`): bar self-similarity of the full mix,
+  novelty boundaries, repetition clusters, vocal level from the separated
+  vocal stem, optional words from a LOCAL faster-whisper folder
+  (`TWOBECOMEONE_WHISPER_MODEL`; a bare model name is refused so nothing
+  downloads). Labels are estimates with evidence and confidence. Cached by
+  content hash; the musician's section names are stored per recording and
+  replace the estimates.
+- Heard words are never sent to an external (`*cloud`) model, and by default
+  not to the local one either (they confuse a 3B model):
+  `TWOBECOMEONE_PRODUCER_HEARD_WORDS=1` opts a local model in. A quoted lyric
+  comes back as the intent's `lyric` and the Studio searches its own
+  transcript; an uncertain match (score < 0.8) is asked about, not placed.
+- No audio is ever sent to a model. Talking to the Producer never opens an
+  AudioContext.
+
 ## Static assets
 
 - There is no byte ceiling. Record the total uncompressed bytes under
