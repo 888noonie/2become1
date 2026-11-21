@@ -372,3 +372,18 @@
   min-height: 44px; margin-right: var(--space-1);
   background: var(--color-well); color: var(--color-text); border: 1px solid var(--color-control-border); border-radius: var(--radius-sm);
 }
+
+/* Draw levels: the curve rises above the clips so a point is a direct target.
+   Clips are held still, never trimmed or slipped by a levels gesture. */
+.daw__env-layer { z-index: 2; }
+.daw__env-handle { opacity: 0.55; transition: opacity 0.12s; pointer-events: none; }
+.daw__lane:hover .daw__env-handle, .daw__env-handle:focus-visible, .daw__env-handle.is-selected { opacity: 1; }
+.daw__env-readout {
+  position: absolute; top: 2px; transform: translateX(-50%); padding: 1px 6px; border-radius: 4px;
+  font: 11px var(--font-mono); white-space: nowrap; pointer-events: none; z-index: 3;
+  background: var(--color-surface); color: var(--color-text); border: 1px solid var(--color-focus);
+}
+.is-drawing-levels .daw__clip { pointer-events: none; opacity: 0.6; }
+.is-drawing-levels .daw__lane { cursor: crosshair; }
+.is-drawing-levels .daw__env-handle { pointer-events: auto; opacity: 1; width: 14px; height: 14px; margin: -7px 0 0 -7px; }
+.is-drawing-levels .daw__env-line { stroke-width: 2.5; }

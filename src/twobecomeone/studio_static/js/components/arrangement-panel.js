@@ -104,6 +104,7 @@ export function mountArrangementPanel(opts) {
     drag: null,
     envDrag: null,
     selectedPoint: null,
+    drawLevels: false,
     rafId: null,
     tracks: [],
     disposed: false,
@@ -167,6 +168,11 @@ export function mountArrangementPanel(opts) {
   const zoomIn = h('button', { type: 'button', class: 'button button--small', 'aria-label': 'Zoom in', text: '+' });
   const zoomText = h('span', { class: 'daw__chip-text', 'data-field': 'zoom' });
   const loopBtn = h('button', { type: 'button', class: 'button daw__chip', 'aria-pressed': 'false', 'aria-label': 'Loop' });
+  const levelsBtn = h('button', {
+    type: 'button', class: 'button daw__chip', text: 'Draw levels', 'aria-pressed': 'false',
+    'aria-keyshortcuts': 'G',
+    title: 'Draw volume changes over time: click a lane to add a point, drag to move it, double-click to remove. Clips are held still while this is on.',
+  });
   const undoBtn = h('button', { type: 'button', class: 'button', text: 'Undo', 'aria-keyshortcuts': 'Control+Z' });
   const redoBtn = h('button', { type: 'button', class: 'button', text: 'Redo', 'aria-keyshortcuts': 'Control+Shift+Z' });
   const masterRange = h('input', {
@@ -183,6 +189,7 @@ export function mountArrangementPanel(opts) {
     h('label', { class: 'daw__field' }, ['Snap', snapSelect]),
     h('div', { class: 'daw__field daw__zoom', role: 'group', 'aria-label': 'Zoom' }, ['Zoom', zoomOut, zoomText, zoomIn]),
     loopBtn,
+    levelsBtn,
     h('div', { class: 'daw__history', role: 'group', 'aria-label': 'Edit history' }, [undoBtn, redoBtn]),
   ]);
 
@@ -487,6 +494,15 @@ export function mountArrangementPanel(opts) {
       class: 'daw__env-layer',
       dataset: { track: String(track.trackIndex) },
     }, [svg]);
+    const selPoint = ui.selectedPoint?.trackIndex === track.trackIndex
+      ? track.gainPoints?.[ui.selectedPoint.index] : null;
+    if (selPoint && (ui.envDrag || ui.drawLevels)) {
+      layer.append(h('span', {
+        class: 'daw__env-readout',
+        style: { left: `${selPoint.beat * pxPerBeat()}px` },
+        text: `${formatPosition(selPoint.beat, beatsPerBar())} · ${fmtDb(clampTo(track.volumeDb + selPoint.db, MIN_VOLUME_DB, MAX_VOLUME_DB))}`,
+      }));
+    }
     (track.gainPoints ?? []).forEach((point, index) => {
       const absolute = clampTo(track.volumeDb + point.db, MIN_VOLUME_DB, MAX_VOLUME_DB);
       const selected = ui.selectedPoint?.trackIndex === track.trackIndex && ui.selectedPoint?.index === index;
@@ -530,7 +546,7 @@ export function mountArrangementPanel(opts) {
    * trim, and move handles stay in charge; this returns null for those.
    */
   function envelopeHit(ev) {
-    if (ev.target.closest?.('.daw__clip') || ev.target.closest?.('[data-grip]')) return null;
+    if (!ui.drawLevels && (ev.target.closest?.('.daw__clip') || ev.target.closest?.('[data-grip]'))) return null;
     const handle = ev.target.closest?.('.daw__env-handle');
     if (handle) {
       return {
@@ -558,7 +574,7 @@ export function mountArrangementPanel(opts) {
     if (nearest) return { kind: 'point', trackIndex, index: nearest.index };
     let best = Infinity;
     for (let i = 1; i < verts.length; i += 1) best = Math.min(best, distToSegment(x, y, verts[i - 1], verts[i]));
-    if (best > 10) return null;
+    if (best > 10 && !ui.drawLevels) return null;
     return {
       kind: 'add',
       trackIndex,
@@ -1026,8 +1042,8 @@ export function mountArrangementPanel(opts) {
     if (ev.button !== 0) return;
     // Clip grips win. A point hit does not stop the event when the pointer is
     // on a grip, and it does not fall through to the empty-lane seek.
-    const onGrip = ev.target.closest?.('[data-grip]');
-    const onClip = ev.target.closest?.('.daw__clip');
+    const onGrip = !ui.drawLevels && ev.target.closest?.('[data-grip]');
+    const onClip = !ui.drawLevels && ev.target.closest?.('.daw__clip');
     if (!onGrip && !onClip) {
       const hit = envelopeHit(ev);
       if (hit) {
@@ -1061,6 +1077,14 @@ export function mountArrangementPanel(opts) {
       grabOffset: beatAt(ev.clientX) - clip.timelineStartBeat, moved: false, pointerId: ev.pointerId,
     };
     try { live?.setPointerCapture?.(ev.pointerId); } catch { /* window listeners still follow */ }
+  });
+
+  on(lanes, 'dblclick', (ev) => {
+    const handle = ev.target.closest?.('[data-env-point]');
+    if (!handle || (!ui.drawLevels && ev.target.closest?.('.daw__clip'))) return;
+    ev.preventDefault();
+    ui.selectedPoint = { trackIndex: Number(handle.dataset.track), index: Number(handle.dataset.index) };
+    deleteSelectedPoint();
   });
 
   on(win, 'pointermove', (ev) => {
@@ -1138,6 +1162,8 @@ export function mountArrangementPanel(opts) {
       ui.envDrag = null;
       session.endGesture();
       render();
+      const sp = ui.selectedPoint;
+      if (sp) lanes.querySelector(`[data-env-point][data-track="${sp.trackIndex}"][data-index="${sp.index}"]`)?.focus({ preventScroll: true });
       return;
     }
     const d = ui.drag;
@@ -1287,6 +1313,15 @@ export function mountArrangementPanel(opts) {
     else render();
   });
   loopBtn.addEventListener('click', () => toggleLoop());
+  function setDrawLevels(on) {
+    ui.drawLevels = Boolean(on);
+    root.classList.toggle('is-drawing-levels', ui.drawLevels);
+    levelsBtn.setAttribute('aria-pressed', String(ui.drawLevels));
+    onAnnounce(ui.drawLevels
+      ? 'Draw levels on. Click a lane to add a point, drag to move it, double-click to remove it. Clips are held still.'
+      : 'Draw levels off. Clips can be moved again.');
+  }
+  levelsBtn.addEventListener('click', () => setDrawLevels(!ui.drawLevels));
   bindGesture(masterRange, 'master', (v) => ({ name: 'setMasterVolume', args: { volumeDb: v } }));
   monitorRange.addEventListener('input', () => {
     session.setMonitorDb(Number(monitorRange.value));
@@ -1489,6 +1524,8 @@ export function mountArrangementPanel(opts) {
       ev.preventDefault(); splitSelected();
     } else if (!mod && (ev.key === ',' || ev.key === '.') && ui.selectedClipId) {
       ev.preventDefault(); slipSelectedBy(ev.key === ',' ? -1 : 1);
+    } else if (!mod && (ev.key === 'g' || ev.key === 'G')) {
+      setDrawLevels(!ui.drawLevels);
     } else if (!mod && (ev.key === 'l' || ev.key === 'L')) {
       toggleLoop();
     } else if (!mod && (ev.key === '+' || ev.key === '=')) {

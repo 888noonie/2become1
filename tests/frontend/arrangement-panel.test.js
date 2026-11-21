@@ -217,3 +217,39 @@ test('Producer Keep mine sets the unheard idea aside without applying it', async
   assert.equal(s.edit.serialize(), before);
   assert.equal(btn('Keep it').disabled, true);
 });
+
+test('Draw levels adds, moves and removes points over a clip without touching the clip', async () => {
+  const { s, container } = await mounted();
+  const lane = container.querySelector('.daw__lane[data-track="4"]');
+  const clip = lane.querySelector('.daw__clip');
+  const freshClip = () => container.querySelector('.daw__lane[data-track="4"] .daw__clip');
+  assert.ok(clip, 'the lane has a clip under the curve');
+  const clipsBefore = JSON.stringify(s.state.clips);
+  const press = (el, type, init) => {
+    const ev = new window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init });
+    Object.defineProperty(ev, 'pointerId', { value: 1 });
+    el.dispatchEvent(ev);
+  };
+  const key = (k) => document.dispatchEvent(new window.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+  const toggle = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Draw levels');
+  assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+  key('g');
+  assert.equal(toggle.getAttribute('aria-pressed'), 'true', 'G turns Draw levels on');
+  assert.ok(container.querySelector('.is-drawing-levels') || container.classList.contains('is-drawing-levels'));
+  press(clip, 'pointerdown', { clientX: 200, clientY: 30 });
+  press(window, 'pointerup', {});
+  assert.equal(s.state.tracks[4].gainPoints.length, 1, 'a click over the clip adds a point');
+  assert.equal(JSON.stringify(s.state.clips), clipsBefore, 'the clip did not move, trim, slip or fade');
+  assert.ok(container.querySelector('.daw__env-readout')?.textContent.includes('dB'), 'the point shows bar and dB');
+  assert.equal(document.activeElement?.dataset?.envPoint, '1', 'keyboard focus follows the point');
+  key('ArrowUp');
+  assert.equal(s.state.tracks[4].gainPoints.length, 1);
+  const handle = container.querySelector('.daw__lane[data-track="4"] [data-env-point]');
+  handle.dispatchEvent(new window.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  assert.equal(s.state.tracks[4].gainPoints?.length ?? 0, 0, 'double-click removes the point');
+  s.undo();
+  assert.equal(s.state.tracks[4].gainPoints.length, 1, 'Undo brings it back');
+  assert.equal(JSON.stringify(s.state.clips), clipsBefore);
+  key('g');
+  assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+});
