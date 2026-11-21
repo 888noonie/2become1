@@ -461,7 +461,7 @@ def classify_creative(
     except json.JSONDecodeError as exc:
         raise ProducerUnavailable("the model's arrangement move was not JSON", "PRODUCER_BAD_ANSWER") from exc
     move = parsed.get("move") if isinstance(parsed, dict) else None
-    if move not in _CREATIVE_MOVES:
+    if not isinstance(move, str) or move not in _CREATIVE_MOVES:
         move = "none"
     return {"move": move, "model": cfg["model"], "local": True}
 

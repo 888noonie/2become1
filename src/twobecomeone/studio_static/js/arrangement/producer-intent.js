@@ -632,8 +632,9 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
     // A clip already on that lane under the idea's start is shortened so the
     // idea is heard on its own (Hear mine and Undo give it back).
     const ideaEnd = want.startBeat + want.durationBeats;
+    const protect = new Set(spec.protect ?? []);
     for (const c of state.clips) {
-      if (c.id === m.clipId || c.trackIndex !== trackIndex) continue;
+      if (c.id === m.clipId || c.trackIndex !== trackIndex || protect.has(c.id)) continue;
       const end = c.timelineStartBeat + c.durationBeats;
       if (c.timelineStartBeat < want.startBeat - 1e-9 && end > want.startBeat + 1e-9) {
         const shorter = rt(want.startBeat - c.timelineStartBeat);

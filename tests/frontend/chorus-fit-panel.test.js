@@ -74,9 +74,9 @@ function cut(song, sectionId) {
 
 let dom;
 test.beforeEach(() => { dom = setupDom(); });
-test.afterEach(() => teardownDom(dom));
+test.afterEach(() => { globalThis.creativeGate = null; globalThis.creativeReply = null; teardownDom(dom); });
 
-async function mounted() {
+async function mounted(extra = {}) {
   const calls = [];
   const reply = (status, body) => ({ ok: status < 400, status, json: async () => body, arrayBuffer: async () => new ArrayBuffer(8) });
   const fetchImpl = async (url, init = {}) => {
@@ -87,12 +87,16 @@ async function mounted() {
     if (url === '/api/tracks/tA/listening') return reply(200, ANALYSIS.A);
     if (url === '/api/tracks/tB/listening') return reply(200, ANALYSIS.B);
     if (url === '/api/producer/converse') return reply(503, { error: { code: 'PRODUCER_MODEL_UNAVAILABLE', message: 'model not running' } });
+    if (url === '/api/producer/creative') {
+      if (globalThis.creativeGate) await globalThis.creativeGate;
+      return reply(200, globalThis.creativeReply ?? { move: 'none', model: 'fixture', local: true });
+    }
     return reply(200, {});
   };
   const s = new DawSession({
     fetchImpl, decodeAudio: async () => ({ sampleRate: SR, numberOfChannels: 1, length: SHARED.length, getChannelData: () => SHARED }),
-    createContext: () => { throw new Error('no audio in this test'); },
-    RealtimeEngine: class {}, renderOffline: async () => { throw new Error('not used'); }, StretchFactory: () => null, modules: {},
+    createContext: extra.createContext ?? (() => { throw new Error('no audio in this test'); }),
+    RealtimeEngine: extra.RealtimeEngine ?? class {}, renderOffline: async () => { throw new Error('not used'); }, StretchFactory: () => null, modules: {},
   });
   const container = document.getElementById('main');
   const api = mountArrangementPanel({
@@ -722,4 +726,81 @@ test('a later move does not let Take back cross a fader that was put back', asyn
   assert.equal(s.state.clips.find((clip) => clip.id === drums.id).clipGainDb, 0);
   assert.ok(ideaClip(s));
   assert.notEqual(ideaClip(s).timelineStartBeat, 64);
+});
+
+test('Take back during preparation does not start playback', async () => {
+  let release;
+  class Engine {
+    constructor() { this.phaseName = 'ready'; }
+    prepare() { return new Promise((done) => { release = () => { this.phaseName = 'ready'; done(); }; }); }
+    play() { this.phaseName = 'playing'; }
+    stop() { this.phaseName = 'stopped'; }
+    state() { return { phase: this.phaseName, loop: null }; }
+    setLoop() {}
+    dispose() {}
+  }
+  const gain = { connect() {}, gain: { value: 1 } };
+  const { s, tell, btn } = await mounted({
+    createContext: () => ({ state: 'running', currentTime: 0, destination: {}, createGain: () => gain, resume: async () => {} }),
+    RealtimeEngine: Engine,
+  });
+  const pending = tell('Take the decks');
+  for (let i = 0; i < 40 && !release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(release, 'preparation started');
+  btn('Take back').click();
+  release();
+  await pending;
+  assert.equal(s.isPlaying(), false);
+});
+
+test('a late creative reply does not retake the decks', async () => {
+  let release;
+  globalThis.creativeGate = new Promise((done) => { release = done; });
+  globalThis.creativeReply = { move: 'surprise', model: 'fixture', local: true };
+  const { s, tell, btn, prod, calls } = await mounted();
+  await tell('Take the decks');
+  const vocal = () => s.state.clips.find((clip) => clip.trackIndex === 4 && String(clip.id).startsWith('idea-'));
+  const start = vocal().timelineStartBeat;
+  const pending = tell('Give it some sparkle');
+  for (let i = 0; i < 40 && !calls.some((call) => call.url === '/api/producer/creative'); i += 1) await new Promise((r) => setTimeout(r, 20));
+  btn('Take back').click();
+  release();
+  await pending;
+  const input = prod.querySelector('.daw__talk-input');
+  for (let i = 0; i < 40 && input.disabled; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(vocal().timelineStartBeat, start);
+  assert.equal(prod.querySelector('button[aria-pressed="true"]').textContent, 'Jam together');
+});
+
+test('a kept vocal and its move survive the next take', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  const vocal = s.state.clips.find((clip) => clip.trackIndex === 4 && String(clip.id).startsWith('idea-'));
+  btn('Keep it').click();
+  s.apply({ name: 'moveClip', args: { clipId: vocal.id, newTrackIndex: 4, newStartBeat: 36 } });
+  await tell('Take the decks and surprise me');
+  const kept = s.state.clips.find((clip) => clip.id === vocal.id);
+  assert.ok(kept, 'the kept vocal is still on the lanes');
+  assert.equal(kept.timelineStartBeat, 36);
+});
+
+test('the previous vocal stops at four revisions', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  await tell('Try something completely different');
+  await tell('Try something completely different');
+  await tell('Give it more energy');
+  const revision = s.edit.revision;
+  assert.match(await tell('I preferred the previous vocal'), /four times/);
+  assert.equal(s.edit.revision, revision);
+});
+
+test('taking over does not block the next jam', async () => {
+  const { tell, btn, prod } = await mounted();
+  await tell('Take the decks');
+  await tell("That works. I'll take over.");
+  btn('Jam together').click();
+  const said = await tell('Which part of B fits this chorus');
+  assert.doesNotMatch(said, /You play is on/);
+  assert.equal(prod.querySelector('button[aria-pressed="true"]').textContent, 'Jam together');
 });

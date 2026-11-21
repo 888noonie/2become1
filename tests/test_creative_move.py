@@ -44,3 +44,8 @@ def test_classify_creative_refuses_a_cloud_model():
 def test_classify_creative_drops_an_unknown_move():
     out = classify_creative("do a cartwheel", opener=_opener({"move": "fly"}))
     assert out["move"] == "none"
+
+
+def test_classify_creative_drops_a_non_string_move():
+    out = classify_creative("punch it up", opener=_opener({"move": []}))
+    assert out["move"] == "none"

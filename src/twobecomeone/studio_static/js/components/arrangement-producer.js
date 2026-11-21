@@ -389,6 +389,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       conv.spec = null;
       say('Kept your version. The idea was set aside.');
     } else {
+      const owned = idea.fields.filter((f) => f.key.endsWith(':clip')).map((f) => f.key.slice(0, -5));
+      conv.musicianClips = new Set([...(conv.musicianClips ?? []), ...owned]);
+      conv.partIds = (conv.partIds ?? []).filter((id) => !conv.musicianClips.has(id));
       idea.hearing = 'kept';
       conv.spec = null;
       say('Kept the idea. Undo returns to your version from before it.');
@@ -410,8 +413,18 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     rerender();
   }
 
-  youPlay.addEventListener('click', () => { setMode('you-play'); say('You play. The lanes stay yours.'); });
-  jam.addEventListener('click', () => { setMode('jam'); say('Jam together. An idea waits until you press Hear it.'); });
+  youPlay.addEventListener('click', () => {
+    conv.cancelled = true;
+    conv.epoch += 1;
+    if (typeof session.stop === 'function') session.stop();
+    setMode('you-play');
+    say('You play. The lanes stay yours.');
+  });
+  jam.addEventListener('click', () => {
+    conv.cancelled = false;
+    setMode('jam');
+    say('Jam together. An idea waits until you press Hear it.');
+  });
   decks.addEventListener('click', () => {
     input.value = 'Take the decks';
     talk.dispatchEvent(new container.ownerDocument.defaultView.Event('submit', { bubbles: true, cancelable: true }));
@@ -556,7 +569,10 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
 
   /** Turn a spec into fields, decode its passage (silently) if needed, then offer or re-hear it. */
   async function realise(spec, guard = null) {
-    const stopped = () => ({ ok: false, text: 'You play is on, so I have not placed it.' });
+    const stopped = () => ({
+      ok: false,
+      text: conv.mode === 'you-play' ? 'You play is on, so I have not placed it.' : 'The decks are yours, so I have not placed it.',
+    });
     const replaced = () => ({ ok: false, text: 'A new arrangement is open, so I have not placed it.' });
     const engine = session.edit;
     const bank = bankStamp();
@@ -1007,7 +1023,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     outcome.spec.trims = plan.trims;
     const kept = new Set([outcome.spec.main.clipId, ...outcome.spec.parts.map((part) => part.clipId)]);
-    outcome.spec.drop = (conv.partIds ?? []).filter((id) => !kept.has(id));
+    const mine = conv.musicianClips ?? new Set();
+    outcome.spec.protect = [...mine];
+    outcome.spec.drop = (conv.partIds ?? []).filter((id) => !kept.has(id) && !mine.has(id));
     const start = outcome.spec.main.startBeat;
     const length = (section.bars || 4) * bpb;
     const vocal = laneIndex(plan.vocal.song, plan.vocal.stem);
@@ -1047,8 +1065,10 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (conv.mode === 'you-play') return 'You play is on, so I have not placed it.';
     if (conv.cancelled || conv.mode !== 'decks') return 'The decks are yours. I have stopped.';
     const playing = typeof session.play === 'function' ? await session.play() : false;
-    if (conv.mode === 'you-play') return 'You play is on, so I have not placed it.';
-    if (conv.cancelled || conv.mode !== 'decks') return 'The decks are yours. I have stopped.';
+    if (conv.mode !== 'decks' || conv.cancelled) {
+      if (typeof session.stop === 'function') session.stop();
+      return conv.mode === 'you-play' ? 'You play is on, so I have not placed it.' : 'The decks are yours. I have stopped.';
+    }
     const issue = plan.issues[0] ? ` ${plan.issues[0]}` : '';
     const unsure = found.rank.ask ? ' The readings were close, so this is a choice, not a proof.' : '';
     const heardWord = playing ? "It's playing." : "It's on the lanes.";
@@ -1072,6 +1092,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (request.kind === 'restore') return restoreTake();
     if (request.kind === 'previous-vocal') {
       if (conv.mode !== 'decks') return 'Take the decks when you want me to change the vocal.';
+      if ((conv.decks?.steps ?? 0) >= 4) return 'I have revised this four times. Take back, or tell me the one change you want.';
       const earlier = (conv.vocalChoices ?? []).slice(0, -1).at(-1);
       if (!earlier) return 'I have only placed one vocal so far.';
       const found = await rankedFit({ kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
@@ -1196,6 +1217,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       }
       return;
     }
+    if (urgent?.kind !== 'take-back' && urgent?.kind !== 'take-over' && urgent?.kind !== 'you-play') conv.cancelled = false;
     const message = text.trim();
     if (!message) return;
     conv.busy = true;
@@ -1273,9 +1295,16 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
           surprise: { kind: 'decks', style: 'surprise' },
         };
         try {
+          const epoch = conv.epoch;
           const classified = await json('/api/producer/creative', {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message, project }),
           });
+          if (conv.cancelled || conv.epoch !== epoch || conv.mode !== 'decks') {
+            const reply = 'The decks are yours, so I have not placed it.';
+            line('producer', reply, 'is-local');
+            say(reply);
+            return;
+          }
           const mapped = moves[classified.move];
           if (!mapped) {
             const reply = 'I did not map that onto a musical change. I can give it more energy, try a different structure, bring the previous vocal back, or hand the decks back.';

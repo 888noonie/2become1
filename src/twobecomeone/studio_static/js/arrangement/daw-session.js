@@ -109,6 +109,7 @@ export class DawSession {
     this.messages = [];
     this._sync = Promise.resolve();
     this._disposed = false;
+    this._playTicket = 0;
   }
 
   // ---------------------------------------------------------------- reading
@@ -398,11 +399,14 @@ export class DawSession {
       return false;
     }
     if (this.isPlaying()) return true;
+    const ticket = this._playTicket;
     try {
       const engine = await this.#ensureEngine();
-      if (!engine) return false;
+      if (!engine || ticket !== this._playTicket) return false;
       await this._sync;
+      if (ticket !== this._playTicket) return false;
       if (this.ctx.state !== 'running') await this.ctx.resume();
+      if (ticket !== this._playTicket) return false;
       engine.play(this.cueFrame);
       this.#emit('transport');
       return ACTIVE.has(engine.state().phase);
@@ -415,6 +419,7 @@ export class DawSession {
 
   /** Stop fades out and returns to the cue (where Play last started). */
   stop() {
+    this._playTicket += 1;
     const e = this.engine;
     if (e && ACTIVE.has(e.state().phase)) e.stop();
     this.#emit('transport');
