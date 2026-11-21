@@ -20,6 +20,8 @@
 //
 // Nothing here writes to ProjectState; the plan is the only input.
 
+import { scheduleGainEnvelope, schedulePanEnvelope } from './automation.js';
+import { createTransportMap } from './transport.js';
 import { clipNeedsDsp, clipRoute } from './time-math.js';
 
 const EQ_LOW_HZ = 250;
@@ -111,9 +113,15 @@ export async function buildBackbone(ctx, plan, options) {
     high.frequency.value = EQ_HIGH_HZ;
     high.gain.value = track.eq.highGainDb;
     const gain = ctx.createGain();
-    gain.gain.value = track.audible ? track.volumeLinear : 0;
+    const hasGainCurve = Array.isArray(track.gainPoints) && track.gainPoints.length > 0;
+    // Assigning .value inserts setValueAtTime at currentTime. On an offline
+    // context that time is 0, the same sample as the first breakpoint, and
+    // whichever write lands last owns the downbeat. When points exist, leave
+    // the parameter alone; scheduleOfflineEnvelopes writes the breakpoint.
+    if (!hasGainCurve) gain.gain.value = track.audible ? track.volumeLinear : 0;
     const panner = ctx.createStereoPanner();
-    panner.pan.value = track.pan;
+    const hasPanCurve = Array.isArray(track.panPoints) && track.panPoints.length > 0;
+    if (!hasPanCurve) panner.pan.value = track.pan;
     low.connect(mid).connect(high).connect(gain).connect(panner).connect(master);
     trackInputs[track.trackIndex] = low;
     trackInputs[`gain-${track.trackIndex}`] = gain; // for ramped live mute/solo
@@ -239,6 +247,43 @@ export async function buildClipVoice(ctx, clip, source, options) {
 }
 
 /**
+ * One offline timeline. `plan.loopRange` is ignored: the bounce does not
+ * unroll the live loop. Times are `originSec + frame / sampleRate`, the same
+ * clock as the clips (`startDelaySec + timeOriginSec`, both 0 in renderOffline).
+ * The limiter lookahead is not added here.
+ */
+export function scheduleOfflineEnvelopes(backbone, plan, originSec) {
+  const map = createTransportMap({ startFrame: 0, loop: null, sampleRate: plan.sampleRate });
+  for (const track of plan.tracks) {
+    if (!track.gainPoints?.length) continue;
+    const param = backbone.trackInputs[`gain-${track.trackIndex}`]?.gain;
+    if (!param) continue;
+    scheduleGainEnvelope(param, track, {
+      originSec,
+      map,
+      sampleRate: plan.sampleRate,
+      bpm: plan.masterBpm,
+      audible: track.audible,
+      now: originSec,
+      fullTimeline: true,
+    });
+  }
+  for (const track of plan.tracks) {
+    if (!track.panPoints?.length) continue;
+    const param = backbone.trackInputs[`pan-${track.trackIndex}`]?.pan;
+    if (!param) continue;
+    schedulePanEnvelope(param, track, {
+      originSec,
+      map,
+      sampleRate: plan.sampleRate,
+      bpm: plan.masterBpm,
+      now: originSec,
+      fullTimeline: true,
+    });
+  }
+}
+
+/**
  * @param {BaseAudioContext} ctx OfflineAudioContext or AudioContext
  * @param {object} plan from compileRenderPlan
  * @param {Record<string, {channels: Float32Array[]}>} buffers bufferReference -> PCM at plan.sampleRate
@@ -262,6 +307,10 @@ export async function buildArrangementGraph(ctx, plan, buffers, options) {
   }
 
   const backbone = await buildBackbone(ctx, plan, options);
+  // One timeline. plan.loopRange is not unrolled into the bounce, and events
+  // are not shifted by the limiter lookahead. The trim in renderOffline is
+  // what makes sample 0 equal arrangement frame 0.
+  scheduleOfflineEnvelopes(backbone, plan, startDelaySec + timeOriginSec);
   const { trackInputs, limiterLatencyFrames } = backbone;
 
   const stretchNodes = [];

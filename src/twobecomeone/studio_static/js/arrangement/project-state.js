@@ -36,6 +36,8 @@ export const MAX_PITCH_SEMITONES = 12;
 export const MIN_EQ_GAIN_DB = -12;
 export const MAX_EQ_GAIN_DB = 12;
 export const STRETCH_MODES = Object.freeze(['beat_sync', 'manual']);
+/** Gain and pan breakpoints, each. A step is two points. The 49th is refused. */
+export const MAX_AUTOMATION_POINTS = 48;
 
 /**
  * Overlap policy (normative): multiple regions on one track may overlap and
@@ -172,6 +174,53 @@ function pushError(errors, path, code, message) {
 }
 
 /**
+ * Read one envelope. Absent, null, and [] mean no automation. The returned
+ * points keep the caller's order so a shared beat stays a step to the later
+ * point. This does not rebuild the track: asset.source and nativeBpmSource
+ * are not touched here.
+ */
+export function readAutomationPoints(points, kind) {
+  if (points == null) return { points: [] };
+  const label = kind === 'pan' ? 'pan' : 'gain';
+  if (!Array.isArray(points)) {
+    return { error: { code: 'INVALID_ARGUMENT', message: `${label} points must be an array` } };
+  }
+  if (points.length > MAX_AUTOMATION_POINTS) {
+    return {
+      error: {
+        code: 'OUT_OF_RANGE',
+        message: `${label} allows at most ${MAX_AUTOMATION_POINTS} points`,
+      },
+    };
+  }
+  const cleaned = [];
+  for (const [i, point] of points.entries()) {
+    if (!point || typeof point !== 'object') {
+      return { error: { code: 'INVALID_ARGUMENT', message: `${label} point ${i} must be an object` } };
+    }
+    if (!isFiniteNumber(point.beat) || point.beat < 0) {
+      return { error: { code: 'OUT_OF_RANGE', message: `${label} point ${i} beat must be finite and >= 0` } };
+    }
+    if (label === 'gain') {
+      if (!inRange(point.db, MIN_VOLUME_DB, MAX_VOLUME_DB)) {
+        return {
+          error: {
+            code: 'OUT_OF_RANGE',
+            message: `${label} point ${i} db must be ${MIN_VOLUME_DB}..${MAX_VOLUME_DB}`,
+          },
+        };
+      }
+      cleaned.push({ beat: point.beat, db: point.db });
+    } else if (!inRange(point.pan, -1, 1)) {
+      return { error: { code: 'OUT_OF_RANGE', message: `${label} point ${i} pan must be -1..1` } };
+    } else {
+      cleaned.push({ beat: point.beat, pan: point.pan });
+    }
+  }
+  return { points: cleaned };
+}
+
+/**
  * Full state validation. Returns { ok, errors, warnings } and never throws.
  * Errors are contract violations; warnings (overlap) are surfaced but legal.
  */
@@ -274,6 +323,16 @@ export function validateProject(state) {
         || !inRange(e.midGainDb, MIN_EQ_GAIN_DB, MAX_EQ_GAIN_DB)
         || !inRange(e.highGainDb, MIN_EQ_GAIN_DB, MAX_EQ_GAIN_DB)) {
         pushError(errors, `${p}.eq`, 'OUT_OF_RANGE', `eq gains must be ${MIN_EQ_GAIN_DB}..${MAX_EQ_GAIN_DB}`);
+      }
+      // Missing gainPoints means none. schemaVersion stays 1; old projects
+      // have no field and stay valid. Extra asset fields are not rewritten.
+      if (tr.gainPoints !== undefined) {
+        const read = readAutomationPoints(tr.gainPoints, 'gain');
+        if (read.error) pushError(errors, `${p}.gainPoints`, read.error.code, read.error.message);
+      }
+      if (tr.panPoints !== undefined) {
+        const read = readAutomationPoints(tr.panPoints, 'pan');
+        if (read.error) pushError(errors, `${p}.panPoints`, read.error.code, read.error.message);
       }
     });
   }
