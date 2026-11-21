@@ -434,18 +434,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       'That clip already matches the idea.');
   });
 
-  hear.addEventListener('click', async () => {
-    if (idea && idea.hearing !== 'idea' && idea.hearing !== 'kept' && conv.spec?.main) {
-      const speed = currentFitSpeed();
-      if (speed && conv.spec.main.speed !== speed) {
-        const next = structuredClone(conv.spec);
-        next.main.speed = speed;
-        const heard = await realise(next);
-        if (!heard.ok) { say(heard.text); return; }
-      }
-    }
-    hearToggle();
-  });
+  hear.addEventListener('click', () => { void commitIdea(); });
   keep.addEventListener('click', () => { keepOrUndo(); if (keep.isConnected) keep.focus(); });
   reject.addEventListener('click', rejectIdea);
 
@@ -565,22 +554,28 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   /** Turn a spec into fields, decode its passage (silently) if needed, then offer or re-hear it. */
   async function realise(spec, guard = null) {
     const stopped = () => ({ ok: false, text: 'You play is on, so I have not placed it.' });
+    const replaced = () => ({ ok: false, text: 'A new arrangement is open, so I have not placed it.' });
+    const engine = session.edit;
     const groups = session.groups();
     const ctx = { analyses: conv.analyses, groups, records: session.buffers };
     let built = buildIdea(session.state, spec, ctx);
     if (built.needsSource) {
       say('Fetching that passage of the stem…');
       try { await session.loadSource(built.needsSource); } catch (err) { return { ok: false, text: `I couldn't load that passage: ${err.message}` }; }
+      if (session.edit !== engine) return replaced();
       if (stale(guard)) return stopped();
-      built = buildIdea(session.state, spec, ctx);
     }
+    if (session.edit !== engine) return replaced();
     if (stale(guard)) return stopped();
+    spec = followTempo(spec);
+    built = buildIdea(session.state, spec, ctx);
     if (built.refusal) return { ok: false, text: built.refusal };
     const wasHearing = idea?.hearing === 'idea';
     const old = idea;
     const key = `producer-${Date.now()}`;
     if (wasHearing && conv.absorbed) idea.touched.delete(conv.absorbed);
     conv.absorbed = null;
+    const beforeWrite = editingSerial();
     if (wasHearing) {
       // Swap the heard version for the refined one as ONE undo step.
       writeAll((f) => idea.before.get(f.key), true, key);
@@ -604,12 +599,28 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     sync();
     rerender();
-    return { ok: true, text: `${wasHearing ? 'Now playing' : 'Idea'}: ${built.rationale}.${wasHearing ? '' : ' Press Hear it to listen.'}` };
+    return { ok: true, wrote: wasHearing, before: beforeWrite, text: `${wasHearing ? 'Now playing' : 'Idea'}: ${built.rationale}.${wasHearing ? '' : ' Press Hear it to listen.'}` };
+  }
+
+  async function commitIdea() {
+    if (idea && idea.hearing !== 'idea' && idea.hearing !== 'kept') {
+      const next = followTempo(conv.spec);
+      if (next && next !== conv.spec) {
+        const heard = await realise(next);
+        if (!heard.ok) { say(heard.text); return false; }
+      }
+    }
+    return hearToggle();
   }
 
   async function control(kind) {
     if (!idea) return 'There is no idea to do that with yet.';
-    if (kind === 'hear_idea') { if (idea.hearing !== 'idea' && idea.hearing !== 'kept') hearToggle(); return 'Hearing the idea.'; }
+    if (kind === 'hear_idea') {
+      if (idea.hearing !== 'idea' && idea.hearing !== 'kept') {
+        return (await commitIdea()) ? 'Hearing the idea.' : 'The idea could not be applied as it stands; nothing changed.';
+      }
+      return 'Hearing the idea.';
+    }
     if (kind === 'hear_mine') {
       if (idea.hearing === 'idea') {
         return hearToggle() ? 'Hearing your version.' : 'Your edit stands. That level move is set aside.';
@@ -681,6 +692,51 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     return playbackSpeed(row.tempo?.applyStretch ?? null, projectRatio);
   }
 
+  function slideCurves(spec) {
+    if (!spec?.main || spec.main.startBeat == null || !spec.envelopes) return;
+    const bpb = session.state.transport.timeSignature[0];
+    const start = spec.main.startBeat;
+    const yielded = conv.yieldedTracks ?? new Set();
+    const vocal = laneIndex(spec.main.song, spec.main.stem || 'vocals');
+    if (!yielded.has(vocal) && spec.envelopes[vocal]) spec.envelopes[vocal] = entrancePoints(start, bpb);
+    const bed = laneIndex(spec.main.song === 'A' ? 'B' : 'A', 'vocals');
+    if (!yielded.has(bed) && spec.envelopes[bed]) {
+      const bars = Number(conv.harmony?.target?.bars) || 4;
+      spec.envelopes[bed] = bedDipPoints(start, bars * bpb);
+    }
+  }
+
+  /** Re-read tempo and the heard chorus after a wait. A bar the musician named stays put. */
+  function followTempo(spec) {
+    if (!spec?.main || !conv.harmony) return spec;
+    const mainField = idea?.fields?.find((field) => field.main);
+    if (mainField && idea.touched.has(mainField.key)) return spec;
+    const speed = currentFitSpeed();
+    let start = spec.main.startBeat;
+    if (spec.main.chorusAlign && conv.harmony.target?.startSec != null) {
+      const beat = arrangementBeatForSource(session.state, conv.harmony.targetSong, conv.harmony.target.startSec);
+      if (beat != null) start = Math.round(beat * 1e9) / 1e9;
+    }
+    if ((!speed || spec.main.speed === speed) && start === spec.main.startBeat) return spec;
+    const next = structuredClone(spec);
+    if (speed) next.main.speed = speed;
+    next.main.startBeat = start;
+    slideCurves(next);
+    return next;
+  }
+
+  function rememberWrite(beforeWrite, count) {
+    const after = editingSerial();
+    if (!conv.decks) {
+      conv.decks = { before: beforeWrite, after, steps: count ? 1 : 0 };
+      return;
+    }
+    // A hand edit between two Producer writes is the new floor. Take back stops there.
+    if (beforeWrite !== conv.decks.after) conv.decks.before = beforeWrite;
+    conv.decks.after = after;
+    if (count) conv.decks.steps += 1;
+  }
+
   async function rankedFit(request) {
     const groups = session.groups();
     await analysesFor(groups, { compute: true });
@@ -742,6 +798,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (!outcome.spec) return outcome.ask || outcome.say || 'I could not place that passage.';
     if (placeOnChorus && chorusBeat != null && outcome.spec.main) {
       outcome.spec.main.startBeat = Math.round(chorusBeat * 1e9) / 1e9;
+      outcome.spec.main.chorusAlign = true;
     }
     if (commit && outcome.spec.main) {
       const bpb = session.state.transport.timeSignature[0];
@@ -777,13 +834,18 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       : '';
     if (commit) {
       const guard = { epoch: conv.epoch, mode: 'decks' };
-      const before = editingSerial();
+      const engine = session.edit;
       const heard = await realise(outcome.spec, guard);
       if (!heard.ok) return `${text}${pitchNote}${alt}${tempoNote} ${heard.text}`.trim();
+      if (session.edit !== engine) return 'A new arrangement is open, so I have not placed it.';
       if (!idea || idea.hearing === 'kept') return heard.text || text;
-      if (idea.hearing !== 'idea') hearToggle();
-      if (!idea || idea.hearing !== 'idea') return `${text}${pitchNote}${alt} The arrangement did not change.`;
-      conv.decks = { before, after: editingSerial(), steps: (conv.decks?.steps ?? 0) + 1 };
+      if (heard.wrote) rememberWrite(heard.before, true);
+      else {
+        const beforeWrite = editingSerial();
+        if (idea.hearing !== 'idea') hearToggle();
+        if (!idea || idea.hearing !== 'idea') return `${text}${pitchNote}${alt} The arrangement did not change.`;
+        rememberWrite(beforeWrite, true);
+      }
       const playing = typeof session.play === 'function' ? await session.play() : false;
       const surprise = deckChoice(found.rank);
       const extra = surprise?.adventurous ? ' I took a playable neighbour of the closest chroma match, not only the safest one.' : '';
@@ -804,12 +866,16 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         return 'You have changed the arrangement since I played. I will not take that away. Undo walks one step when you want it to.';
       }
       const checkpoint = conv.decks.before;
+      const started = editingSerial();
       let guard = 0;
-      while (editingSerial() !== checkpoint && guard < 6) {
+      while (editingSerial() !== checkpoint && guard < 32) {
         if (!session.undo()) break;
         guard += 1;
       }
-      if (editingSerial() !== checkpoint) return 'I could not restore the arrangement from before I played.';
+      if (editingSerial() !== checkpoint) {
+        while (editingSerial() !== started) { if (!session.redo()) break; }
+        return 'I could not restore the arrangement from before I played.';
+      }
       setMode('jam');
       conv.decks = null;
       idea = null;
@@ -839,10 +905,18 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         state: session.state, analyses: conv.analyses, groups: session.groups(), sentence: '', mine: mineGroup(),
       });
       if (!outcome.spec) return outcome.ask || outcome.say || 'I could not change that.';
+      if (outcome.spec.main && (request.kind === 'place' || request.kind === 'nudge')) {
+        outcome.spec.main.chorusAlign = false;
+        slideCurves(outcome.spec);
+      }
       const heard = await realise(outcome.spec);
       if (conv.mode === 'decks' && conv.decks && heard.ok) {
-        if (idea && idea.hearing !== 'idea' && idea.hearing !== 'kept') hearToggle();
-        conv.decks.after = editingSerial();
+        if (heard.wrote) rememberWrite(heard.before, false);
+        else if (idea && idea.hearing !== 'idea' && idea.hearing !== 'kept') {
+          const beforeWrite = editingSerial();
+          hearToggle();
+          rememberWrite(beforeWrite, false);
+        }
       }
       return heard.text;
     }

@@ -369,3 +369,111 @@ test('You play during a take stops the clip from landing', async () => {
     ANALYSIS.B.sections[1].meanChroma = decoy;
   }
 });
+
+test('Hear it after a tempo change follows the chorus that is now heard', async () => {
+  const { s, btn, tell } = await mounted();
+  const vocal = s.state.clips.find((clip) => clip.trackIndex === 0);
+  s.apply({ name: 'setClipStretch', args: { clipId: vocal.id, ratioOrAuto: 1 } });
+  await tell('Try the strongest match');
+  s.state.transport.masterBpm = 220;
+  btn('Hear it').click();
+  for (let i = 0; i < 40 && Math.abs((ideaClip(s)?.timelineStartBeat ?? 0) - 35.2) > 1e-6; i += 1) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  const clip = ideaClip(s);
+  assert.ok(Math.abs(clip.timelineStartBeat - 35.2) < 1e-6, `placed at ${clip.timelineStartBeat}`);
+  assert.equal(clip.stretchMode, 'manual');
+});
+
+test('typing Hear it uses the tempo at commit time', async () => {
+  const { s, tell } = await mounted();
+  await tell('Try the strongest match');
+  s.state.transport.masterBpm = 220;
+  const said = await tell('Hear it');
+  assert.match(said, /Hearing the idea/);
+  assert.equal(ideaClip(s).stretchMode, 'manual');
+  assert.equal(ideaClip(s).customStretchRatio, 1);
+});
+
+test('a hand edit during the load survives Take back', async () => {
+  const match = ANALYSIS.B.sections[0].meanChroma.slice();
+  const decoy = ANALYSIS.B.sections[1].meanChroma.slice();
+  ANALYSIS.B.sections[0].meanChroma = decoy.slice();
+  ANALYSIS.B.sections[1].meanChroma = match.slice();
+  try {
+    const { s, tell } = await mounted();
+    const drums = s.state.clips.find((clip) => clip.trackIndex === 1);
+    const original = s.loadSource.bind(s);
+    let release;
+    s.loadSource = (spec) => new Promise((resolve, reject) => {
+      release = () => original(spec).then(resolve, reject);
+    });
+    const pending = tell('Take the decks');
+    for (let i = 0; i < 150 && !release; i += 1) await new Promise((r) => setTimeout(r, 20));
+    s.apply({ name: 'setClipGain', args: { clipId: drums.id, gainDb: -9 } });
+    release();
+    await pending;
+    assert.equal(s.state.clips.find((clip) => clip.id === drums.id).clipGainDb, -9);
+    assert.match(await tell('Take back'), /decks are yours/);
+    assert.equal(s.state.clips.find((clip) => clip.id === drums.id).clipGainDb, -9);
+  } finally {
+    ANALYSIS.B.sections[0].meanChroma = match;
+    ANALYSIS.B.sections[1].meanChroma = decoy;
+  }
+});
+
+test('a hand edit between a take and a later move is not undone', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const drums = s.state.clips.find((clip) => clip.trackIndex === 1);
+  s.apply({ name: 'setClipGain', args: { clipId: drums.id, gainDb: -9 } });
+  await tell('Put it at bar 17');
+  assert.match(await tell('Take back'), /decks are yours/);
+  assert.equal(s.state.clips.find((clip) => clip.id === drums.id).clipGainDb, -9);
+  assert.notEqual(ideaClip(s).timelineStartBeat, 64);
+});
+
+test('moving the passage moves its entrance with it', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  await tell('Put it at bar 17');
+  const points = s.state.tracks[4].gainPoints;
+  assert.ok(points.length >= 2 && points[0].beat >= 64, `entrance starts at ${points[0]?.beat}`);
+});
+
+test('several Producer moves still Take back as one experiment', async () => {
+  const { s, tell } = await mounted();
+  const strip = (text) => {
+    const copy = JSON.parse(text);
+    delete copy.transport.playheadBeat;
+    delete copy.transport.isPlaying;
+    return JSON.stringify(copy);
+  };
+  const origin = strip(s.edit.serialize());
+  await tell('Take the decks');
+  for (const bar of [17, 18, 19, 20, 21, 22]) await tell(`Put it at bar ${bar}`);
+  assert.match(await tell('Take back'), /decks are yours/);
+  assert.equal(strip(s.edit.serialize()), origin);
+});
+
+test('a new arrangement during a take does not receive the old passage', async () => {
+  const match = ANALYSIS.B.sections[0].meanChroma.slice();
+  const decoy = ANALYSIS.B.sections[1].meanChroma.slice();
+  ANALYSIS.B.sections[0].meanChroma = decoy.slice();
+  ANALYSIS.B.sections[1].meanChroma = match.slice();
+  try {
+    const { s, tell } = await mounted();
+    let release;
+    s.loadSource = () => new Promise((resolve) => { release = resolve; });
+    const pending = tell('Take the decks');
+    for (let i = 0; i < 150 && !release; i += 1) await new Promise((r) => setTimeout(r, 20));
+    await s.newProject();
+    release();
+    const said = await pending;
+    assert.match(said, /new arrangement/);
+    assert.equal(s.state.clips.length, 0);
+  } finally {
+    ANALYSIS.B.sections[0].meanChroma = match;
+    ANALYSIS.B.sections[1].meanChroma = decoy;
+  }
+});
