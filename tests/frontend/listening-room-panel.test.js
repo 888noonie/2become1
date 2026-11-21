@@ -157,19 +157,89 @@ test('Hear mine and Reject leave the arrangement exactly as it was', async () =>
 });
 
 test('“undo that idea” and “keep it” work by voice too', async () => {
-  const { s, prod, tell } = await mounted([
-    HEADLINE, { action: 'hear_idea', reply: 'Here.' }, { action: 'undo_idea', reply: 'Back.' },
-    HEADLINE, { action: 'keep', reply: 'Kept.' },
+  const { s, prod, calls, tell } = await mounted([
+    HEADLINE, HEADLINE,
+    { action: 'hear_idea', reply: 'Here.' },
+    HEADLINE,
+    { action: 'hear_idea', reply: 'Here.' },
   ]);
+  await tell('second chorus of B at bar 17');
+  const preview = calls.filter((c) => c.url === '/api/producer/converse').length;
+  assert.match(await tell('keep it'), /set aside/);
+  assert.equal(ideaClip(s), undefined, 'keep while previewing discards the idea');
+  assert.equal(calls.filter((c) => c.url === '/api/producer/converse').length, preview);
+
   await tell('second chorus of B at bar 17');
   await tell('let me hear it');
   assert.ok(ideaClip(s));
   assert.match(await tell('undo that idea'), /Undone/);
   assert.equal(ideaClip(s), undefined);
   await tell('second chorus of B at bar 17 again');
+  await tell('let me hear it');
   await tell('keep it');
-  assert.ok(ideaClip(s), 'keep by voice hears and keeps the idea');
+  assert.ok(ideaClip(s), 'keep after Hear it keeps the idea that is playing');
   assert.equal([...prod.querySelectorAll('button')].find((b) => b.textContent === 'Undo')?.disabled, false);
+});
+
+test('“let me hear mine again” does not call the model', async () => {
+  const { s, calls, tell } = await mounted([
+    HEADLINE, { action: 'hear_idea', reply: 'Here.' },
+  ]);
+  await tell('second chorus of song B at bar 17');
+  await tell('let me hear it');
+  assert.ok(ideaClip(s));
+  const n = calls.filter((c) => c.url === '/api/producer/converse').length;
+  assert.match(await tell('let me hear mine again'), /your version/);
+  assert.equal(ideaClip(s), undefined);
+  assert.equal(calls.filter((c) => c.url === '/api/producer/converse').length, n);
+});
+
+test('“play” calls the session and “play the second chorus” still asks the model', async () => {
+  const { s, calls, tell } = await mounted([{ action: 'clarify', question: 'Which chorus?', reply: '' }]);
+  let plays = 0;
+  s.play = async () => { plays += 1; return true; };
+  assert.match(await tell('play'), /Playing/);
+  assert.equal(plays, 1);
+  assert.equal(calls.some((c) => c.url === '/api/producer/converse'), false);
+  await tell('play the second chorus');
+  assert.equal(plays, 1);
+  assert.equal(calls.filter((c) => c.url === '/api/producer/converse').length, 1);
+});
+
+test('a hand-added point drops the pending vocal entrance', async () => {
+  const { s, prod, tell } = await mounted([{ action: 'adjust', reply: 'ok', fade_in: 4 }]);
+  const orig = s.edit.propose.bind(s.edit);
+  s.edit.propose = (cmd) => {
+    const names = (cmd.args?.commands ?? []).map((c) => c.name);
+    if (names.includes('setTrackGainEnvelope')) return { id: 'env', command: cmd, status: 'pending' };
+    return orig(cmd);
+  };
+  await tell('bring song B vocals in gradually across four bars');
+  assert.match(prod.querySelector('.daw__producer-status').textContent, /fader stays/);
+  s.state.tracks[4].gainPoints = [{ beat: 8, db: -12 }];
+  await new Promise((r) => setTimeout(r, 800));
+  assert.match(prod.querySelector('.daw__producer-status').textContent, /set aside/);
+  assert.equal(prod.querySelector('.daw__producer-list').textContent, '');
+  assert.deepEqual(s.state.tracks[4].gainPoints, [{ beat: 8, db: -12 }]);
+});
+
+test('a four-bar vocal entrance is proposed as setTrackGainEnvelope and does not move the fader', async () => {
+  const { s, calls, tell } = await mounted([{ action: 'adjust', reply: 'Fading.', fade_in: 16, bar: 1 }]);
+  const vocal = s.state.clips.find((c) => c.trackIndex === 4);
+  assert.equal(s.apply({ name: 'moveClip', args: { clipId: vocal.id, newTrackIndex: 4, newStartBeat: 64 } }).ok, true);
+  assert.equal(s.apply({ name: 'setTrackVolume', args: { trackIndex: 4, volumeDb: -6 } }).ok, true);
+  const seen = [];
+  const orig = s.edit.propose.bind(s.edit);
+  s.edit.propose = (cmd) => { seen.push(cmd); return orig(cmd); };
+  const said = await tell('bring song B vocals in gradually across four bars');
+  const cmds = seen.flatMap((c) => c.args?.commands ?? []);
+  const env = cmds.find((c) => c.name === 'setTrackGainEnvelope');
+  assert.ok(env, said);
+  assert.equal(env.args.trackIndex, 4);
+  assert.deepEqual(env.args.points, [{ beat: 64, db: -60 }, { beat: 80, db: 0 }]);
+  assert.equal(s.state.tracks[4].volumeDb, -6);
+  assert.equal(s.state.tracks[4].gainPoints, undefined);
+  assert.equal(calls.filter((c) => c.url === '/api/producer/converse').length, 1);
 });
 
 test('a question, an unsupported request and a model outage are said plainly; hand editing still works', async () => {

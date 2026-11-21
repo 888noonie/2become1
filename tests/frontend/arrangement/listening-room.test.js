@@ -13,7 +13,7 @@ import { EditEngine } from '../../../src/twobecomeone/studio_static/js/arrangeme
 import { compileRenderPlan } from '../../../src/twobecomeone/studio_static/js/arrangement/render-plan.js';
 import { beatsToSourceSeconds, sourceAdvanceRate } from '../../../src/twobecomeone/studio_static/js/arrangement/time-math.js';
 import {
-  applyIntent, buildIdea, clipObject, clipSourceRange, passageSource, projectSummary, refusalText,
+  applyIntent, buildIdea, clipObject, clipSourceRange, localCommand, passageSource, projectSummary, refusalText,
 } from '../../../src/twobecomeone/studio_static/js/arrangement/producer-intent.js';
 
 const SR = 48000;
@@ -288,6 +288,145 @@ test('the mixer: “mute my other lane” is an ordinary track field; an existin
   assert.equal(after.startBeat, 4);
   assert.equal(after.fadeIn, 1);
   assert.equal(after.sourceOffsetSec, drums.sourceOffsetSec);
+});
+
+test('local commands are the whole utterance: “let me hear mine again” is hear_mine, “play the second chorus” is not Play', () => {
+  assert.deepEqual(localCommand('let me hear mine again', {}), { control: 'hear_mine' });
+  assert.deepEqual(localCommand('Let me hear mine!', {}), { control: 'hear_mine' });
+  assert.deepEqual(localCommand('play', {}), { transport: 'play' });
+  assert.deepEqual(localCommand('stop', {}), { transport: 'stop' });
+  assert.equal(localCommand('play the second chorus', {}), null);
+  assert.equal(localCommand('keep it quieter', {}), null);
+});
+
+test('“the other song” follows mine, an explicit song wins, and an unset mine is a question', () => {
+  const { e, groups, analyses } = session();
+  const base = { state: e.state, analyses, groups, resolved: {} };
+  const wrong = { action: 'propose', song: 'A', stem: 'vocals', section: 'B:s9', bar: 9, beat: 1 };
+  const other = applyIntent(null, wrong, { ...base, mine: 'A', sentence: 'take the vocals from the other song' });
+  assert.equal(other.spec.main.song, 'B');
+  assert.equal(other.spec.main.passage.name, 'chorus 3', 'the sentence did not say second chorus, so the model’s section stays');
+  const named = applyIntent(null, { ...wrong, song: 'A' }, {
+    ...base, mine: 'B', sentence: 'put song B, the other song, vocals at bar 9',
+  });
+  assert.equal(named.spec.main.song, 'B', 'song B wins over the other song');
+  const unset = applyIntent(null, { ...wrong, song: 'B', section: 'B:s4' }, {
+    ...base, mine: null, sentence: 'take the vocals from the other song',
+  });
+  assert.ok(!unset.spec);
+  assert.match(unset.ask, /will not guess/);
+  assert.equal(unset.song, undefined);
+});
+
+test('“second chorus” is the second chorus section, and a missing one is a question', () => {
+  const { e, groups, analyses } = session();
+  const base = { state: e.state, analyses, groups, resolved: {}, mine: 'A' };
+  const later = applyIntent(null, {
+    action: 'propose', song: 'A', stem: 'vocals', section: 'B:s9', bar: 17, beat: 1,
+  }, { ...base, sentence: 'use the second chorus of the other song' });
+  assert.equal(later.spec.main.song, 'B');
+  assert.equal(later.spec.main.passage.name, 'chorus 2');
+  assert.equal(later.spec.main.passage.sectionId, 's4');
+  const onlyOne = structuredClone(analyses);
+  onlyOne.B.sections = onlyOne.B.sections.filter((s) => s.id !== 's4' && s.id !== 's9');
+  const missing = applyIntent(null, {
+    action: 'propose', song: 'B', stem: 'vocals', section: 'B:s3', bar: 9,
+  }, { ...base, analyses: onlyOne, sentence: 'the second chorus of song B' });
+  assert.ok(!missing.spec);
+  assert.match(missing.ask, /can't find a second chorus/);
+  assert.equal(JSON.stringify(missing).includes('chorus 2'), false);
+});
+
+test('“half a beat earlier” shifts by -0.5 and leaves the slipped in-point, pitch, fades and gain', () => {
+  const { e, groups, analyses } = session();
+  const ctx = { state: e.state, analyses, groups, resolved: {} };
+  let out = applyIntent(null, {
+    action: 'propose', song: 'B', stem: 'vocals', section: 'B:s4', bar: 9, beat: 1, pitch: 2, fade_in: 2, gain_db: -3,
+  }, ctx);
+  const { built } = realise(e, out.spec, { analyses, groups });
+  e.run({ name: 'batch', args: { commands: commandsOf(e.state, built) } });
+  const placed = ideaClip(e);
+  const slipped = placed.sourceOffsetSec + 1.5;
+  e.run({ name: 'slipClip', args: { clipId: placed.id, sourceOffsetSec: slipped } });
+  const before = clipObject(e.state, placed.id);
+  assert.equal(before.startBeat, 32);
+  out = applyIntent(out.spec, {
+    action: 'adjust', bar: 9, beat: 1, shift_beats: 1, pitch: 0, fade_in: 0, gain_db: 0, section: 'B:s3',
+  }, { ...ctx, state: e.state, sentence: 'half a beat earlier' });
+  assert.equal(out.spec.main.startBeat, 31.5);
+  assert.equal(out.spec.main.pitch, 2);
+  assert.equal(out.spec.main.fadeIn, 2);
+  assert.equal(out.spec.main.gainDb, -3);
+  assert.equal(out.spec.main.sourceOffsetSec, slipped);
+  const again = buildIdea(e.state, out.spec, { analyses, groups, records: records(realise(e, out.spec, { analyses, groups }).url) });
+  const ideaCmds = commandsOf(e.state, again).filter((c) => c.args?.clipId === placed.id || c.args?.newClipId === placed.id);
+  assert.deepEqual(ideaCmds.map((c) => c.name), ['moveClip']);
+  e.run({ name: 'batch', args: { commands: commandsOf(e.state, again) } });
+  const after = clipObject(e.state, placed.id);
+  assert.equal(after.startBeat, 31.5);
+  assert.equal(after.sourceOffsetSec, slipped);
+  assert.equal(after.pitch, 2);
+  assert.equal(after.fadeIn, 2);
+  assert.equal(after.fadeOut, before.fadeOut);
+  assert.equal(after.gainDb, -3);
+});
+
+test('a four-bar vocal entrance is setTrackGainEnvelope from the vocal clip, and two unnamed vocal lanes are a question', () => {
+  const { e, groups, analyses } = session();
+  const ctx = { state: e.state, analyses, groups, resolved: {}, mine: 'A' };
+  const both = applyIntent(null, { action: 'adjust', fade_in: 16, bar: 1 }, {
+    ...ctx, sentence: 'bring the vocals in gradually across four bars',
+  });
+  assert.ok(!both.spec, JSON.stringify(both));
+  assert.match(both.ask, /Which song's vocals/);
+  assert.equal(JSON.stringify(both).includes('setTrackGainEnvelope'), false);
+
+  e.setTrackVolume(4, -6);
+  const vocal = e.state.clips.find((c) => c.trackIndex === 4);
+  e.run({ name: 'moveClip', args: { clipId: vocal.id, newTrackIndex: 4, newStartBeat: 64 } });
+  const named = applyIntent(null, { action: 'adjust', fade_in: 16, bar: 1 }, {
+    ...ctx, state: e.state, sentence: 'bring song B vocals in gradually across four bars',
+  });
+  const built = buildIdea(e.state, named.spec, { analyses, groups });
+  assert.deepEqual(commandsOf(e.state, built), [{
+    name: 'setTrackGainEnvelope',
+    args: { trackIndex: 4, points: [{ beat: 64, db: -60 }, { beat: 80, db: 0 }] },
+  }]);
+  assert.equal(e.state.tracks[4].volumeDb, -6);
+  assert.equal(e.state.tracks[4].gainPoints, undefined);
+  const first = applyIntent(null, { action: 'propose' }, {
+    ...ctx, state: e.state, sentence: 'fade song B vocals in across the first four bars',
+  });
+  const firstCmds = commandsOf(e.state, buildIdea(e.state, first.spec, { analyses, groups }));
+  assert.deepEqual(firstCmds[0].args.points, [{ beat: 0, db: -60 }, { beat: 16, db: 0 }]);
+  assert.equal(firstCmds[0].args.trackIndex, 4);
+
+  const onlyB = {
+    transport: { timeSignature: [3, 4], masterBpm: 120 },
+    tracks: Array.from({ length: 8 }, (_, i) => ({ trackIndex: i, name: `T${i}`, volumeDb: -6, mute: false, solo: false })),
+    clips: [{ id: 'v', trackIndex: 4, timelineStartBeat: 6, durationBeats: 12, sourceOffsetSec: 0, pitchSemitones: 0, fadeInBeats: 0, fadeOutBeats: 0, clipGainDb: 0, assetId: 'a' }],
+    assets: { a: {} },
+  };
+  const one = applyIntent(null, { action: 'answer', reply: 'ok' }, {
+    state: onlyB, analyses, groups: { B: groups.B }, resolved: {}, mine: 'A',
+    sentence: 'fade the vocals in over four bars',
+  });
+  const oneCmds = commandsOf(onlyB, buildIdea(onlyB, one.spec, {}));
+  assert.equal(oneCmds[0].name, 'setTrackGainEnvelope');
+  assert.equal(oneCmds[0].args.trackIndex, 4);
+  assert.deepEqual(oneCmds[0].args.points, [{ beat: 6, db: -60 }, { beat: 18, db: 0 }]);
+  assert.equal(oneCmds.some((c) => c.name === 'setTrackVolume'), false);
+});
+
+test('the next summary shows the clips and any gain points as they are now', () => {
+  const { e, groups } = session();
+  const drums = e.state.clips.find((c) => c.trackIndex === 1);
+  e.run({ name: 'moveClip', args: { clipId: drums.id, newTrackIndex: 1, newStartBeat: 8 } });
+  e.state.tracks[4].gainPoints = [{ beat: 64, db: -60 }, { beat: 80, db: 0 }];
+  const sum = projectSummary(e.state, { groups, mine: 'A' });
+  assert.equal(sum.lanes[1].clips[0].startBar, 3);
+  assert.deepEqual(sum.lanes[4].gainPoints, [{ beat: 64, db: -60 }, { beat: 80, db: 0 }]);
+  assert.equal(sum.lanes[0].gainPoints, undefined);
 });
 
 test('the model is told the session briefly and accurately (ids, bars, sources, the idea)', () => {

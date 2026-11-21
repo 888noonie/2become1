@@ -252,6 +252,9 @@ Actions:
 Rules:
 - Use ONLY ids that appear in the SESSION. Never invent a section, clip or lane.
 - "the second chorus" means the section named "chorus 2" (see the "In song" shortcuts). Use clarify only when no such section is listed.
+- "song A" or "song B" is explicit and wins over "the other song". If the SESSION says neither song is the musician's, ask which one. Do not guess.
+- "half a beat earlier" is shift_beats -0.5 and "half a beat later" is shift_beats 0.5. Do not also set bar, pitch, fade, or gain.
+- "let me hear mine" and "let me hear mine again" are hear_mine. hear_idea is only for hearing the current idea ("hear it", "hear the idea").
 - "can I hear the drums from the third chorus" asks for a NEW idea (propose). hear_idea is only for hearing the CURRENT IDEA again.
 - Directions: up, higher, later, louder, longer are positive numbers; down, lower, earlier, quieter, shorter are negative.
 - Lanes: a stem goes onto its own song's lane (B vocals -> lane B Vocals). "over my drums" only says what plays underneath.
@@ -303,6 +306,8 @@ EXAMPLES = [
      {"asks": ["choose_part"], "reply": "I can't find a bridge in song B. Which part do you mean?", "action": "clarify", "question": "Which part of song B do you mean: verse 1, chorus 1 or chorus 2?"}),
     (_IDEA, "nah, undo that",
      {"asks": ["hear_keep_undo"], "reply": "Back to your version.", "action": "undo_idea"}),
+    (_IDEA, "let me hear mine again",
+     {"asks": ["hear_keep_undo"], "reply": "Here's your version.", "action": "hear_mine"}),
     ("none", "mute my other lane",
      {"asks": ["mute_or_solo"], "reply": "Muting A Other.", "action": "propose", "lane": "A Other", "mute": True}),
 ]

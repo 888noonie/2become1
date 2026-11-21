@@ -17,6 +17,7 @@
 // shared time-math (fit to project tempo or the stem's own speed).
 
 import { GROUP_BASE, ROLES, ROLE_LABEL } from './daw-session.js';
+import { MIN_VOLUME_DB } from './project-state.js';
 import { MIN_CLIP_DURATION_BEATS, beatsToSourceSeconds, sourceAdvanceRate } from './time-math.js';
 
 export const LEAD_BARS = 1; // source kept before the passage, so it can be slipped earlier
@@ -69,6 +70,7 @@ export function projectSummary(state, { groups = {}, selectedClipId = null, spec
     idea: spec ? describeSpec(state, spec) : null,
     lanes: state.tracks.map((t) => ({
       name: t.name, mute: t.mute, solo: t.solo, volumeDb: t.volumeDb,
+      ...(Array.isArray(t.gainPoints) && t.gainPoints.length ? { gainPoints: t.gainPoints } : {}),
       clips: state.clips.filter((c) => c.trackIndex === t.trackIndex).map((c) => {
         const asset = state.assets[c.assetId];
         const src = clipSourceRange(state, c);
@@ -94,6 +96,11 @@ export function describeSpec(state, spec) {
   }
   for (const [id, c] of Object.entries(spec.clips ?? {})) parts.push(`${id} changed: ${Object.entries(c).map(([k, v]) => `${k} ${v}`).join(', ')}`);
   for (const [i, m] of Object.entries(spec.mixer ?? {})) parts.push(`${state.tracks[i]?.name}: ${Object.entries(m).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+  for (const [i, points] of Object.entries(spec.envelopes ?? {})) {
+    const name = state.tracks[i]?.name ?? `track ${i}`;
+    const end = points[points.length - 1];
+    parts.push(`${name} level from ${points[0].db} dB offset at beat ${points[0].beat} to ${end.db} dB offset at beat ${end.beat}, fader unchanged`);
+  }
   return `${parts.join('; ')}${spec.heard ? ' (being heard)' : ' (not heard yet)'}`;
 }
 
@@ -143,13 +150,160 @@ function passageFromSection(analysis, sectionId) {
   };
 }
 
+// Whole utterances only. A substring of "play" must not start transport.
+const UTTERANCE = new Map([
+  ['hear mine', 'hear_mine'],
+  ['hear my version', 'hear_mine'],
+  ['let me hear mine', 'hear_mine'],
+  ['let me hear mine again', 'hear_mine'],
+  ['play mine', 'hear_mine'],
+  ['hear the idea', 'hear_idea'],
+  ['hear it', 'hear_idea'],
+  ['hear that idea', 'hear_idea'],
+  ['keep it', 'keep'],
+  ['keep that', 'keep'],
+  ['reject that', 'reject'],
+  ['throw it away', 'reject'],
+  ['undo that', 'undo_idea'],
+  ['undo that idea', 'undo_idea'],
+  ['play', 'play'],
+  ['stop', 'stop'],
+]);
+
+function normUtterance(text) {
+  return String(text ?? '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Deterministic front door. `text` must be the whole utterance: "play the
+ * second chorus" is not Play, and "let me hear mine again" is hear_mine.
+ */
+export function localCommand(text, project) {
+  void project;
+  const hit = UTTERANCE.get(normUtterance(text));
+  if (!hit) return null;
+  if (hit === 'play' || hit === 'stop') return { transport: hit };
+  return { control: hit };
+}
+
+function namedSong(sentence) {
+  const m = String(sentence).match(/\bsong\s+([ab])\b/i);
+  return m ? m[1].toUpperCase() : null;
+}
+
+function saysOtherSong(sentence) {
+  return /\bthe other song\b/i.test(sentence);
+}
+
+function halfBeatShift(sentence) {
+  const m = String(sentence).match(/\bhalf a beat (earlier|later)\b/i);
+  if (!m) return null;
+  return m[1].toLowerCase() === 'later' ? 0.5 : -0.5;
+}
+
+function songsWithVocals(state, groups) {
+  return ['A', 'B'].filter((g) => groups[g] && state.clips.some((c) => c.trackIndex === laneIndex(g, 'vocals')));
+}
+
+/** A level move over time, not a clip fade. Null when the sentence is not one. */
+function entranceRequest(sentence) {
+  const n = normUtterance(sentence);
+  if (!/\b(?:bring|fade)\b/.test(n) || !/\bvocals?\b/.test(n) || !/\bin\b/.test(n)) return null;
+  if (!/\b(?:four|4) bars\b/.test(n) || !/\b(?:gradually|across|over)\b/.test(n)) return null;
+  return { first: /\bfirst four bars\b/.test(n) };
+}
+
+function vocalEntrance(sentence, entrance, ctx) {
+  const { state, groups = {} } = ctx;
+  let song = namedSong(sentence);
+  if (!song && saysOtherSong(sentence)) {
+    if (ctx.mine !== 'A' && ctx.mine !== 'B') return { ask: 'Which song is yours? I will not guess the other one.' };
+    song = ctx.mine === 'A' ? 'B' : 'A';
+    if (!groups[song]) return { ask: 'I only see one song on the lanes. Which song do you mean?' };
+  }
+  if (!song) {
+    const present = songsWithVocals(state, groups);
+    if (present.length !== 1) {
+      return { ask: present.length ? "Which song's vocals should come in, A or B?" : "I can't see a vocal lane to bring in." };
+    }
+    song = present[0];
+  }
+  if (!groups[song]) return { ask: `Song ${song} isn't on the lanes yet.` };
+  const trackIndex = laneIndex(song, 'vocals');
+  if (trackIndex < 0) return { ask: "I can't see a vocal lane to bring in." };
+  const clips = state.clips.filter((c) => c.trackIndex === trackIndex);
+  if (!clips.length && !entrance.first) return { ask: "I can't see that vocal clip, so I won't invent a bar." };
+  const bpb = state.transport.timeSignature[0];
+  const start = entrance.first ? 0 : Math.min(...clips.map((c) => c.timelineStartBeat));
+  const points = [
+    { beat: rt(start), db: MIN_VOLUME_DB },
+    { beat: rt(start + 4 * bpb), db: 0 },
+  ];
+  return {
+    spec: {
+      main: null, clips: {}, mixer: {}, envelopes: { [trackIndex]: points }, heard: false, fresh: true,
+    },
+  };
+}
+
+/**
+ * The model does not get the last word on the phrases it has already missed.
+ * The raw sentence is what the musician typed.
+ */
+function applySentence(intentIn, ctx) {
+  const sentence = ctx.sentence;
+  if (!sentence) return { intent: intentIn };
+  const entrance = entranceRequest(sentence);
+  if (entrance) return vocalEntrance(sentence, entrance, ctx);
+  const intent = { ...intentIn };
+  const explicit = namedSong(sentence);
+  if (explicit) intent.song = explicit;
+  else if (saysOtherSong(sentence)) {
+    if (ctx.mine !== 'A' && ctx.mine !== 'B') return { ask: 'Which song is yours? I will not guess the other one.' };
+    const other = ctx.mine === 'A' ? 'B' : 'A';
+    if (!ctx.groups?.[other]) return { ask: 'I only see one song on the lanes. Which song do you mean?' };
+    intent.song = other;
+  }
+  if (intent.song && intent.section && !String(intent.section).startsWith(`${intent.song}:`)) delete intent.section;
+  if (/\bsecond chorus\b/i.test(sentence) && intent.action !== 'unsupported') {
+    const song = intent.song || (intent.section ? String(intent.section).split(':')[0] : null);
+    if (!song) return { ask: "Which song's second chorus do you mean?" };
+    const choruses = (ctx.analyses?.[song]?.sections ?? []).filter((s) => s.label === 'chorus');
+    const second = choruses[1];
+    if (!second) return { ask: `I can't find a second chorus in song ${song}. Which part do you mean?` };
+    intent.song = song;
+    intent.section = `${song}:${second.id}`;
+    if (intent.action !== 'propose' && intent.action !== 'adjust') intent.action = 'propose';
+  }
+  const nudge = halfBeatShift(sentence);
+  if (nudge !== null) {
+    delete intent.bar;
+    delete intent.beat;
+    intent.shift_beats = nudge;
+    if (!/\b(pitch|semitone|fade|louder|quieter|gain|db)\b/i.test(sentence)) {
+      for (const k of ['pitch', 'pitch_change', 'fade_in', 'fade_out', 'fade_in_change', 'fade_out_change', 'gain_db', 'gain_change_db']) delete intent[k];
+    }
+    intent._halfBeat = true;
+    if (!/\b(chorus|verse|bridge|intro|outro|section)\b/i.test(sentence)) {
+      intent.action = 'adjust';
+      delete intent.section;
+      delete intent.lyric;
+    }
+  }
+  return { intent };
+}
+
 /**
  * Fold one model intent into the conversation's idea. Returns
  * {spec} (a new or refined idea), {ask} (a short question), {say} (an honest
  * answer with no edit), or {control} (hear/keep/reject/undo/relabel).
+ * `ctx.sentence` is the musician's raw sentence, used after the model answers.
  */
 export function applyIntent(prev, intentIn, ctx) {
-  let intent = intentIn;
+  const read = applySentence(intentIn, ctx);
+  if (read.ask) return { ask: read.ask };
+  if (read.spec) return { spec: read.spec };
+  let intent = read.intent;
   const { state, analyses = {}, groups = {}, resolved = {}, selectedClipId = null, pending = null } = ctx;
   // The answer to our own question ("which part of song B?") completes what
   // the musician already said: song, stem and bar carry over.
@@ -229,6 +383,11 @@ export function applyIntent(prev, intentIn, ctx) {
       clipId: nextClipId(state, prev?.main ? [prev.main.clipId] : []),
     };
     spec.main = { ...base, song, stem, passage, heardNote, lengthBars: action === 'adjust' ? base.lengthBars : null };
+    // A new passage has its own in-point. A relative move keeps the one the clip already has.
+    if (!(action === 'adjust' && !intent.section)) {
+      delete spec.main.sourceOffsetSec;
+      delete spec.main.durationBeats;
+    }
     if (!NUMBER(intent.bar) && spec.main.startBeat === null) {
       spec.main = applyChanges(spec.main, intent, { bpb });
       return { spec, ask: `Where should ${passage.name} come in? Tell me a bar.` , pendingPosition: true };
@@ -268,6 +427,14 @@ export function applyIntent(prev, intentIn, ctx) {
     touched = true;
   }
   if (!touched) return { say: "I couldn't turn that into a change. I can choose a part of a song, place or move it, pitch it, fade it, change its level or speed, and mute or solo lanes." };
+  // "Half a beat earlier" must not rebuild the in-point from the passage.
+  if (intent._halfBeat && spec.main) {
+    const clip = state.clips.find((c) => c.id === spec.main.clipId);
+    if (clip) {
+      spec.main.sourceOffsetSec = clip.sourceOffsetSec;
+      spec.main.durationBeats = clip.durationBeats;
+    }
+  }
   if (spec.main && spec.main.startBeat !== null && spec.main.startBeat < -1e-9) return { say: 'That would start before bar 1.' };
   return { spec };
 }
@@ -404,21 +571,29 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
     const record = records[src.url];
     if (!record) return { needsSource: src.url, fields: [] };
     const nativeBpm = Number(group.bpm) || analysis.bpm;
-    const lengthSec = Math.min(src.lengthSec, record.durationSec - src.inPoint);
-    if (lengthSec <= 0) return { refusal: 'That passage is past the end of the stem.', fields: [] };
+    // A remembered in-point (a slip, or a half-beat nudge) is the clip's own.
+    // Rebuilding it from the passage lead would slip the lyric.
+    const inPoint = NUMBER(m.sourceOffsetSec) ? m.sourceOffsetSec : src.inPoint;
     const asset = { nativeBpm, durationSec: record.durationSec };
     const fake = { stretchMode: m.speed === 'fit' ? 'beat_sync' : 'manual', customStretchRatio: m.speed === 'fit' ? null : 1 };
     const rate = sourceAdvanceRate(fake, asset, bpm);
-    // Floor to the nanobeat so the clip never asks for a sample past the cut.
-    let durationBeats = Math.floor((lengthSec / rate) * (bpm / 60) * ROUND) / ROUND;
-    // Section times are bar-grid estimates rounded to 0.1 ms: a length within
-    // a thousandth of a beat of a whole beat IS that many beats (rounded down,
-    // so the clip still ends inside the cut).
-    if (durationBeats - Math.floor(durationBeats) < 1e-3) durationBeats = Math.floor(durationBeats);
-    durationBeats = Math.max(MIN_CLIP_DURATION_BEATS, durationBeats);
+    let durationBeats;
+    if (NUMBER(m.sourceOffsetSec) && NUMBER(m.durationBeats) && !NUMBER(m.lengthBars)) {
+      durationBeats = m.durationBeats;
+    } else {
+      const lengthSec = Math.min(src.lengthSec, record.durationSec - inPoint);
+      if (lengthSec <= 0) return { refusal: 'That passage is past the end of the stem.', fields: [] };
+      // Floor to the nanobeat so the clip never asks for a sample past the cut.
+      durationBeats = Math.floor((lengthSec / rate) * (bpm / 60) * ROUND) / ROUND;
+      // Section times are bar-grid estimates rounded to 0.1 ms: a length within
+      // a thousandth of a beat of a whole beat IS that many beats (rounded down,
+      // so the clip still ends inside the cut).
+      if (durationBeats - Math.floor(durationBeats) < 1e-3) durationBeats = Math.floor(durationBeats);
+      durationBeats = Math.max(MIN_CLIP_DURATION_BEATS, durationBeats);
+    }
     const trackIndex = laneIndex(m.song, m.stem);
     const want = ordered({
-      exists: true, ref: src.url, trackIndex, startBeat: rt(m.startBeat), sourceOffsetSec: rt(src.inPoint), durationBeats,
+      exists: true, ref: src.url, trackIndex, startBeat: rt(m.startBeat), sourceOffsetSec: rt(inPoint), durationBeats,
       pitch: m.pitch, fadeIn: m.fadeIn, fadeOut: m.fadeOut, gainDb: m.gainDb, speed: m.speed,
     });
     const load = {
@@ -490,6 +665,24 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
       fields.push(trackFieldFor(Number(i), key, value));
       notes.push(`${state.tracks[i].name} ${key === 'volumeDb' ? `level ${value} dB` : key === 'mute' ? (value ? 'muted' : 'unmuted') : (value ? 'solo' : 'not solo')}`);
     }
+  }
+  for (const [i, points] of Object.entries(spec.envelopes ?? {})) {
+    const index = Number(i);
+    const track = state.tracks[index];
+    if (!track || !Array.isArray(points) || points.length < 2) return { refusal: "I can't see that vocal lane.", fields: [] };
+    const end = points[points.length - 1];
+    fields.push({
+      key: `${index}:gainEnvelope`,
+      envelope: true,
+      trackIndex: index,
+      anchorVolumeDb: track.volumeDb,
+      value: points,
+      label: (st) => `${st.tracks[index].name} entrance`,
+      read: (st) => (st.tracks[index].gainPoints ?? []).map((p) => ({ beat: p.beat, db: p.db })),
+      command: (_st, v) => ({ name: 'setTrackGainEnvelope', args: { trackIndex: index, points: v ?? [] } }),
+      show: (v) => (Array.isArray(v) && v.length ? v.map((p) => `beat ${p.beat}: ${p.db} dB`).join(' → ') : 'cleared'),
+    });
+    notes.push(`${track.name} comes in from ${points[0].db} dB offset at beat ${points[0].beat} to the fader at beat ${end.beat}. The fader stays at ${track.volumeDb} dB.`);
   }
   return { fields, rationale: notes.join('; '), clipId: spec.main?.clipId };
 }

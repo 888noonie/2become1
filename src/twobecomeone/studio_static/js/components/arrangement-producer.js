@@ -17,7 +17,7 @@ import { createElement as h, replaceChildren } from '../dom.js';
 import { GROUP_BASE, ROLES, SAMPLE_RATE, peaksFor } from '../arrangement/daw-session.js';
 import { beatsToSourceSeconds, sourceAdvanceRate } from '../arrangement/time-math.js';
 import { MIN_CLIP_DURATION_BEATS } from '../arrangement/time-math.js';
-import { applyIntent, buildIdea, clipObject, mmss, projectSummary, refusalText } from '../arrangement/producer-intent.js';
+import { applyIntent, buildIdea, clipObject, localCommand, mmss, projectSummary, refusalText } from '../arrangement/producer-intent.js';
 
 /**
  * The same musical rule as the accepted Stem Desk suggester, as arrangement
@@ -246,8 +246,24 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   function noteHumanMoves() {
     if (!idea) return;
     const state = session.state;
+    const drop = [];
     for (const f of idea.fields) {
+      if (f.envelope) {
+        const tr = state.tracks[f.trackIndex];
+        const pointsNow = tr?.gainPoints ?? [];
+        if (tr && (tr.volumeDb !== f.anchorVolumeDb || !same(pointsNow, idea.last.get(f.key)))) drop.push(f);
+        continue;
+      }
       if (!idea.touched.has(f.key) && !same(f.read(state), idea.last.get(f.key))) idea.touched.add(f.key);
+    }
+    if (!drop.length) return;
+    // A hand edit of that entrance replaces the pending curve. Hear it must not write it back.
+    idea.fields = idea.fields.filter((f) => !drop.includes(f));
+    if (conv.spec?.envelopes) for (const f of drop) delete conv.spec.envelopes[f.trackIndex];
+    if (!idea.fields.length) {
+      idea = null;
+      conv.spec = null;
+      say('Your edit stands. That level move is set aside.');
     }
   }
 
@@ -481,7 +497,10 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (main && idea.touched.has(main.key)) {
       const now = clipObject(session.state, spec.main.clipId);
       if (now.exists) {
-        Object.assign(spec.main, { startBeat: now.startBeat, pitch: now.pitch, fadeIn: now.fadeIn, fadeOut: now.fadeOut, gainDb: now.gainDb });
+        Object.assign(spec.main, {
+          startBeat: now.startBeat, pitch: now.pitch, fadeIn: now.fadeIn, fadeOut: now.fadeOut, gainDb: now.gainDb,
+          sourceOffsetSec: now.sourceOffsetSec, durationBeats: now.durationBeats,
+        });
         // Their move is now part of the idea: the refined version keeps it,
         // and Hear mine / Undo still return to the arrangement from before.
         conv.absorbed = main.key;
@@ -535,8 +554,18 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   async function control(kind) {
     if (!idea) return 'There is no idea to do that with yet.';
     if (kind === 'hear_idea') { if (idea.hearing !== 'idea' && idea.hearing !== 'kept') hearToggle(); return 'Hearing the idea.'; }
-    if (kind === 'hear_mine') { if (idea.hearing === 'idea') hearToggle(); return 'Hearing your version.'; }
-    if (kind === 'keep') { if (idea.hearing === 'mine') hearToggle(); if (idea.hearing === 'idea') keepOrUndo(); return 'Kept it.'; }
+    if (kind === 'hear_mine') {
+      if (idea.hearing === 'idea') { hearToggle(); return 'Hearing your version.'; }
+      // Kept means their mix is no longer what is playing. Undo for real, or the words are a lie.
+      if (idea.hearing === 'kept') { keepOrUndo(); return 'Back to your version from before the idea.'; }
+      return 'Hearing your version.';
+    }
+    // While the preview is still theirs, Keep mine discards the idea. It must not apply it.
+    if (kind === 'keep') {
+      if (idea.hearing === 'mine') { keepOrUndo(); return 'Kept your version. The idea was set aside.'; }
+      if (idea.hearing === 'idea') { keepOrUndo(); return 'Kept it.'; }
+      return 'There is nothing new to keep.';
+    }
     if (kind === 'reject') { rejectIdea(); return 'Rejected. Your arrangement is as it was.'; }
     if (kind === 'undo_idea') {
       if (idea.hearing === 'kept') keepOrUndo(); else rejectIdea();
@@ -554,13 +583,28 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     line('you', message);
     try {
       const groups = session.groups();
-      if (!Object.keys(groups).length) { line('producer', 'Bring a song onto the lanes first, then tell me what to do with it.'); return; }
       noteHumanMoves();
       const spec = absorbHumanMoves(conv.spec ? structuredClone(conv.spec) : null);
       const project = projectSummary(session.state, {
         groups: Object.fromEntries(Object.entries(groups).map(([g, v]) => [g, { trackId: v.trackId, title: v.title, bpm: v.bpm }])),
         selectedClipId: selectedClipId(), spec, mine: mineGroup(),
       });
+      const local = localCommand(message, project);
+      if (local?.transport && typeof session[local.transport] === 'function') {
+        let reply;
+        if (local.transport === 'play') reply = (await session.play()) ? 'Playing.' : 'Play did not start.';
+        else { session.stop(); reply = 'Stopped.'; }
+        line('producer', reply, 'is-local');
+        say(reply);
+        return;
+      }
+      if (local?.control) {
+        const reply = await control(local.control);
+        line('producer', reply, 'is-local');
+        say(reply);
+        return;
+      }
+      if (!Object.keys(groups).length) { line('producer', 'Bring a song onto the lanes first, then tell me what to do with it.'); return; }
       say('Thinking…');
       const answer = await json('/api/producer/converse', {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -570,6 +614,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       const { intent, resolved, model } = answer;
       const outcome = applyIntent(spec, intent, {
         state: session.state, analyses: conv.analyses, groups, resolved, selectedClipId: selectedClipId(), pending: conv.pending,
+        sentence: message, mine: project.mine,
       });
       conv.pending = outcome.pending ?? null;
       let reply;
