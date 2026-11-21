@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { arrangementBeatForSource, chorusUtterance, deckChoice, pitchFor, playbackSpeed, scoredRows } from '../../src/twobecomeone/studio_static/js/arrangement/chorus-fit.js';
+import { arrangementBeatForSource, arrangementPlans, chorusUtterance, deckChoice, measurePlan, pickPlan, pitchFor, playbackSpeed, scoredRows, stylePlan } from '../../src/twobecomeone/studio_static/js/arrangement/chorus-fit.js';
 
 test('the musician’s phrases stay deterministic', () => {
   assert.deepEqual(chorusUtterance('Which part of B fits this chorus?'), { kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
@@ -18,6 +18,15 @@ test('the musician’s phrases stay deterministic', () => {
   assert.deepEqual(chorusUtterance('Play the idea at its own speed'), { kind: 'speed', speed: 'natural' });
   assert.equal(chorusUtterance('Make the fade gentler').kind, 'gentler');
   assert.equal(chorusUtterance('Make something beautiful from these two songs').kind, 'decks');
+  assert.equal(chorusUtterance('Make a mashup from these two songs').kind, 'decks');
+  assert.equal(chorusUtterance('Take the decks and surprise me').style, 'surprise');
+  assert.equal(chorusUtterance('Try another arrangement').kind, 'another-plan');
+  assert.equal(chorusUtterance('Let the second chorus of B take over').style, 'second');
+  assert.equal(chorusUtterance("Keep A's drums but use B's vocals").style, 'lock');
+  assert.equal(chorusUtterance('Find a more interesting transition').style, 'transition');
+  assert.equal(chorusUtterance('Give the build more energy').style, 'energy');
+  assert.equal(chorusUtterance('Make the vocals come in more gently').kind, 'gentler');
+  assert.equal(chorusUtterance("Stop. I'll take it from here.").kind, 'take-back');
   assert.equal(chorusUtterance('Take back').kind, 'take-back');
   assert.equal(chorusUtterance('You play').kind, 'you-play');
   assert.equal(chorusUtterance('bring the vocals in gradually across four bars'), null);
@@ -72,4 +81,39 @@ test('a chorus is placed where that source time is heard, not at its source bar'
   assert.ok(Math.abs(beat - 35.2) < 1e-9, `heard at ${beat}`);
   state.transport.masterBpm = 100;
   assert.ok(Math.abs(arrangementBeatForSource(state, 'A', 9.6) - 16) < 1e-9);
+});
+
+test('an arrangement is two different sketches, and a pitch reading is not applied', () => {
+  const rank = {
+    ask: false,
+    ambiguityGap: 0.05,
+    candidates: [
+      { id: 'chorus', evidence: 'estimate', harmonic: { cosine: 0.91 }, tempo: { qualified: true }, pitch: { suggested: 0 }, vocal: { status: 'present' } },
+      { id: 'verse', evidence: 'estimate', harmonic: { cosine: 0.72 }, tempo: { qualified: false, applyStretch: 1.4 }, pitch: { suggested: 3 }, vocal: { status: 'present' } },
+    ],
+  };
+  const sections = [
+    { id: 'chorus', bars: 8 },
+    { id: 'verse', bars: 4 },
+  ];
+  const { plans } = arrangementPlans({ rank, sections, chorusBeat: 16, bpb: 4 });
+  assert.equal(plans.length, 2);
+  assert.equal(plans[0].id, 'lock');
+  assert.equal(plans[0].vocal.stem, 'vocals');
+  assert.equal(plans[0].vocal.pitch, 0);
+  assert.equal(plans[0].vocal.speed, 'fit');
+  assert.equal(plans[0].parts[0].stem, 'drums');
+  assert.equal(plans[0].parts[0].speed, 'natural');
+  assert.equal(plans[0].parts[0].pitch, 0);
+  assert.equal(plans[0].parts[0].startBeat, 16 + 8 * 4);
+  assert.equal(plans[0].trims[0].stem, 'vocals');
+  assert.equal(plans[1].vocal.stem, 'drums');
+  assert.notEqual(plans[0].vocal.stem, plans[1].vocal.stem);
+  const measured = measurePlan(plans[0]);
+  assert.equal(measured.flags.bothSongs, true);
+  assert.equal(measured.flags.pitchLeftAlone, true);
+  assert.equal(pickPlan(plans, { surprise: true }).id, 'swap');
+  const energetic = stylePlan(plans[0], 'energy');
+  assert.equal(energetic.entranceBars, 1);
+  assert.match(energetic.issues.at(-1), /not a measurement of energy/);
 });

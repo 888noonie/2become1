@@ -578,8 +578,10 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
   const bpm = state.transport.masterBpm;
   const fields = [];
   const notes = [];
-  if (spec.main && spec.main.startBeat !== null) {
-    const m = spec.main;
+  const passages = [];
+  if (spec.main && spec.main.startBeat !== null) passages.push(spec.main);
+  for (const part of spec.parts ?? []) if (part && part.startBeat !== null) passages.push(part);
+  for (const m of passages) {
     const analysis = analyses[m.song];
     const group = groups[m.song];
     if (!analysis || !group) return { refusal: `Song ${m.song} is no longer on the lanes.`, fields: [] };
@@ -661,6 +663,20 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
     const extras = [m.pitch ? `${signed(m.pitch)} semitones` : null, m.fadeIn ? `fade in ${plural(r3(m.fadeIn), 'beat')}` : null,
       m.fadeOut ? `fade out ${plural(r3(m.fadeOut), 'beat')}` : null, m.gainDb ? `${signed(m.gainDb)} dB` : null].filter(Boolean);
     notes.unshift(`${m.song} ${ROLE_LABEL[m.stem]}: ${m.passage.name} of “${group.title}” (song bars ${m.passage.startBar}–${m.passage.startBar + m.passage.bars - 1}, ${mmss(m.passage.startSec)}–${mmss(m.passage.endSec)}; ${evidence})${m.heardNote ? `, ${m.heardNote}` : ''}, at ${fmtPos(want.startBeat, bpb)}${fit}${extras.length ? `, ${extras.join(', ')}` : ''}`);
+  }
+  for (const clipId of spec.drop ?? []) {
+    const before = clipObject(state, clipId);
+    if (!before.exists) continue;
+    const c = state.clips.find((x) => x.id === clipId);
+    fields.push({
+      key: `${clipId}:clip`,
+      value: { exists: false },
+      label: (st) => `${st.tracks[c.trackIndex].name} clip`,
+      read: (st) => clipObject(st, clipId),
+      command: (st, v) => clipCommands(st, clipId, v, null),
+      show: showClip(bpb),
+    });
+    notes.push(`${state.tracks[c.trackIndex].name} leaves the arrangement`);
   }
   for (const [clipId, changes] of Object.entries(spec.clips ?? {})) {
     const before = clipObject(state, clipId);

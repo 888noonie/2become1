@@ -209,6 +209,30 @@ test('a rejected preview does not change the arrangement', async () => {
   assert.equal(s.edit.serialize(), before);
 });
 
+test('Take the decks writes both songs, and another sketch keeps a hand edit', async () => {
+  const { s, tell } = await mounted();
+  const vocal = s.state.clips.find((clip) => clip.trackIndex === 0);
+  const drums = s.state.clips.find((clip) => clip.trackIndex === 1);
+  const vocalBefore = vocal.durationBeats;
+  const drumsBefore = drums.durationBeats;
+  const said = await tell('Take the decks');
+  assert.match(said, /did not audition the audio/);
+  const ideas = s.state.clips.filter((clip) => String(clip.id).startsWith('idea-'));
+  assert.ok(ideas.length >= 2, `expected a vocal and a handoff, saw ${ideas.map((clip) => clip.id).join(', ')}`);
+  assert.ok(ideas.some((clip) => clip.trackIndex === 4), 'B vocals are in the arrangement');
+  assert.ok(ideas.some((clip) => clip.trackIndex === 5), 'B drums take over later');
+  assert.ok(s.state.clips.find((clip) => clip.id === vocal.id).durationBeats < vocalBefore - 1);
+  assert.ok(s.state.clips.find((clip) => clip.id === drums.id).durationBeats < drumsBefore - 1);
+  s.apply({ name: 'setTrackVolume', args: { trackIndex: 1, volumeDb: -9 } });
+  const again = await tell('Try another arrangement');
+  assert.match(again, /drums take the bed/);
+  assert.equal(s.state.tracks[1].volumeDb, -9);
+  assert.equal(s.state.clips.filter((clip) => String(clip.id).startsWith('idea-')).length, 1);
+  assert.match(await tell('Take back'), /decks are yours/);
+  assert.equal(s.state.tracks[1].volumeDb, -9);
+  assert.ok(s.state.clips.some((clip) => String(clip.id).startsWith('idea-')), 'the first sketch stays after the hand edit');
+});
+
 test('Take the decks writes one arrangement and Take back restores it', async () => {
   const { s, prod, btn, tell } = await mounted();
   const strip = (text) => {

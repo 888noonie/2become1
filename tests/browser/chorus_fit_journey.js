@@ -349,11 +349,24 @@ try {
   check('export is not silent', measured.rms > 0.01, `rms ${measured.rms.toFixed(4)}`);
 
   await page.getByRole('button', { name: 'Take the decks' }).click();
-  const took = await waitFor(async () => {
-    const line = await page.locator('.daw__talk-log li').last().textContent();
-    return /on the lanes|playing|Take back/.test(line ?? '') ? line : null;
-  }, 'take the decks', 30000);
+  let lastLine = '';
+  let took;
+  try {
+    took = await waitFor(async () => {
+      lastLine = await page.locator('.daw__talk-log li').last().textContent() ?? '';
+      return /on the lanes|playing|Take back/.test(lastLine) ? lastLine : null;
+    }, 'take the decks', 45000);
+  } catch (error) {
+    const log = await page.locator('.daw__talk-log li').allTextContents();
+    throw new Error(`${error.message}\nlast=${lastLine.slice(0, 400)}\nlog=${log.slice(-4).join(' | ').slice(0, 800)}`);
+  }
   check('Take the decks writes from the ranker without a separate Hear it', /on the lanes|playing/.test(took), took.slice(0, 180));
+  check('the Producer says this was not an audition', /did not audition the audio/.test(took), took.slice(0, 220));
+  const shape = await page.evaluate(() => {
+    const ideas = window.__arrangement.session.state.clips.filter((item) => item.id.startsWith('idea-'));
+    return { tracks: ideas.map((item) => item.trackIndex), count: ideas.length };
+  });
+  check('Take the decks places B vocals and a later B drums handoff', shape.tracks.includes(4) && shape.tracks.includes(5), JSON.stringify(shape));
   const moved = await page.evaluate(() => {
     const clip = window.__arrangement.session.state.clips.find((item) => item.id.startsWith('idea-'));
     if (!clip) return null;

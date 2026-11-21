@@ -18,7 +18,7 @@ import { GROUP_BASE, ROLES, SAMPLE_RATE, peaksFor } from '../arrangement/daw-ses
 import { beatsToSourceSeconds, sourceAdvanceRate } from '../arrangement/time-math.js';
 import { MIN_CLIP_DURATION_BEATS } from '../arrangement/time-math.js';
 import { applyIntent, buildIdea, clipObject, entranceRequest, halfBeatOnly, laneIndex, localCommand, mmss, projectSummary, refusalText } from '../arrangement/producer-intent.js';
-import { arrangementBeatForSource, bedDipPoints, chorusUtterance, deckChoice, descriptorFrom, entrancePoints, explainCandidate, pitchFor, playbackSpeed, scoredRows, targetSection } from '../arrangement/chorus-fit.js';
+import { arrangementBeatForSource, arrangementPlans, bedDipPoints, chorusUtterance, deckChoice, descriptorFrom, entrancePoints, explainCandidate, measurePlan, pickPlan, pitchFor, playbackSpeed, scoredRows, stylePlan, targetSection } from '../arrangement/chorus-fit.js';
 
 /**
  * The same musical rule as the accepted Stem Desk suggester, as arrangement
@@ -563,7 +563,8 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const groups = session.groups();
     const ctx = { analyses: conv.analyses, groups, records: session.buffers };
     let built = buildIdea(session.state, spec, ctx);
-    if (built.needsSource) {
+    let loads = 0;
+    while (built.needsSource && loads < 6) {
       say('Fetching that passage of the stem…');
       try { await session.loadSource(built.needsSource); } catch (err) { return { ok: false, text: `I couldn't load that passage: ${err.message}` }; }
       if (session.edit !== engine) return replaced();
@@ -571,6 +572,8 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         return { ok: false, text: 'The songs on the lanes changed, so I have not placed it.' };
       }
       if (stale(guard)) return stopped();
+      loads += 1;
+      built = buildIdea(session.state, spec, ctx);
     }
     if (session.edit !== engine) return replaced();
     if (stale(guard)) return stopped();
@@ -744,8 +747,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     if ((!speed || spec.main.speed === speed) && start === spec.main.startBeat) return spec;
     const next = structuredClone(spec);
+    const previous = spec.main.startBeat;
     if (speed) next.main.speed = speed;
     next.main.startBeat = start;
+    if (Array.isArray(next.parts) && Number.isFinite(previous) && start !== previous) {
+      const delta = start - previous;
+      next.parts = next.parts.map((part) => ({ ...part, startBeat: part.startBeat + delta }));
+    }
     slideCurves(next);
     return next;
   }
@@ -893,6 +901,104 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     return `${text}${pitchNote}${alt}${tempoNote} ${heard.text || ''}`.trim();
   }
 
+  async function commitArrangement(found, style) {
+    const bpb = session.state.transport.timeSignature[0];
+    const chorusBeat = arrangementBeatForSource(session.state, found.targetSong, found.target.startSec);
+    if (chorusBeat == null) return 'I cannot see where that chorus sits on the lanes yet.';
+    const sections = found.sourceAnalysis.sections ?? [];
+    const choruses = sections.filter((section) => section.label === 'chorus').sort((a, b) => a.startSec - b.startSec);
+    const secondId = choruses[1]?.id ?? null;
+    const built = arrangementPlans({
+      rank: found.rank,
+      sections,
+      chorusBeat: Math.round(chorusBeat * 1e9) / 1e9,
+      bpb,
+      secondChorusId: style === 'second' ? secondId : null,
+    });
+    if (!built.plans.length) return built.note;
+    const index = style === 'another' ? (conv.planIndex ?? 1) : 0;
+    let plan = pickPlan(built.plans, { surprise: style === 'surprise', index });
+    plan = stylePlan(plan, style === 'energy' ? 'energy' : style === 'transition' ? 'transition' : null, { bpb });
+    if (style === 'second' && !secondId) plan.issues = [...plan.issues, 'Song B has no second chorus in the analysis, so the vocal choice stays.'];
+    const reading = measurePlan(plan);
+    const section = sections.find((item) => item.id === plan.vocal.sectionId);
+    if (!section) return 'That section is no longer in the analysis.';
+    const outcome = applyIntent(null, {
+      action: 'propose', song: plan.vocal.song, stem: plan.vocal.stem,
+      section: `${plan.vocal.song}:${section.id}`, speed: plan.vocal.speed, pitch: 0,
+      fade_in: 1, fade_out: plan.vocal.fadeOut || 0,
+    }, {
+      state: session.state, analyses: conv.analyses, groups: found.groups, sentence: '', mine: mineGroup(),
+    });
+    if (!outcome.spec?.main) return outcome.ask || outcome.say || 'I could not place that passage.';
+    outcome.spec.main.startBeat = Math.round(chorusBeat * 1e9) / 1e9;
+    outcome.spec.main.chorusAlign = true;
+    outcome.spec.parts = [];
+    const takenIds = new Set(session.state.clips.map((clip) => clip.id));
+    if (outcome.spec.main?.clipId) takenIds.add(outcome.spec.main.clipId);
+    const freshId = () => {
+      let n = 1;
+      while (takenIds.has(`idea-${n}`)) n += 1;
+      const id = `idea-${n}`;
+      takenIds.add(id);
+      return id;
+    };
+    for (const part of plan.parts) {
+      const source = sections.find((item) => item.id === part.sectionId);
+      if (!source) continue;
+      outcome.spec.parts.push({
+        song: part.song, stem: part.stem, passage: { ...source, evidence: source.evidence ?? [] },
+        startBeat: part.startBeat, pitch: 0, fadeIn: Math.min(part.fadeIn, bpb), fadeOut: part.fadeOut || 0,
+        gainDb: 0, speed: part.speed, clipId: freshId(),
+      });
+    }
+    outcome.spec.clips = {};
+    for (const trim of plan.trims) {
+      const lane = laneIndex(trim.song, trim.stem);
+      const clip = session.state.clips.find((item) => item.trackIndex === lane && !String(item.id).startsWith('idea-'));
+      if (!clip) continue;
+      const duration = Math.round((trim.endBeat - clip.timelineStartBeat) * 1e9) / 1e9;
+      if (!(duration >= 1) || duration >= clip.durationBeats - 0.05) continue;
+      outcome.spec.clips[clip.id] = { durationBeats: duration, fadeOut: 2 };
+    }
+    const kept = new Set([outcome.spec.main.clipId, ...outcome.spec.parts.map((part) => part.clipId)]);
+    outcome.spec.drop = (conv.partIds ?? []).filter((id) => !kept.has(id));
+    const start = outcome.spec.main.startBeat;
+    const length = (section.bars || 4) * bpb;
+    const vocal = laneIndex(plan.vocal.song, plan.vocal.stem);
+    const yielded = conv.yieldedTracks ?? new Set();
+    outcome.spec.envelopes = {};
+    if (!yielded.has(vocal)) outcome.spec.envelopes[vocal] = entrancePoints(start, bpb, plan.entranceBars || 4);
+    const bed = laneIndex(plan.vocal.song === 'A' ? 'B' : 'A', 'vocals');
+    if (!yielded.has(bed) && session.state.clips.some((clip) => clip.trackIndex === bed)) {
+      outcome.spec.envelopes[bed] = bedDipPoints(start, length);
+    }
+    conv.harmony = {
+      targetSong: found.targetSong, sourceSong: found.sourceSong, target: found.target, label: found.target.label,
+      stem: plan.vocal.stem, rank: found.rank, index: 0,
+    };
+    conv.partIds = [...kept];
+    const guard = { epoch: conv.epoch, mode: 'decks' };
+    const engine = session.edit;
+    const heard = await realise(outcome.spec, guard);
+    if (!heard.ok) return heard.text;
+    if (session.edit !== engine) return 'A new arrangement is open, so I have not placed it.';
+    if (!idea || idea.hearing === 'kept') return heard.text || plan.title;
+    if (heard.wrote) rememberWrite(heard.before, heard.revision, true);
+    else {
+      const beforeWrite = editingSerial();
+      const beforeRevision = session.edit.revision;
+      if (idea.hearing !== 'idea') hearToggle();
+      if (!idea || idea.hearing !== 'idea') return `${plan.title} The arrangement did not change.`;
+      rememberWrite(beforeWrite, beforeRevision, true);
+    }
+    const playing = typeof session.play === 'function' ? await session.play() : false;
+    const issue = plan.issues[0] ? ` ${plan.issues[0]}` : '';
+    const unsure = found.rank.ask ? ' The readings were close, so this is a choice, not a proof.' : '';
+    const heardWord = playing ? "It's playing." : "It's on the lanes.";
+    return `${plan.title}. ${reading.count} measurable checks held: both songs are in it, the handoff is a real edit, and no pitch was applied. I did not audition the audio.${issue}${unsure} ${heardWord} Say “try another arrangement”, or take back.`;
+  }
+
   async function harmonyTurn(request) {
     if (request.kind === 'you-play') { setMode('you-play'); return 'You play. I will not move a clip until you jam with me or hand me the decks.'; }
     if (request.kind === 'jam') { setMode('jam'); return 'Jam together. I will show an idea, and nothing is written until you press Hear it.'; }
@@ -919,14 +1025,22 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       rerender();
       return 'The decks are yours. That experiment is put back.';
     }
+    if (request.kind === 'another-plan') {
+      if (conv.mode === 'you-play') return 'You play is on, so I will not write another arrangement.';
+      if (conv.mode !== 'decks') return 'Take the decks when you want me to write a different arrangement.';
+      if ((conv.decks?.steps ?? 0) >= 4) return 'I have revised this four times. Take back, or tell me the one change you want.';
+      const found = await rankedFit({ kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
+      if (found.say) return found.say;
+      conv.planIndex = (conv.planIndex ?? 0) + 1;
+      return commitArrangement(found, 'another');
+    }
     if (request.kind === 'decks') {
       if ((conv.decks?.steps ?? 0) >= 4) return 'I have revised this four times. Take back, or tell me the one change you want.';
       setMode('decks');
       const found = await rankedFit({ kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
       if (found.say) return found.say;
-      const choice = deckChoice(found.rank);
-      if (!choice) return explainCandidate(found.rank.candidates?.[0], { targetName: 'the chorus', sourceTitle: 'song B', rank: found.rank });
-      return offerHarmony(found, { index: choice.index, commit: true });
+      conv.planIndex = request.style === 'surprise' ? 1 : 0;
+      return commitArrangement(found, request.style || 'lock');
     }
     if (conv.mode === 'you-play' && (request.kind === 'place' || request.kind === 'gentler' || request.kind === 'nudge' || request.kind === 'choose')) {
       return 'You play is on, so I will not move that. Say “jam together” when you want an idea.';
@@ -939,7 +1053,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       spec.main.speed = request.speed;
       spec.main.speedLock = true;
       const heard = await realise(spec);
-      if (conv.mode === 'decks' && conv.decks && heard.ok && heard.wrote) rememberWrite(heard.before, heard.revision, false);
+      if (conv.decks && heard.ok && heard.wrote) rememberWrite(heard.before, heard.revision, false);
       return heard.ok ? 'The passage keeps its own speed.' : heard.text;
     }
     if (request.kind === 'place' || request.kind === 'gentler' || request.kind === 'nudge') {
@@ -958,7 +1072,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         slideCurves(outcome.spec);
       }
       const heard = await realise(outcome.spec);
-      if (conv.mode === 'decks' && conv.decks && heard.ok) {
+      if (conv.decks && heard.ok) {
         if (heard.wrote) rememberWrite(heard.before, heard.revision, false);
         else if (idea && idea.hearing !== 'idea' && idea.hearing !== 'kept') {
           const beforeWrite = editingSerial();

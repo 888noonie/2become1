@@ -19,7 +19,14 @@ export function chorusUtterance(text) {
   const n = normPhrase(text);
   if (n === 'you play') return { kind: 'you-play' };
   if (n === 'jam together') return { kind: 'jam' };
-  if (n === 'take the decks' || n === 'make something beautiful from these two songs') return { kind: 'decks' };
+  if (n === 'take the decks' || n === 'make something beautiful from these two songs' || n === 'make a mashup from these two songs') return { kind: 'decks' };
+  if (n === 'take the decks and surprise me') return { kind: 'decks', style: 'surprise' };
+  if (n === 'try another arrangement') return { kind: 'another-plan' };
+  if (n === 'let the second chorus of b take over') return { kind: 'decks', style: 'second' };
+  if (n === 'keep a s drums but use b s vocals') return { kind: 'decks', style: 'lock' };
+  if (n === 'find a more interesting transition') return { kind: 'decks', style: 'transition' };
+  if (n === 'give the build more energy') return { kind: 'decks', style: 'energy' };
+  if (n === 'stop i ll take it from here' || n === 'stop ill take it from here') return { kind: 'take-back' };
   if (n === 'take back') return { kind: 'take-back' };
   if (n === 'which part of b fits this chorus' || n === 'which part of song b fits this chorus') {
     return { kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' };
@@ -36,7 +43,7 @@ export function chorusUtterance(text) {
   if (bar) return { kind: 'place', bar: Number(bar[1]) };
   if (n === 'move it half a beat earlier' || n === 'move the idea half a beat earlier' || n === 'half a beat earlier') return { kind: 'nudge', beats: -0.5 };
   if (n === 'play the idea at its own speed' || n === 'play it at its own speed') return { kind: 'speed', speed: 'natural' };
-  if (n === 'make the fade gentler' || n === 'make the entrance gentler') return { kind: 'gentler' };
+  if (n === 'make the fade gentler' || n === 'make the entrance gentler' || n === 'make the vocals come in more gently') return { kind: 'gentler' };
   return null;
 }
 
@@ -108,6 +115,110 @@ export function arrangementBeatForSource(state, song, sourceSec) {
   return null;
 }
 
+function speedFor(row) {
+  if (!row) return 'natural';
+  if (row.tempo?.qualified === true && (row.pitch?.suggested ?? 0) === 0) return 'fit';
+  return 'natural';
+}
+
+/**
+ * Two sketches for the same readings. The count is measurable structure
+ * (both songs, a handoff, pitch left alone). It is not a judgement of taste.
+ */
+export function arrangementPlans({ rank, sections = [], chorusBeat, bpb = 4, secondChorusId = null } = {}) {
+  const rows = scoredRows(rank);
+  if (!rows.length || !Number.isFinite(chorusBeat)) {
+    return { plans: [], note: 'There is no placed chorus to build on.' };
+  }
+  const playable = (row) => row.tempo?.qualified === true && (row.pitch?.suggested ?? 0) === 0 && row.vocal?.status !== 'low';
+  const vocal = rows.find(playable) ?? rows[0];
+  const other = rows.find((row) => row !== vocal) ?? null;
+  const section = (row) => sections.find((item) => item.id === row?.id);
+  const shared = [];
+  if (rank?.ask) shared.push('The closest readings sit inside the ambiguity gap, so this is a choice.');
+  if ((vocal.pitch?.suggested ?? 0) !== 0) shared.push('A pitch shift was in the reading and was left unused.');
+  if (speedFor(vocal) === 'natural') shared.push('The passage keeps its own speed.');
+  const second = secondChorusId ? rows.find((row) => row.id === secondChorusId) ?? null : null;
+  const vocalRow = second ?? vocal;
+  const bars = section(vocalRow)?.bars || 4;
+  const handoff = chorusBeat + bars * bpb;
+  const handoffRow = other && other.id !== vocalRow.id ? other : null;
+  const vocalOf = (row, fadeBars) => ({
+    song: 'B', sectionId: row.id, stem: 'vocals', startBeat: chorusBeat,
+    fadeIn: fadeBars * bpb, fadeOut: 1, speed: speedFor(row), pitch: 0,
+  });
+  const lock = {
+    id: 'lock',
+    title: 'A keeps the drums and bass, B sings',
+    adventurous: vocalRow.id !== rows[0].id,
+    vocal: vocalOf(vocalRow, 4),
+    parts: handoffRow ? [{
+      song: 'B', sectionId: handoffRow.id, stem: 'drums', startBeat: handoff,
+      fadeIn: 2 * bpb, fadeOut: 0, speed: speedFor(handoffRow), pitch: 0,
+    }] : [],
+    trims: [
+      { song: 'A', stem: 'vocals', endBeat: chorusBeat },
+      ...(handoffRow ? [{ song: 'A', stem: 'drums', endBeat: handoff }] : []),
+    ],
+    entranceBars: 4,
+    bothSongs: true,
+    transition: Boolean(handoffRow),
+    issues: shared.slice(),
+  };
+  const swapRow = other ?? vocal;
+  const swap = {
+    id: 'swap',
+    title: 'B’s drums take the bed',
+    adventurous: true,
+    vocal: {
+      song: 'B', sectionId: swapRow.id, stem: 'drums', startBeat: chorusBeat,
+      fadeIn: 2 * bpb, fadeOut: 0, speed: speedFor(swapRow), pitch: 0,
+    },
+    parts: [],
+    trims: [{ song: 'A', stem: 'drums', endBeat: chorusBeat }],
+    entranceBars: 2,
+    bothSongs: true,
+    transition: true,
+    issues: ['This changes the rhythm bed. It is a different sketch, not a higher score.'],
+  };
+  return { plans: [lock, swap] };
+}
+
+export function measurePlan(plan) {
+  const flags = {
+    bothSongs: plan?.bothSongs === true,
+    transition: plan?.transition === true,
+    pitchLeftAlone: (plan?.vocal?.pitch ?? 0) === 0 && (plan?.parts ?? []).every((part) => (part.pitch ?? 0) === 0),
+  };
+  return { flags, count: Object.values(flags).filter(Boolean).length, issues: plan?.issues ?? [] };
+}
+
+export function pickPlan(plans, { surprise = false, index = 0 } = {}) {
+  if (!plans?.length) return null;
+  if (surprise) return plans.find((plan) => plan.adventurous && plan.id !== 'lock') ?? plans[plans.length - 1];
+  const at = ((index % plans.length) + plans.length) % plans.length;
+  return plans[at];
+}
+
+export function stylePlan(plan, style, { bpb = 4 } = {}) {
+  if (!plan || !style) return plan;
+  const next = structuredClone(plan);
+  if (style === 'energy') {
+    next.vocal.fadeIn = bpb;
+    next.entranceBars = 1;
+    next.issues = [...next.issues, 'The entrance is one bar. That is a shorter fade, not a measurement of energy.'];
+  }
+  if (style === 'transition' && next.parts[0]) {
+    next.parts[0].fadeIn = 8 * bpb;
+    next.issues = [...next.issues, 'The handoff fade is eight bars.'];
+  }
+  if (style === 'gentle') {
+    next.vocal.fadeIn = 8 * bpb;
+    next.entranceBars = 8;
+  }
+  return next;
+}
+
 export function deckChoice(rank) {
   const rows = scoredRows(rank);
   if (!rows.length) return null;
@@ -163,10 +274,11 @@ export function explainCandidate(row, { targetName, sourceTitle, rank }) {
   return parts.filter(Boolean).join(' ');
 }
 
-export function entrancePoints(startBeat, beatsPerBar) {
+export function entrancePoints(startBeat, beatsPerBar, bars = 4) {
+  const rise = (Number.isFinite(bars) && bars > 0 ? bars : 4) * beatsPerBar;
   return [
     { beat: startBeat, db: MIN_VOLUME_DB },
-    { beat: startBeat + 4 * beatsPerBar, db: 0 },
+    { beat: startBeat + rise, db: 0 },
   ];
 }
 
