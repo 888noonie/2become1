@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { chorusUtterance, deckChoice, pitchFor, playbackSpeed, scoredRows } from '../../src/twobecomeone/studio_static/js/arrangement/chorus-fit.js';
+import { arrangementBeatForSource, chorusUtterance, deckChoice, pitchFor, playbackSpeed, scoredRows } from '../../src/twobecomeone/studio_static/js/arrangement/chorus-fit.js';
 
 test('the musician’s phrases stay deterministic', () => {
   assert.deepEqual(chorusUtterance('Which part of B fits this chorus?'), { kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
@@ -54,6 +54,20 @@ test('a large agreed pitch is shown in a jam and left alone when the decks are p
 test('beat-sync is used only when the project tempo is the qualified ratio', () => {
   assert.equal(playbackSpeed(0.909, 100 / 110), 'fit');
   assert.equal(playbackSpeed(0.909, 220 / 110), 'natural');
+  assert.equal(playbackSpeed(1.2, 1.21), 'natural');
+  assert.equal(playbackSpeed(0.857, 0.85), 'natural');
   assert.equal(playbackSpeed(2, 2), 'natural');
   assert.equal(playbackSpeed(null, 1), 'natural');
+});
+
+test('a chorus is placed where that source time is heard, not at its source bar', () => {
+  const state = {
+    transport: { masterBpm: 220 },
+    assets: { a: { nativeBpm: 100, source: { section: { startSec: 0 } } } },
+    clips: [{ id: 'a-vocal', trackIndex: 0, assetId: 'a', timelineStartBeat: 0, sourceOffsetSec: 0, durationBeats: 80, stretchMode: 'manual', customStretchRatio: 1 }],
+  };
+  const beat = arrangementBeatForSource(state, 'A', 9.6);
+  assert.ok(Math.abs(beat - 35.2) < 1e-9, `heard at ${beat}`);
+  state.transport.masterBpm = 100;
+  assert.ok(Math.abs(arrangementBeatForSource(state, 'A', 9.6) - 16) < 1e-9);
 });

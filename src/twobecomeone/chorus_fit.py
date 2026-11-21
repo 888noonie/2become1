@@ -180,14 +180,26 @@ def _view(section: Mapping[str, Any], fallback_id: str) -> dict[str, Any]:
     }
 
 
-def _cosine(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+def _cosine(a: np.ndarray, b: np.ndarray) -> float | None:
+    left = float(np.linalg.norm(a))
+    right = float(np.linalg.norm(b))
+    if not np.isfinite(left) or not np.isfinite(right) or left < 1e-12 or right < 1e-12:
+        return None
+    value = float(np.dot(a, b) / (left * right))
+    if not np.isfinite(value):
+        return None
+    return value
 
 
-def _best_rotation(target: np.ndarray, candidate: np.ndarray) -> tuple[int, float]:
-    scores = [_cosine(target, np.roll(candidate, rotation)) for rotation in range(12)]
-    rotation = int(np.argmax(scores))
-    return rotation, scores[rotation]
+def _best_rotation(target: np.ndarray, candidate: np.ndarray) -> tuple[int, float] | None:
+    best: tuple[int, float] | None = None
+    for rotation in range(12):
+        score = _cosine(target, np.roll(candidate, rotation))
+        if score is None:
+            continue
+        if best is None or score > best[1]:
+            best = (rotation, score)
+    return best
 
 
 def _signed(rotation: int) -> int:
@@ -283,14 +295,15 @@ def _pitch(signed: int | None, shift: int | None, stretch_in_band: bool, tempo_k
 
 def _score(target: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
     tempo = _tempo(target["bpm"], source["bpm"])
-    if target["chroma"] is None or source["chroma"] is None:
+    found = None if target["chroma"] is None or source["chroma"] is None else _best_rotation(target["chroma"], source["chroma"])
+    if found is None:
         harmonic = {"cosine": None, "rotation": None, "signedSemitones": None, "proof": False}
         evidence = "missing"
         pitch = _pitch(None, _key_shift(target["key"], source["key"]), tempo["qualified"], tempo["status"] == "measured")
         pitch["autoApply"] = False
         pitch["suggested"] = 0
     else:
-        rotation, cosine = _best_rotation(target["chroma"], source["chroma"])
+        rotation, cosine = found
         signed = _signed(rotation)
         evidence = "weak" if cosine < WEAK_HARMONIC_COSINE else "estimate"
         harmonic = {"cosine": cosine, "rotation": rotation, "signedSemitones": signed, "proof": False}

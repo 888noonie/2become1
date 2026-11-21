@@ -18,7 +18,7 @@ import { GROUP_BASE, ROLES, SAMPLE_RATE, peaksFor } from '../arrangement/daw-ses
 import { beatsToSourceSeconds, sourceAdvanceRate } from '../arrangement/time-math.js';
 import { MIN_CLIP_DURATION_BEATS } from '../arrangement/time-math.js';
 import { applyIntent, buildIdea, clipObject, entranceRequest, halfBeatOnly, laneIndex, localCommand, mmss, projectSummary, refusalText } from '../arrangement/producer-intent.js';
-import { bedDipPoints, chorusUtterance, deckChoice, descriptorFrom, entrancePoints, explainCandidate, pitchFor, playbackSpeed, scoredRows, targetSection } from '../arrangement/chorus-fit.js';
+import { arrangementBeatForSource, bedDipPoints, chorusUtterance, deckChoice, descriptorFrom, entrancePoints, explainCandidate, pitchFor, playbackSpeed, scoredRows, targetSection } from '../arrangement/chorus-fit.js';
 
 /**
  * The same musical rule as the accepted Stem Desk suggester, as arrangement
@@ -202,7 +202,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   /** idea: { fields, before: Map, last: Map, touched: Set, hearing: 'idea'|'mine'|'kept', spec? } */
   let idea = null;
   const fetcher = fetchImpl ?? session.deps?.fetchImpl ?? ((...a) => fetch(...a));
-  const conv = { spec: null, history: [], analyses: {}, busy: false, model: null, absorbed: null, pending: null, mode: 'jam', harmony: null, decks: null };
+  const conv = { spec: null, history: [], analyses: {}, busy: false, model: null, absorbed: null, pending: null, mode: 'jam', harmony: null, decks: null, epoch: 0 };
 
   const status = h('p', { class: 'daw__producer-status', role: 'status', 'aria-live': 'polite' });
   const youPlay = h('button', { type: 'button', class: 'button', text: 'You play', 'aria-pressed': 'false' });
@@ -268,6 +268,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       for (const f of drop) conv.yieldedTracks.add(f.trackIndex);
       if (conv.mode === 'decks') {
         conv.mode = 'jam';
+        conv.epoch += 1;
         say('You moved that. I have left the decks.');
       }
     }
@@ -433,7 +434,18 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       'That clip already matches the idea.');
   });
 
-  hear.addEventListener('click', hearToggle);
+  hear.addEventListener('click', async () => {
+    if (idea && idea.hearing !== 'idea' && idea.hearing !== 'kept' && conv.spec?.main) {
+      const speed = currentFitSpeed();
+      if (speed && conv.spec.main.speed !== speed) {
+        const next = structuredClone(conv.spec);
+        next.main.speed = speed;
+        const heard = await realise(next);
+        if (!heard.ok) { say(heard.text); return; }
+      }
+    }
+    hearToggle();
+  });
   keep.addEventListener('click', () => { keepOrUndo(); if (keep.isConnected) keep.focus(); });
   reject.addEventListener('click', rejectIdea);
 
@@ -546,17 +558,24 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     return spec;
   }
 
+  function stale(guard) {
+    return Boolean(guard && (guard.epoch !== conv.epoch || conv.mode !== guard.mode));
+  }
+
   /** Turn a spec into fields, decode its passage (silently) if needed, then offer or re-hear it. */
-  async function realise(spec) {
+  async function realise(spec, guard = null) {
+    const stopped = () => ({ ok: false, text: 'You play is on, so I have not placed it.' });
     const groups = session.groups();
     const ctx = { analyses: conv.analyses, groups, records: session.buffers };
     let built = buildIdea(session.state, spec, ctx);
     if (built.needsSource) {
       say('Fetching that passage of the stem…');
-      try { await session.loadSource(built.needsSource); } catch (err) { return { text: `I couldn't load that passage: ${err.message}` }; }
+      try { await session.loadSource(built.needsSource); } catch (err) { return { ok: false, text: `I couldn't load that passage: ${err.message}` }; }
+      if (stale(guard)) return stopped();
       built = buildIdea(session.state, spec, ctx);
     }
-    if (built.refusal) return { text: built.refusal };
+    if (stale(guard)) return stopped();
+    if (built.refusal) return { ok: false, text: built.refusal };
     const wasHearing = idea?.hearing === 'idea';
     const old = idea;
     const key = `producer-${Date.now()}`;
@@ -566,15 +585,15 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       // Swap the heard version for the refined one as ONE undo step.
       writeAll((f) => idea.before.get(f.key), true, key);
       built = buildIdea(session.state, spec, ctx);
-      if (built.refusal || built.needsSource) { idea = old; writeAll((f) => f.value, false, key); session.endGesture(); return { text: built.refusal ?? 'Try that again.' }; }
+      if (built.refusal || built.needsSource) { idea = old; writeAll((f) => f.value, false, key); session.endGesture(); return { ok: false, text: built.refusal ?? 'Try that again.' }; }
     }
     const commands = built.fields.flatMap((f) => flat(f.command(session.state, f.value)));
     const dry = commands.length ? session.edit.propose({ name: 'batch', args: { commands } }) : { status: 'pending' };
     if (dry.status !== 'pending') {
       if (wasHearing) { idea = old; writeAll((f) => f.value, false, key); session.endGesture(); }
-      return { text: refusalText(dry.errors?.[0] ?? dry.error) };
+      return { ok: false, text: refusalText(dry.errors?.[0] ?? dry.error) };
     }
-    if (!commands.length && !wasHearing) return { text: 'That is already how it sounds.' };
+    if (!commands.length && !wasHearing) return { ok: true, text: 'That is already how it sounds.' };
     conv.spec = spec;
     offer(built, 'Nothing to change.', spec);
     if (wasHearing) {
@@ -585,7 +604,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     sync();
     rerender();
-    return { text: `${wasHearing ? 'Now playing' : 'Idea'}: ${built.rationale}.${wasHearing ? '' : ' Press Hear it to listen.'}` };
+    return { ok: true, text: `${wasHearing ? 'Now playing' : 'Idea'}: ${built.rationale}.${wasHearing ? '' : ' Press Hear it to listen.'}` };
   }
 
   async function control(kind) {
@@ -649,8 +668,17 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   }
 
   function setMode(mode) {
+    if (conv.mode !== mode) conv.epoch += 1;
     conv.mode = mode;
     sync();
+  }
+
+  function currentFitSpeed() {
+    const row = conv.harmony?.rank ? scoredRows(conv.harmony.rank)[conv.harmony.index ?? 0] : null;
+    if (!row || !conv.harmony) return null;
+    const sourceBpm = Number(session.groups()[conv.harmony.sourceSong]?.bpm) || row.tempo?.sourceBpm;
+    const projectRatio = sourceBpm > 0 ? session.state.transport.masterBpm / sourceBpm : null;
+    return playbackSpeed(row.tempo?.applyStretch ?? null, projectRatio);
   }
 
   async function rankedFit(request) {
@@ -697,7 +725,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const intent = {
       action: 'propose', song: found.sourceSong, stem: previous?.stem || 'vocals', section: `${found.sourceSong}:${section.id}`, speed,
     };
-    if (!sameTarget || conv.spec?.main?.startBeat == null) {
+    const placeOnChorus = !sameTarget || conv.spec?.main?.startBeat == null;
+    const chorusBeat = placeOnChorus ? arrangementBeatForSource(session.state, found.targetSong, found.target.startSec) : null;
+    if (placeOnChorus && chorusBeat == null) {
       intent.bar = found.target.startBar || 1;
       intent.beat = 1;
     }
@@ -710,6 +740,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       state: session.state, analyses: conv.analyses, groups: found.groups, sentence: '', mine: mineGroup(),
     });
     if (!outcome.spec) return outcome.ask || outcome.say || 'I could not place that passage.';
+    if (placeOnChorus && chorusBeat != null && outcome.spec.main) {
+      outcome.spec.main.startBeat = Math.round(chorusBeat * 1e9) / 1e9;
+    }
     if (commit && outcome.spec.main) {
       const bpb = session.state.transport.timeSignature[0];
       const start = outcome.spec.main.startBeat ?? 0;
@@ -743,13 +776,15 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       ? ` The project tempo would play this at ${projectRatio == null ? 'an unknown rate' : projectRatio.toFixed(3)} rather than the qualified ${qualified.toFixed(3)}, so the passage keeps its own speed.`
       : '';
     if (commit) {
+      const guard = { epoch: conv.epoch, mode: 'decks' };
       const before = editingSerial();
-      const heard = await realise(outcome.spec);
-      if (!idea) return heard.text || text;
+      const heard = await realise(outcome.spec, guard);
+      if (!heard.ok) return `${text}${pitchNote}${alt}${tempoNote} ${heard.text}`.trim();
+      if (!idea || idea.hearing === 'kept') return heard.text || text;
       if (idea.hearing !== 'idea') hearToggle();
       if (!idea || idea.hearing !== 'idea') return `${text}${pitchNote}${alt} The arrangement did not change.`;
-      const playing = typeof session.play === 'function' ? await session.play() : false;
       conv.decks = { before, after: editingSerial(), steps: (conv.decks?.steps ?? 0) + 1 };
+      const playing = typeof session.play === 'function' ? await session.play() : false;
       const surprise = deckChoice(found.rank);
       const extra = surprise?.adventurous ? ' I took a playable neighbour of the closest chroma match, not only the safest one.' : '';
       const unsure = found.rank.ask ? ' The readings were close, so this is a choice, not a proof.' : '';
@@ -805,10 +840,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       });
       if (!outcome.spec) return outcome.ask || outcome.say || 'I could not change that.';
       const heard = await realise(outcome.spec);
-      if (conv.mode === 'decks' && idea && idea.hearing !== 'idea') {
-        const before = editingSerial();
-        hearToggle();
-        if (conv.decks) conv.decks = { ...conv.decks, before, after: editingSerial() };
+      if (conv.mode === 'decks' && conv.decks && heard.ok) {
+        if (idea && idea.hearing !== 'idea' && idea.hearing !== 'kept') hearToggle();
+        conv.decks.after = editingSerial();
       }
       return heard.text;
     }

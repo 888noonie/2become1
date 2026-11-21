@@ -274,3 +274,98 @@ test('the next passage can put the pitch back to zero', async () => {
     ANALYSIS.B.sections[0].meanChroma = originalChroma;
   }
 });
+
+test('Hear it rechecks the project tempo instead of replaying a stale fit', async () => {
+  const { s, btn, tell } = await mounted();
+  await tell('Try the strongest match');
+  s.state.transport.masterBpm = 220;
+  btn('Hear it').click();
+  for (let i = 0; i < 40 && ideaClip(s)?.stretchMode !== 'manual'; i += 1) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  const clip = ideaClip(s);
+  assert.equal(clip.stretchMode, 'manual');
+  assert.equal(clip.customStretchRatio, 1);
+});
+
+test('a natural-speed chorus is matched where it is heard', async () => {
+  const { s, btn, tell } = await mounted();
+  const vocal = s.state.clips.find((clip) => clip.trackIndex === 0);
+  s.apply({ name: 'setClipStretch', args: { clipId: vocal.id, ratioOrAuto: 1 } });
+  s.state.transport.masterBpm = 220;
+  await tell('Try the strongest match');
+  btn('Hear it').click();
+  const clip = ideaClip(s);
+  assert.ok(Math.abs(clip.timelineStartBeat - 35.2) < 1e-6, `placed at ${clip.timelineStartBeat}`);
+});
+
+test('a hand edit during Play is not inside the Take back checkpoint', async () => {
+  const { s, tell } = await mounted();
+  const drums = s.state.clips.find((clip) => clip.trackIndex === 1);
+  s.play = async () => {
+    s.apply({ name: 'setClipGain', args: { clipId: drums.id, gainDb: -9 } });
+    return false;
+  };
+  await tell('Take the decks');
+  assert.equal(s.state.clips.find((clip) => clip.id === drums.id).clipGainDb, -9);
+  assert.match(await tell('Take back'), /will not take that away/);
+  assert.equal(s.state.clips.find((clip) => clip.id === drums.id).clipGainDb, -9);
+});
+
+test('Take back includes a Producer move made while the decks are still held', async () => {
+  const { s, tell } = await mounted();
+  const strip = (text) => {
+    const copy = JSON.parse(text);
+    delete copy.transport.playheadBeat;
+    delete copy.transport.isPlaying;
+    return JSON.stringify(copy);
+  };
+  const origin = strip(s.edit.serialize());
+  await tell('Take the decks');
+  await tell('Put it at bar 17');
+  assert.match(await tell('Take back'), /decks are yours/);
+  assert.equal(strip(s.edit.serialize()), origin);
+});
+
+test('a failed passage load does not commit the previous preview', async () => {
+  const { s, tell } = await mounted();
+  await tell('Try the strongest match');
+  const before = s.edit.serialize();
+  const match = ANALYSIS.B.sections[0].meanChroma;
+  const decoy = ANALYSIS.B.sections[1].meanChroma;
+  ANALYSIS.B.sections[0].meanChroma = decoy.slice();
+  ANALYSIS.B.sections[1].meanChroma = match.slice();
+  s.loadSource = async () => { throw new Error('uncached'); };
+  try {
+    const said = await tell('Take the decks');
+    assert.match(said, /couldn.t load|could not load/i);
+    assert.equal(s.edit.serialize(), before);
+  } finally {
+    ANALYSIS.B.sections[0].meanChroma = match;
+    ANALYSIS.B.sections[1].meanChroma = decoy;
+  }
+});
+
+test('You play during a take stops the clip from landing', async () => {
+  const match = ANALYSIS.B.sections[0].meanChroma.slice();
+  const decoy = ANALYSIS.B.sections[1].meanChroma.slice();
+  ANALYSIS.B.sections[0].meanChroma = decoy.slice();
+  ANALYSIS.B.sections[1].meanChroma = match.slice();
+  try {
+    const { s, prod, tell } = await mounted();
+    const count = s.state.clips.length;
+    let release;
+    s.loadSource = () => new Promise((resolve) => { release = resolve; });
+    const pending = tell('Take the decks');
+    for (let i = 0; i < 150 && !release; i += 1) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(release, 'the take waited on the passage');
+    [...prod.querySelectorAll('button')].find((b) => b.textContent === 'You play').click();
+    release();
+    const said = await pending;
+    assert.match(said, /You play is on/);
+    assert.equal(s.state.clips.length, count);
+  } finally {
+    ANALYSIS.B.sections[0].meanChroma = match;
+    ANALYSIS.B.sections[1].meanChroma = decoy;
+  }
+});

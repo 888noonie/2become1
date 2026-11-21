@@ -335,4 +335,12 @@ def test_chorus_fit_route_accepts_descriptors_and_refuses_extra_fields(tmp_path)
     })
     assert missing.status_code == 200
     assert missing.json()["candidates"][0]["evidence"] == "missing"
+    huge = [1e200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    overflow = client.post("/api/chorus-fit", json={
+        "target": {"id": "a", "meanChroma": huge},
+        "candidates": [{"id": "b", "meanChroma": huge}],
+    })
+    assert overflow.status_code == 200
+    assert overflow.json()["candidates"][0]["evidence"] == "missing"
+    assert overflow.json()["candidates"][0]["harmonic"]["cosine"] is None
     app.state.studio.close()

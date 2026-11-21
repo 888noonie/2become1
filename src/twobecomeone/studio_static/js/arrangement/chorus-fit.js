@@ -5,6 +5,7 @@
 // Producer already hears, keeps and throws away.
 
 import { MIN_VOLUME_DB } from './project-state.js';
+import { secondsToBeats, sourceAdvanceRate } from './time-math.js';
 
 export const AUTO_PITCH_LIMIT = 2;
 export const DECK_REVISIONS = 4;
@@ -69,21 +70,41 @@ export function scoredRows(rank) {
 }
 
 /**
- * Take the Decks may pick a playable neighbour of the safest chroma match.
- * "Playable" means the as-read stretch is inside the qualified band and the
- * pitch stays at zero. A higher cosine that needs an unqualified pitch does
- * not automatically win.
- */
-/**
- * `fit` only when the project's tempo ratio is the ratio the ranker qualified.
- * A later master-tempo change must not turn 0.909 into a 2× beat-sync.
+ * `fit` only when both ratios sit inside 0.857–1.2 and they are the same ratio.
+ * A project tempo of 1.21 must not sneak in beside a qualified 1.2.
  */
 export function playbackSpeed(qualifiedStretch, projectRatio) {
   if (typeof qualifiedStretch !== 'number' || typeof projectRatio !== 'number') return 'natural';
   if (!Number.isFinite(qualifiedStretch) || !Number.isFinite(projectRatio)) return 'natural';
-  if (qualifiedStretch < 0.857 || qualifiedStretch > 1.2) return 'natural';
+  const inside = (value) => value >= 0.857 && value <= 1.2;
+  if (!inside(qualifiedStretch) || !inside(projectRatio)) return 'natural';
   if (Math.abs(projectRatio - qualifiedStretch) > 0.02) return 'natural';
   return 'fit';
+}
+
+/**
+ * Where `sourceSec` of `song` is heard on the current timeline.
+ * The clip's own rate is the mapping. A source bar number is not a project bar.
+ */
+export function arrangementBeatForSource(state, song, sourceSec) {
+  if (!state || !Number.isFinite(sourceSec)) return null;
+  const base = song === 'B' ? 4 : 0;
+  const clips = state.clips.filter((clip) => clip.trackIndex >= base && clip.trackIndex < base + 4);
+  const ordered = [...clips.filter((clip) => clip.trackIndex === base), ...clips.filter((clip) => clip.trackIndex !== base)];
+  for (const clip of ordered) {
+    const asset = state.assets[clip.assetId];
+    if (!asset) continue;
+    const section = asset.source?.section;
+    const sectionStart = section && typeof section === 'object' ? Number(section.startSec) || 0 : 0;
+    const rangeStart = sectionStart + (Number(clip.sourceOffsetSec) || 0);
+    let rate;
+    try { rate = sourceAdvanceRate(clip, asset, state.transport.masterBpm); } catch { continue; }
+    if (!Number.isFinite(rate) || rate <= 0) continue;
+    const rangeEnd = rangeStart + clip.durationBeats * (60 / state.transport.masterBpm) * rate;
+    if (sourceSec < rangeStart - 1e-6 || sourceSec > rangeEnd + 1e-6) continue;
+    return clip.timelineStartBeat + secondsToBeats((sourceSec - rangeStart) / rate, state.transport.masterBpm);
+  }
+  return null;
 }
 
 export function deckChoice(rank) {
