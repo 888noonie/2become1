@@ -213,12 +213,15 @@ function songsWithVocals(state, groups) {
   return ['A', 'B'].filter((g) => groups[g] && state.clips.some((c) => c.trackIndex === laneIndex(g, 'vocals')));
 }
 
+/** Said when a four-bar vocal entrance also asks for an effect the DAW cannot do. */
+export const EFFECT_ENTRANCE_REPLY = "I can't add that effect yet. Ask for the vocal entrance on its own and I can shape the level.";
+
 /** A level move over time, not a clip fade. Null when the sentence is not one. */
 export function entranceRequest(sentence) {
   const n = normUtterance(sentence);
   if (!/\b(?:bring|fade)\b/.test(n) || !/\bvocals?\b/.test(n) || !/\bin\b/.test(n)) return null;
   if (!/\b(?:four|4) bars\b/.test(n) || !/\b(?:gradually|across|over)\b/.test(n)) return null;
-  if (/\b(?:reverb|echo|delay|distortion|reverse|reversing)\b/.test(n)) return null;
+  if (/\b(?:reverb|echo|delay|distortion|reverse|reversing)\b/.test(n)) return { refused: true };
   return { first: /\bfirst (?:four|4) bars\b/.test(n) };
 }
 
@@ -263,6 +266,7 @@ function applySentence(intentIn, ctx) {
   const sentence = ctx.sentence;
   if (!sentence) return { intent: intentIn };
   const entrance = entranceRequest(sentence);
+  if (entrance?.refused) return { say: EFFECT_ENTRANCE_REPLY };
   if (entrance) return vocalEntrance(sentence, entrance, ctx);
   const intent = { ...intentIn };
   const explicit = namedSong(sentence);
@@ -311,6 +315,7 @@ function applySentence(intentIn, ctx) {
 export function applyIntent(prev, intentIn, ctx) {
   const read = applySentence(intentIn, ctx);
   if (read.ask) return { ask: read.ask };
+  if (read.say) return { say: read.say };
   if (read.spec) return { spec: read.spec };
   let intent = read.intent;
   const { state, analyses = {}, groups = {}, resolved = {}, selectedClipId = null, pending = null } = ctx;

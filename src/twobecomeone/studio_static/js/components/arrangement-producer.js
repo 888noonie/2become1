@@ -642,17 +642,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         state: session.state, analyses: conv.analyses, groups, selectedClipId: selectedClipId(), pending: conv.pending,
         sentence: message, mine: project.mine,
       });
-      // An effect named in the same breath is not a level move. The local
-      // entrance rule must not drop it and offer Hear it.
-      if (/\b(?:reverb|echo|delay|distortion)\b/i.test(message)
-        && /\b(?:bring|fade)\b/i.test(message) && /\bvocals?\b/i.test(message)
-        && /\b(?:four|4) bars\b/i.test(message)) {
-        const reply = "I can't add that effect yet. Ask for the vocal entrance on its own and I can shape the level.";
-        line('producer', reply, 'is-local');
-        say(reply);
-        return;
-      }
-      // A curve or a half-beat nudge we can already name must not wait on the model.
+      // A curve, a refused effect on that curve, or a half-beat nudge we can
+      // already name must not wait on the model. The matcher says the effect
+      // is unavailable and does not offer Hear it.
       if (entranceRequest(message) || halfBeatOnly(message) !== null) {
         const outcome = applyIntent(spec, { action: 'adjust' }, { ...intentCtx(), resolved: {} });
         await settle(outcome, null);

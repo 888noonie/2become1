@@ -322,6 +322,20 @@ test('pan uses the same hold, line, and step, and does not add track.pan', () =>
   assert.equal(panAtBeat(step, 2), 1);
 });
 
+test('a pan hold before the move is not ramped away', () => {
+  const track = { pan: 0.8, panPoints: [{ beat: 4, pan: -1 }, { beat: 8, pan: 1 }] };
+  const map = createTransportMap({ startFrame: 0, loop: null, sampleRate: SR });
+  const pan = new FakeAudioParam({ currentTime: 0 }, 0);
+  schedulePanEnvelope(pan, track, {
+    originSec: 0, map, sampleRate: SR, bpm: BPM, now: 0,
+  });
+  const early = -1 + (1 / 4) * 2;
+  assert.ok(Math.abs(early - (-0.5)) < 1e-9, 'negative control: an early pan ramp is already halfway');
+  assert.ok(Math.abs(pan.valueAt(1) - (-1)) < 1e-6, `at 1.000 s pan is ${pan.valueAt(1)}, want -1`);
+  assert.ok(Math.abs(pan.valueAt(1) - early) > 0.4);
+  assert.ok(Math.abs(pan.valueAt(3) - 0) < 1e-6, 'beat 6 is the pan midpoint');
+});
+
 test('pan scheduling writes the pan param and leaves the gain param alone', () => {
   const gain = new FakeAudioParam({ currentTime: 0 }, 0.5);
   const pan = new FakeAudioParam({ currentTime: 0 }, 0);
@@ -379,14 +393,25 @@ test('clearing the envelope removes it and the plan copies points without touchi
 });
 
 test('a hold before the first rise is not ramped away', () => {
-  const track = { volumeDb: 0, gainPoints: [{ beat: 4, db: -60 }, { beat: 8, db: 0 }] };
+  const track = { volumeDb: 0, audible: true, trackIndex: 0, gainPoints: [{ beat: 4, db: -60 }, { beat: 8, db: 0 }] };
   const floor = dbToLinear(-60);
   assert.equal(gainLinearAtBeat(track, 2), floor);
   const heard = paramAt(track, 1);
+  // Negative control: skipping the equal event at beat 4 ramps from beat 0,
+  // so 1.000 s (frame 48,000) is already 0.25075.
+  const skippedEqual = floor + (1 / 4) * (1 - floor);
+  assert.ok(Math.abs(skippedEqual - 0.25075) < 1e-6, 'the defective early ramp is still the one Codex measured');
   assert.ok(Math.abs(heard - floor) < 1e-6, `at 1.000 s the hold is ${heard}, want ${floor}`);
+  assert.ok(Math.abs(heard - skippedEqual) > 0.2, 'the scheduler must not follow the early ramp');
   const mid = paramAt(track, 3);
   const want = gainLinearAtBeat(track, 6);
   assert.ok(Math.abs(mid - want) < 1e-6, `at 3.000 s the rise is ${mid}, want ${want}`);
+  const offline = new FakeAudioParam({ currentTime: 0 }, 0);
+  scheduleOfflineEnvelopes({ trackInputs: { 'gain-0': { gain: offline } } }, {
+    sampleRate: SR, masterBpm: BPM, loopRange: [0, 8 * SR], tracks: [track],
+  }, 0);
+  assert.ok(Math.abs(offline.valueAt(1) - heard) < 1e-9, 'export holds the same level live playback holds');
+  assert.ok(Math.abs(offline.valueAt(3) - mid) < 1e-9, 'export rises on the same line');
 });
 
 test('a long loop does not reach the loop-end gain inside the first window', () => {
@@ -395,7 +420,12 @@ test('a long loop does not reach the loop-end gain inside the first window', () 
   const map = createTransportMap({ startFrame: 0, loop: [0, loopEnd], sampleRate: SR });
   const heard = paramAt(track, 60, { map });
   const want = gainLinearAtBeat(track, 120);
+  // Negative control: writing the loop-end value at the 120 s horizon makes
+  // 60 s the midpoint, 0.5005, which is a whole quarter of the rise too loud.
+  const horizonStealsLoopEnd = dbToLinear(-60) + 0.5 * (1 - dbToLinear(-60));
+  assert.ok(Math.abs(horizonStealsLoopEnd - 0.5005) < 1e-4);
   assert.ok(Math.abs(heard - want) < 1e-4, `at 60 s the live window is ${heard}, want ${want}`);
+  assert.ok(Math.abs(heard - horizonStealsLoopEnd) > 0.2);
 });
 
 test('a later epoch keeps the outgoing curve until the handover', () => {

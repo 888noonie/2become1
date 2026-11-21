@@ -416,10 +416,25 @@ test('a four-bar vocal entrance is setTrackGainEnvelope from the vocal clip, and
   });
   const digitCmds = commandsOf(e.state, buildIdea(e.state, digits.spec, { analyses, groups }));
   assert.deepEqual(digitCmds[0].args.points, [{ beat: 0, db: -60 }, { beat: 16, db: 0 }]);
+  const spelled = applyIntent(null, { action: 'adjust' }, {
+    ...ctx, state: e.state, sentence: 'bring song B vocals in gradually across the first four bars',
+  });
+  const numeral = applyIntent(null, { action: 'adjust' }, {
+    ...ctx, state: e.state, sentence: 'bring song B vocals in gradually across the first 4 bars',
+  });
+  assert.deepEqual(
+    commandsOf(e.state, buildIdea(e.state, spelled.spec, { analyses, groups }))[0].args.points,
+    commandsOf(e.state, buildIdea(e.state, numeral.spec, { analyses, groups }))[0].args.points,
+  );
+  assert.deepEqual(
+    commandsOf(e.state, buildIdea(e.state, numeral.spec, { analyses, groups }))[0].args.points,
+    [{ beat: 0, db: -60 }, { beat: 16, db: 0 }],
+  );
   const reverb = applyIntent(null, { action: 'adjust' }, {
     ...ctx, state: e.state, sentence: 'bring song B vocals in gradually with reverb across four bars',
   });
   assert.equal(reverb.spec, undefined);
+  assert.match(reverb.say, /can.t add that effect yet/);
   assert.equal(firstCmds[0].args.trackIndex, 4);
 
   const onlyB = {

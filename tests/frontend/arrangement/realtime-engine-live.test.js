@@ -21,6 +21,8 @@ import {
 } from '../../../src/twobecomeone/studio_static/js/realtime-engine.js';
 import { STRICT_LIFECYCLE } from '../../../src/twobecomeone/studio_static/js/voice-pool.js';
 import { SEEK_RAMP_FRAMES, LOOP_XFADE_FRAMES, STOP_RAMP_FRAMES } from '../../../src/twobecomeone/studio_static/js/arrangement/gate-envelope.js';
+import { gainLinearAtBeat } from '../../../src/twobecomeone/studio_static/js/arrangement/automation.js';
+import { dbToLinear } from '../../../src/twobecomeone/studio_static/js/arrangement/render-plan.js';
 
 installFakeWorkletGlobal();
 
@@ -876,4 +878,88 @@ test('BROKEN RECORD: a loop shorter than the scheduling horizon is refused; pool
   assert.equal(small.engine.state().loop, null, 'refused loop is not shown as on');
   assert.equal(small.engine.state().phase, 'playing', 'current audio untouched');
   engine.dispose(); small.engine.dispose();
+});
+
+function trackGain(engine, index = 0) {
+  return engine.backbone.trackInputs[`gain-${index}`].gain;
+}
+
+test('seeking while a rise is sounding keeps the outgoing level until the handover', async () => {
+  const { ctx, engine, plan } = await makeEngine({
+    clips: [planClip({ clipId: 'vox', start: 0, length: 20 * SR })],
+  });
+  plan.tracks[0].gainPoints = [{ beat: 0, db: -60 }, { beat: 16, db: 0 }];
+  engine.play();
+  await engine.settle();
+  const origin = engine.active.originSec;
+  const at = origin + 4;
+  await advance(ctx, engine, at);
+  const gain = trackGain(engine);
+  const mid = gainLinearAtBeat(plan.tracks[0], 8);
+  assert.ok(Math.abs(gain.valueAt(at) - mid) < 1e-4, `at musical 4 s gain is ${gain.valueAt(at)}`);
+  engine.seek(0);
+  const probe = at + 0.05;
+  const outgoing = gainLinearAtBeat(plan.tracks[0], 4.05 * (120 / 60));
+  const snapped = dbToLinear(-60);
+  assert.ok(Math.abs(outgoing - 0.50674375) < 1e-4, 'negative control still names the handover level');
+  assert.ok(Math.abs(gain.valueAt(probe) - outgoing) < 1e-3, `outgoing at +50 ms is ${gain.valueAt(probe)}, want ${outgoing}`);
+  assert.ok(Math.abs(gain.valueAt(probe) - snapped) > 0.4, 'the handover must not snap to the new entrance');
+  const takeover = engine.active.originSec;
+  assert.ok(Math.abs(gain.valueAt(takeover) - snapped) < 1e-3, 'the incoming epoch starts on its own curve');
+  engine.dispose();
+});
+
+test('clearing the envelope glides from the level that is sounding', async () => {
+  const { ctx, engine, plan } = await makeEngine({
+    clips: [planClip({ clipId: 'vox', start: 0, length: 20 * SR })],
+  });
+  plan.tracks[0].gainPoints = [{ beat: 0, db: -60 }, { beat: 16, db: 0 }];
+  engine.play();
+  await engine.settle();
+  const origin = engine.active.originSec;
+  const at = origin + 4;
+  await advance(ctx, engine, at);
+  const cleared = structuredClone(plan);
+  cleared.tracks[0].gainPoints = [];
+  await engine.replacePlan(cleared);
+  const gain = trackGain(engine);
+  const sounding = gainLinearAtBeat({ volumeDb: 0, gainPoints: [{ beat: 0, db: -60 }, { beat: 16, db: 0 }] }, 8);
+  const snapped = dbToLinear(-60);
+  const glideMs = sounding + (0.001 / 0.02) * (1 - sounding);
+  assert.ok(Math.abs(glideMs - 0.525475) < 1e-4, 'negative control still names the 20 ms glide');
+  assert.ok(Math.abs(gain.valueAt(at) - sounding) < 1e-3, `cleared at the edit is ${gain.valueAt(at)}, want ${sounding}`);
+  assert.ok(Math.abs(gain.valueAt(at + 0.001) - glideMs) < 1e-3, `1 ms into the glide is ${gain.valueAt(at + 0.001)}`);
+  assert.ok(Math.abs(gain.valueAt(at + 0.001) - 0.05095) > 0.4, 'the glide must not restart from the cancelled ramp');
+  assert.ok(Math.abs(gain.valueAt(at) - snapped) > 0.4);
+  engine.dispose();
+});
+
+test('a slow first batch moves the gain step with the voices', async () => {
+  let slow = false;
+  const factory = fakeStretchFactory({ beforeResolve: (ctx) => { if (slow) ctx.currentTime += 0.08; } });
+  const { ctx, engine, plan, log } = await makeEngine({
+    clips: [planClip({ clipId: 'arp', start: 0, length: 4 * SR, rate: 1.2 })],
+    factory,
+  });
+  plan.tracks[0].gainPoints = [{ beat: 0.1, db: -60 }, { beat: 0.1, db: 0 }];
+  slow = true;
+  engine.play();
+  await engine.settle();
+  assert.ok(log.warn.some((w) => w.code === 'START_DELAYED'));
+  const origin = engine.active.originSec;
+  const shift = engine.diagnostics().startDelaysMs[0] / 1000;
+  const staleStep = (origin - shift) + 0.05;
+  const step = origin + 0.05;
+  const probe = origin + 0.025;
+  const gain = trackGain(engine);
+  const floor = dbToLinear(-60);
+  const leftBehind = 1;
+  assert.ok(shift > 0.03, 'the fixture really did move the clock');
+  assert.ok(probe > staleStep, '25 ms into the moved clip is after the step the old clock would have played');
+  assert.ok(Math.abs(gain.valueAt(probe) - floor) < 1e-3, `25 ms into the clip is ${gain.valueAt(probe)}, want ${floor}; stale ${staleStep} is ${gain.valueAt(staleStep)}, step ${step} is ${gain.valueAt(step)}`);
+  assert.ok(Math.abs(gain.valueAt(probe) - leftBehind) > 0.5, 'a step left on the old clock would already be unity here');
+  assert.ok(Math.abs(gain.valueAt(step) - 1) < 1e-3, `the step is at ${step}, value ${gain.valueAt(step)}`);
+  assert.ok(Math.abs(gain.valueAt(staleStep) - floor) < 1e-3, `the old step time ${staleStep} is still the hold (${gain.valueAt(staleStep)})`);
+  void ctx;
+  engine.dispose();
 });

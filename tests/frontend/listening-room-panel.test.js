@@ -262,6 +262,51 @@ test('the four-bar vocal entrance does not call the model', async () => {
   assert.deepEqual(env.args.points, [{ beat: 64, db: -60 }, { beat: 80, db: 0 }]);
 });
 
+test('Undo then Hear mine keeps the musician mix and does not throw', async () => {
+  const { s, btn, tell } = await mounted([]);
+  const vocal = s.state.clips.find((c) => c.trackIndex === 4);
+  assert.equal(s.apply({ name: 'moveClip', args: { clipId: vocal.id, newTrackIndex: 4, newStartBeat: 64 } }).ok, true);
+  const mine = s.edit.serialize();
+  const said = await tell('bring song B vocals in gradually across four bars');
+  assert.match(said, /Hear it/);
+  btn('Hear it').click();
+  assert.deepEqual(s.state.tracks[4].gainPoints, [{ beat: 64, db: -60 }, { beat: 80, db: 0 }]);
+  assert.equal(s.undo(), true);
+  assert.equal(s.state.tracks[4].gainPoints, undefined);
+  assert.doesNotThrow(() => btn('Hear mine').click());
+  assert.equal(s.state.tracks[4].gainPoints, undefined, 'Hear mine does not write the discarded entrance back');
+  assert.equal(s.edit.serialize(), mine);
+});
+
+test('a reverb entrance is refused in words and the arrangement stays', async () => {
+  const { s, calls, tell } = await mounted([{ action: 'propose', reply: 'Adding reverb.', fade_in: 16 }]);
+  const before = s.edit.serialize();
+  const said = await tell('bring song B vocals in gradually with reverb across four bars');
+  assert.match(said, /can.t add that effect yet/);
+  assert.equal(s.edit.serialize(), before);
+  assert.equal(calls.filter((c) => c.url === '/api/producer/converse').length, 0);
+});
+
+test('first four and first 4 place the vocal entrance on the same bars', async () => {
+  const { s, tell } = await mounted([]);
+  const vocal = s.state.clips.find((c) => c.trackIndex === 4);
+  assert.equal(s.apply({ name: 'moveClip', args: { clipId: vocal.id, newTrackIndex: 4, newStartBeat: 64 } }).ok, true);
+  const seen = [];
+  const orig = s.edit.propose.bind(s.edit);
+  s.edit.propose = (cmd) => { seen.push(cmd); return orig(cmd); };
+  const points = async (sentence) => {
+    seen.length = 0;
+    await tell(sentence);
+    return seen.flatMap((c) => c.args?.commands ?? []).find((c) => c.name === 'setTrackGainEnvelope')?.args.points;
+  };
+  const spelled = await points('bring song B vocals in gradually across the first four bars');
+  const numeral = await points('bring song B vocals in gradually across the first 4 bars');
+  const atClip = await points('bring song B vocals in gradually across 4 bars');
+  assert.deepEqual(spelled, [{ beat: 0, db: -60 }, { beat: 16, db: 0 }]);
+  assert.deepEqual(numeral, spelled);
+  assert.deepEqual(atClip, [{ beat: 64, db: -60 }, { beat: 80, db: 0 }]);
+});
+
 test('a question, an unsupported request and a model outage are said plainly; hand editing still works', async () => {
   const { s, tell } = await mounted([
     { action: 'clarify', reply: '', question: 'Which song is yours, A or B?' },

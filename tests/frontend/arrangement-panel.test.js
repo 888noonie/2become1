@@ -181,6 +181,28 @@ test('Producer: Hear it / Hear mine / Keep / Undo write the same ProjectState; h
   assert.equal(s.phase(), 'audio off', 'the Producer never starts playback');
 });
 
+test('arrow keys edit the focused level point and leave a focused fader alone', async () => {
+  const { s, container, api } = await mounted();
+  assert.equal(s.apply({
+    name: 'setTrackGainEnvelope',
+    args: { trackIndex: 4, points: [{ beat: 4, db: -6 }] },
+  }).ok, true);
+  api.render();
+  const handle = container.querySelector('.daw__lane[data-track="4"] [data-env-point]');
+  assert.ok(handle, 'the point has a button');
+  handle.focus();
+  handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+  assert.equal(s.state.tracks[4].gainPoints[0].db, -5, 'keyboard focus on the point raises that point');
+  const master = container.querySelector('[aria-label="Master level (exported)"]');
+  const before = s.edit.serialize();
+  master.focus();
+  const ev = new window.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true });
+  master.dispatchEvent(ev);
+  assert.equal(ev.defaultPrevented, false, 'the master fader keeps the key');
+  assert.equal(s.state.tracks[4].gainPoints[0].db, -5, 'the point does not move while the fader is focused');
+  assert.equal(s.edit.serialize(), before);
+});
+
 test('Producer Keep mine sets the unheard idea aside without applying it', async () => {
   const { s, container } = await mounted();
   const prod = container.querySelector('.daw__producer');
