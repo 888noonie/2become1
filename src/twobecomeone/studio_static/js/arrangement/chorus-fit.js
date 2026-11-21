@@ -28,6 +28,11 @@ export function chorusUtterance(text) {
   if (n === 'give the build more energy') return { kind: 'decks', style: 'energy' };
   if (n === 'stop i ll take it from here' || n === 'stop ill take it from here') return { kind: 'take-back' };
   if (n === 'take back') return { kind: 'take-back' };
+  if (/\bi ll take over\b/.test(n) || /\btake over from here\b/.test(n)) return { kind: 'take-over' };
+  if (/\bput the arrangement back\b/.test(n) || n === 'restore the arrangement') return { kind: 'restore' };
+  if (/\bprevious vocal\b/.test(n) || /\bearlier vocal\b/.test(n)) return { kind: 'previous-vocal' };
+  if (/\bcompletely different\b/.test(n) || /\bsomething different\b/.test(n)) return { kind: 'another-plan' };
+  if (/\bmore energy\b/.test(n) || /\bmore energetic\b/.test(n)) return { kind: 'decks', style: 'energy' };
   if (n === 'which part of b fits this chorus' || n === 'which part of song b fits this chorus') {
     return { kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' };
   }
@@ -122,8 +127,8 @@ function speedFor(row) {
 }
 
 /**
- * Two sketches for the same readings. The count is measurable structure
- * (both songs, a handoff, pitch left alone). It is not a judgement of taste.
+ * Several structures from the same readings. The differences are where the
+ * vocal enters and what the drums do. A cosine is not a judgement of taste.
  */
 export function arrangementPlans({ rank, sections = [], chorusBeat, bpb = 4, secondChorusId = null } = {}) {
   const rows = scoredRows(rank);
@@ -182,7 +187,52 @@ export function arrangementPlans({ rank, sections = [], chorusBeat, bpb = 4, sec
     transition: true,
     issues: ['This changes the rhythm bed. It is a different sketch, not a higher score.'],
   };
-  return { plans: [lock, swap] };
+  const later = chorusBeat + 8 * bpb;
+  const instrumental = {
+    id: 'instrumental',
+    title: 'Instruments lead, then B sings',
+    adventurous: true,
+    vocal: { ...vocalOf(vocalRow, 4), startBeat: later },
+    parts: handoffRow ? [{
+      song: 'B', sectionId: handoffRow.id, stem: 'drums', startBeat: later + bars * bpb,
+      fadeIn: 4 * bpb, fadeOut: 0, speed: speedFor(handoffRow), pitch: 0,
+      afterVocal: true, applyStretch: handoffRow.tempo?.applyStretch ?? null,
+    }] : [],
+    trims: [
+      { song: 'A', stem: 'vocals', endBeat: later },
+      { song: 'A', stem: 'drums', endBeat: later, atVocalEnd: true },
+    ],
+    entranceBars: 4,
+    bothSongs: true,
+    transition: true,
+    issues: ['The vocal waits eight bars. The instruments lead. That is a later entrance, not a proved emotion.'],
+  };
+  const dropped = chorusBeat + 4 * bpb;
+  const breakdown = {
+    id: 'breakdown',
+    title: 'The drums drop out, then return',
+    adventurous: true,
+    vocal: { ...vocalOf(handoffRow ?? vocalRow, 2), startBeat: dropped },
+    parts: handoffRow ? [{
+      song: 'B', sectionId: vocalRow.id, stem: 'drums', startBeat: dropped,
+      fadeIn: bpb, fadeOut: 0, speed: speedFor(vocalRow), pitch: 0,
+      afterVocal: true, applyStretch: vocalRow.tempo?.applyStretch ?? null,
+    }] : [],
+    trims: [
+      { song: 'A', stem: 'drums', endBeat: chorusBeat },
+      { song: 'A', stem: 'vocals', endBeat: dropped },
+    ],
+    entranceBars: 2,
+    bothSongs: true,
+    transition: Boolean(handoffRow),
+    issues: handoffRow
+      ? ['A’s drums stop at the chorus. B’s drums return when the vocal ends.']
+      : ['A’s drums stop at the chorus. There is no second section to bring the drums back.'],
+  };
+  const plans = [lock, instrumental, breakdown, swap];
+  const shapes = new Set(plans.map((plan) => `${plan.vocal.stem}@${plan.vocal.startBeat}/${plan.trims.map((trim) => trim.stem + (trim.atVocalEnd ? '*' : trim.endBeat)).join(',')}`));
+  const note = shapes.size < 3 ? 'These recordings did not support three different structures.' : '';
+  return { plans, note };
 }
 
 export function measurePlan(plan) {
@@ -205,9 +255,14 @@ export function stylePlan(plan, style, { bpb = 4 } = {}) {
   if (!plan || !style) return plan;
   const next = structuredClone(plan);
   if (style === 'energy') {
+    const earlier = Math.max(0, next.vocal.startBeat - bpb * 4);
+    for (const trim of next.trims ?? []) {
+      if (trim.song === 'A' && trim.stem === 'vocals' && trim.endBeat === next.vocal.startBeat) trim.endBeat = earlier;
+    }
+    next.vocal.startBeat = earlier;
     next.vocal.fadeIn = bpb;
     next.entranceBars = 1;
-    next.issues = [...next.issues, 'The entrance is one bar. That is a shorter fade, not a measurement of energy.'];
+    next.issues = [...next.issues, 'The vocal comes in sooner and the entrance is one bar. That is a structural move, not a measurement of energy.'];
   }
   if (style === 'transition' && next.parts[0]) {
     next.parts[0].fadeIn = 8 * bpb;

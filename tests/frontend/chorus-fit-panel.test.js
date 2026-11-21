@@ -230,12 +230,11 @@ test('Take the decks writes both songs, and another sketch keeps a hand edit', a
   assert.ok(s.state.clips.find((clip) => clip.id === drums.id).durationBeats < drumsBefore - 1);
   s.apply({ name: 'setTrackVolume', args: { trackIndex: 1, volumeDb: -9 } });
   const again = await tell('Try another arrangement');
-  assert.match(again, /drums take the bed/);
+  assert.match(again, /Instruments lead/);
   assert.equal(s.state.tracks[1].volumeDb, -9);
-  assert.equal(s.state.clips.filter((clip) => String(clip.id).startsWith('idea-')).length, 1);
   assert.match(await tell('Take back'), /decks are yours/);
   assert.equal(s.state.tracks[1].volumeDb, -9);
-  assert.ok(s.state.clips.some((clip) => String(clip.id).startsWith('idea-')), 'the first sketch stays after the hand edit');
+  assert.ok(s.state.clips.some((clip) => String(clip.id).startsWith('idea-')), 'the hand edit keeps the earlier sketch');
 });
 
 test('You play does not nudge a take', async () => {
@@ -253,9 +252,11 @@ test('returning to the first sketch trims the bed to the same handoff', async ()
   const bed = () => s.state.clips.find((clip) => clip.trackIndex === 1 && !String(clip.id).startsWith('idea-'));
   const first = bed().durationBeats;
   await tell('Try another arrangement');
-  assert.ok(bed().durationBeats < first - 1);
+  const second = bed().durationBeats;
   await tell('Try another arrangement');
-  assert.ok(Math.abs(bed().durationBeats - first) < 0.05, `bed ${bed().durationBeats} first ${first}`);
+  const third = bed().durationBeats;
+  assert.ok(Math.abs(second - first) > 1, `second ${second} first ${first}`);
+  assert.ok(Math.abs(third - second) > 1, `third ${third} second ${second}`);
 });
 
 test('a one-and-a-half-beat remainder still accepts the sketch', async () => {
@@ -295,6 +296,51 @@ test('a fast project keeps the handoff at the passage’s own speed', async () =
     assert.equal(clip.stretchMode, 'manual');
     assert.equal(clip.customStretchRatio, 1);
   }
+});
+
+test('energy, a different structure, and the previous vocal stay editable', async () => {
+  const { s, prod, tell } = await mounted();
+  const pressed = () => prod.querySelector('button[aria-pressed="true"]').textContent;
+  await tell('Take the decks');
+  const vocal = () => s.state.clips.find((clip) => clip.trackIndex === 4 && String(clip.id).startsWith('idea-'));
+  const passage = (clip) => s.state.assets[clip.assetId]?.source?.passage?.name;
+  const firstStart = vocal().timelineStartBeat;
+  const firstName = passage(vocal());
+  const secondReply = await tell('Try something completely different');
+  const thirdReply = await tell('Try something completely different');
+  assert.notEqual(vocal().timelineStartBeat, firstStart, `${secondReply} || ${thirdReply} || start ${vocal()?.timelineStartBeat} was ${firstStart}`);
+  assert.notEqual(passage(vocal()), firstName, `${passage(vocal())} vs ${firstName}`);
+  const keptStart = vocal().timelineStartBeat;
+  await tell('I preferred the previous vocal');
+  assert.equal(passage(vocal()), firstName);
+  assert.equal(vocal().timelineStartBeat, keptStart);
+  await tell("That works. I'll take over.");
+  assert.equal(pressed(), 'Jam together');
+  assert.match(await tell('Try something completely different'), /Take the decks when/);
+});
+
+test('more energy brings the vocal in sooner', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const vocal = () => s.state.clips.find((clip) => clip.trackIndex === 4 && String(clip.id).startsWith('idea-'));
+  const start = vocal().timelineStartBeat;
+  await tell('Give it more energy');
+  assert.ok(vocal().timelineStartBeat < start, `${vocal().timelineStartBeat} vs ${start}`);
+});
+
+test('Take back during the fetch does not place the take', async () => {
+  const { s, prod, tell } = await mounted();
+  const original = s.loadSource.bind(s);
+  let release;
+  s.loadSource = (spec) => new Promise((resolve, reject) => { release = () => original(spec).then(resolve, reject); });
+  const pending = tell('Take the decks');
+  for (let i = 0; i < 150 && !release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  const stopped = tell('Take back');
+  release();
+  await pending;
+  await stopped;
+  assert.equal(s.state.clips.filter((clip) => String(clip.id).startsWith('idea-')).length, 0);
+  assert.equal(prod.querySelector('button[aria-pressed="true"]').textContent, 'Jam together');
 });
 
 test('Take the decks writes one arrangement and Take back restores it', async () => {

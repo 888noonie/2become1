@@ -422,6 +422,50 @@ _ALL_FIELDS = set().union(*_FIELDS_FOR.values()) | {"label"}
 _IDENTIFIERS = {"song", "stem", "section", "lyric", "occurrence", "clip", "lane"}
 
 
+_CREATIVE_MOVES = {"energy", "different", "previous-vocal", "take-over", "gentle", "surprise", "none"}
+
+
+def classify_creative(
+    message: str,
+    *,
+    opener: Callable[..., Any] | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout_s: float = 20.0,
+) -> dict:
+    """Map a free sentence onto one creative move. No audio and no project writes.
+
+    A cloud model name is refused. Numbers in the answer are ignored.
+    """
+    cfg = config(env)
+    if not cfg["urlAllowed"]:
+        raise ProducerUnavailable("the Producer only talks to a model daemon on this machine")
+    if str(cfg["model"]).lower().endswith("cloud"):
+        raise ProducerUnavailable("cloud inference is not used for arrangement moves")
+    text = _clean(message, 240)
+    if not text:
+        raise ProducerUnavailable("say something to the Producer first", "PRODUCER_EMPTY")
+    payload = _post(opener or urllib.request.urlopen, cfg["url"], {
+        "model": cfg["model"], "stream": False,
+        "messages": [
+            {"role": "system", "content": "Reply with JSON only: {\"move\":\"energy|different|previous-vocal|take-over|gentle|surprise|none\"}. No numbers."},
+            {"role": "user", "content": text},
+        ],
+        "format": {"type": "object", "properties": {"move": {"type": "string", "enum": sorted(_CREATIVE_MOVES)}}, "required": ["move"]},
+        "options": {"temperature": 0},
+    }, timeout_s)
+    content = (payload.get("message") or {}).get("content") if isinstance(payload, dict) else None
+    if not isinstance(content, str):
+        raise ProducerUnavailable("the model returned no arrangement move", "PRODUCER_BAD_ANSWER")
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ProducerUnavailable("the model's arrangement move was not JSON", "PRODUCER_BAD_ANSWER") from exc
+    move = parsed.get("move") if isinstance(parsed, dict) else None
+    if move not in _CREATIVE_MOVES:
+        move = "none"
+    return {"move": move, "model": cfg["model"], "local": True}
+
+
 def converse(
     message: str,
     project: dict,

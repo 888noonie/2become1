@@ -367,6 +367,34 @@ try {
     return { tracks: ideas.map((item) => item.trackIndex), count: ideas.length };
   });
   check('Take the decks places B vocals and a later B drums handoff', shape.tracks.includes(4) && shape.tracks.includes(5), JSON.stringify(shape));
+  const vocalStart = () => page.evaluate(() => {
+    const ideas = window.__arrangement.session.state.clips.filter((item) => item.trackIndex === 4 && String(item.id).startsWith('idea-'));
+    ideas.sort((a, b) => Number(b.id.slice(5)) - Number(a.id.slice(5)));
+    return ideas[0]?.timelineStartBeat ?? null;
+  });
+  const firstStart = await vocalStart();
+  await tell('Try something completely different');
+  const secondStart = await vocalStart();
+  await tell('Try something completely different');
+  const thirdStart = await vocalStart();
+  const starts = [firstStart, secondStart, thirdStart];
+  check('three arrangements do not share one entrance', new Set(starts.filter((value) => value != null)).size >= 3, JSON.stringify(starts));
+  await page.getByLabel('Arrangement name').fill('Autonomous take');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await page.waitForFunction(() => [...document.querySelectorAll('[aria-live], .daw__messages')].some((el) => el.textContent.includes('Saved')));
+  const autonomousDownload = page.waitForEvent('download', { timeout: 60000 });
+  await page.getByRole('button', { name: 'Export WAV' }).click();
+  const autonomousFile = await autonomousDownload;
+  const autonomousPath = join(outDir, `autonomous-${autonomousFile.suggestedFilename()}`);
+  await autonomousFile.saveAs(autonomousPath);
+  const autonomousWav = await import('node:fs').then((fs) => fs.readFileSync(autonomousPath));
+  const autonomous = measureWav(autonomousWav);
+  check('the autonomous take exports as WAV', autonomousWav.subarray(0, 4).toString() === 'RIFF' && autonomousWav.subarray(8, 12).toString() === 'WAVE', `${autonomousWav.length} bytes`);
+  check('the autonomous export is not silent', autonomous.rms > 0.01, `rms ${autonomous.rms.toFixed(4)}, ${autonomous.seconds.toFixed(2)} s`);
+  const sources = await page.evaluate(() => window.__arrangement.session.state.clips.filter((item) => String(item.id).startsWith('idea-')).map((item) => ({
+    id: item.id, track: item.trackIndex, start: item.timelineStartBeat, offset: item.sourceOffsetSec,
+  })));
+  check('the exported project still has the autonomous passages', sources.length >= 2 && sources.some((item) => item.track === 4), JSON.stringify(sources));
   const moved = await page.evaluate(() => {
     const clip = window.__arrangement.session.state.clips.find((item) => item.id.startsWith('idea-'));
     if (!clip) return null;

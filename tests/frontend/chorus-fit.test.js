@@ -28,6 +28,11 @@ test('the musician’s phrases stay deterministic', () => {
   assert.equal(chorusUtterance('Make the vocals come in more gently').kind, 'gentler');
   assert.equal(chorusUtterance("Stop. I'll take it from here.").kind, 'take-back');
   assert.equal(chorusUtterance('Take back').kind, 'take-back');
+  assert.equal(chorusUtterance("That works. I'll take over.").kind, 'take-over');
+  assert.equal(chorusUtterance('I preferred the previous vocal').kind, 'previous-vocal');
+  assert.equal(chorusUtterance('Try something completely different').kind, 'another-plan');
+  assert.equal(chorusUtterance('Can you give it more energy?').style, 'energy');
+  assert.equal(chorusUtterance('Put the arrangement back').kind, 'restore');
   assert.equal(chorusUtterance('You play').kind, 'you-play');
   assert.equal(chorusUtterance('bring the vocals in gradually across four bars'), null);
   assert.equal(chorusUtterance('Find the second chorus in the other song'), null);
@@ -97,8 +102,10 @@ test('an arrangement is two different sketches, and a pitch reading is not appli
     { id: 'verse', bars: 4 },
   ];
   const { plans } = arrangementPlans({ rank, sections, chorusBeat: 16, bpb: 4 });
-  assert.equal(plans.length, 2);
+  assert.ok(plans.length >= 3);
   assert.equal(plans[0].id, 'lock');
+  const shapes = new Set(plans.map((plan) => `${plan.id}:${plan.vocal.stem}@${plan.vocal.startBeat}:${plan.trims.map((trim) => trim.endBeat).join(',')}`));
+  assert.ok(shapes.size >= 3, [...shapes].join(' | '));
   assert.equal(plans[0].vocal.stem, 'vocals');
   assert.equal(plans[0].vocal.pitch, 0);
   assert.equal(plans[0].vocal.speed, 'fit');
@@ -107,12 +114,14 @@ test('an arrangement is two different sketches, and a pitch reading is not appli
   assert.equal(plans[0].parts[0].pitch, 0);
   assert.equal(plans[0].parts[0].startBeat, 16 + 8 * 4);
   assert.equal(plans[0].trims[0].stem, 'vocals');
-  assert.equal(plans[1].vocal.stem, 'drums');
-  assert.notEqual(plans[0].vocal.stem, plans[1].vocal.stem);
+  assert.equal(plans[1].id, 'instrumental');
+  assert.ok(plans[1].vocal.startBeat > plans[0].vocal.startBeat);
+  assert.equal(plans.find((plan) => plan.id === 'swap').vocal.stem, 'drums');
+  assert.notEqual(plans[0].vocal.startBeat, plans.find((plan) => plan.id === 'breakdown').vocal.startBeat);
   const measured = measurePlan(plans[0]);
   assert.equal(measured.flags.bothSongs, true);
   assert.equal(measured.flags.pitchLeftAlone, true);
-  assert.equal(pickPlan(plans, { surprise: true }).id, 'swap');
+  assert.equal(pickPlan(plans, { surprise: true }).id, 'instrumental');
   const energetic = stylePlan(plans[0], 'energy');
   assert.equal(energetic.entranceBars, 1);
   assert.match(energetic.issues.at(-1), /not a measurement of energy/);

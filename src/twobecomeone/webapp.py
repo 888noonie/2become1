@@ -644,6 +644,16 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
     def producer_model():
         return producer_brain.status()
 
+    @app.post("/api/producer/creative")
+    def producer_creative(body: ConverseBody):
+        """Classify one sentence. The model does not receive audio or edit the project."""
+        try:
+            return producer_brain.classify_creative(body.message)
+        except producer_brain.ProducerUnavailable as exc:
+            err = UserError(str(exc), code=exc.code)
+            err.status = 503 if exc.code == "PRODUCER_MODEL_UNAVAILABLE" else 422
+            raise err from exc
+
     @app.post("/api/producer/converse")
     def producer_converse(body: ConverseBody):
         analyses = {}
