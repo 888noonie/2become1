@@ -49,7 +49,7 @@
 // every voice and calls `onFail`.
 
 import { buildBackbone, buildClipVoice, applyClipEnvelope, MAX_CLIPS_PER_GRAPH } from './arrangement/offline-render.js';
-import { scheduleGainEnvelope, schedulePanEnvelope } from './arrangement/automation.js';
+import { beatAtContextTime, gainLinearAtBeat, panAtBeat, scheduleGainEnvelope, schedulePanEnvelope } from './arrangement/automation.js';
 import { createTransportState, transportReduce, createTransportMap, Phase } from './arrangement/transport.js';
 import { occurrencesInWindow, sourceFrameAt, signalsmithScheduleSequence } from './arrangement/voice-scheduler.js';
 import { VoicePool, VoiceState, deriveVoiceCapacity } from './voice-pool.js';
@@ -438,11 +438,25 @@ export class RealtimeEngine {
     const bb = this.backbone;
     if (!bb) return;
     const now = this.ctx.currentTime;
-    const glide = (param, value) => {
+    const glide = (param, value, from = null) => {
       if (!param) return;
+      // After cancelScheduledValues, param.value is the last remaining event,
+      // not the ramp that was in progress. A cleared envelope must glide from
+      // the curve that was sounding.
+      const start = from == null ? param.value : from;
       param.cancelScheduledValues(now);
-      param.setValueAtTime(param.value, now);
+      param.setValueAtTime(start, now);
       param.linearRampToValueAtTime(value, now + rampSec);
+    };
+    const soundingAt = (trackIndex, time) => {
+      const wired = this._wired;
+      if (!wired) return null;
+      const tr = wired.plan.tracks[trackIndex];
+      if (!tr) return null;
+      const beat = beatAtContextTime(time, {
+        originSec: wired.originSec, map: wired.map, sampleRate: this.sr, bpm: wired.bpm,
+      });
+      return { track: tr, beat };
     };
     const epoch = this.active;
     for (const t of plan.tracks) {
@@ -460,7 +474,11 @@ export class RealtimeEngine {
         });
         this._gainUntil.set(t.trackIndex, scheduled.untilSec);
       } else {
-        if (gain) glide(gain, t.audible ? t.volumeLinear : 0);
+        const heard = soundingAt(t.trackIndex, now);
+        const from = heard?.track.gainPoints?.length
+          ? (heard.track.audible === false ? 0 : gainLinearAtBeat(heard.track, heard.beat))
+          : null;
+        if (gain) glide(gain, t.audible ? t.volumeLinear : 0, from);
         this._gainUntil.delete(t.trackIndex);
       }
       const pan = bb.trackInputs[`pan-${t.trackIndex}`]?.pan;
@@ -476,7 +494,9 @@ export class RealtimeEngine {
         });
         this._panUntil.set(t.trackIndex, scheduled.untilSec);
       } else {
-        if (pan) glide(pan, t.pan);
+        const heard = soundingAt(t.trackIndex, now);
+        const from = heard?.track.panPoints?.length ? panAtBeat(heard.track, heard.beat) : null;
+        if (pan) glide(pan, t.pan, from);
         this._panUntil.delete(t.trackIndex);
       }
       const eq = bb.trackInputs[`eq-${t.trackIndex}`];
@@ -487,6 +507,9 @@ export class RealtimeEngine {
       }
     }
     glide(bb.master.gain, plan.master.gainLinear);
+    if (epoch) {
+      this._wired = { plan, originSec: epoch.originSec, map: epoch.map, bpm: plan.masterBpm };
+    }
   }
 
   /** The transport frame that is heard at context time `sec` (display). */
@@ -638,20 +661,54 @@ export class RealtimeEngine {
    * is originSec (when this map starts), not transport.playheadBeat. Tracks
    * with no points keep the constant the backbone or the last glide set.
    */
-  #scheduleEpochGains(rec) {
+  #wiredAt(wired, trackIndex, time) {
+    const tr = wired?.plan?.tracks?.[trackIndex];
+    if (!tr) return null;
+    const beat = beatAtContextTime(time, {
+      originSec: wired.originSec, map: wired.map, sampleRate: this.sr, bpm: wired.bpm,
+    });
+    return { track: tr, beat };
+  }
+
+  /**
+   * Write gain automation for the epoch that is about to be heard. The anchor
+   * is originSec (when this map starts), not transport.playheadBeat. When that
+   * instant is still ahead, the curve already on the GainNode keeps sounding
+   * until then. `cancelFrom` rewrites a clock that has not been heard yet
+   * (a late first batch): events move with the new origin.
+   */
+  #scheduleEpochGains(rec, extra = {}) {
     if (!this.backbone || !this.plan) return;
+    const anchor = this.ctx.currentTime;
+    const takeover = rec.originSec;
+    const wired = this._wired;
+    const preserve = !extra.cancelFrom && wired && takeover > anchor + 1 / this.sr;
+    const clock = {
+      originSec: rec.originSec,
+      map: rec.map,
+      sampleRate: this.sr,
+      bpm: this.plan.masterBpm,
+      horizonSec: 120,
+      now: takeover,
+      anchorSec: preserve ? anchor : takeover,
+      takeoverSec: takeover,
+      cancelFrom: extra.cancelFrom,
+    };
     for (const t of this.plan.tracks) {
       if (!t.gainPoints?.length) continue;
       const gain = this.backbone.trackInputs[`gain-${t.trackIndex}`]?.gain;
       if (!gain) continue;
+      const outgoing = preserve ? this.#wiredAt(wired, t.trackIndex, 0) : null;
       const scheduled = scheduleGainEnvelope(gain, t, {
-        originSec: rec.originSec,
-        map: rec.map,
-        sampleRate: this.sr,
-        bpm: this.plan.masterBpm,
+        ...clock,
         audible: t.audible,
-        horizonSec: 120,
-        now: rec.originSec,
+        outgoingValueAt: outgoing?.track.gainPoints?.length
+          ? (time) => {
+            const heard = this.#wiredAt(wired, t.trackIndex, time);
+            if (!heard) return 0;
+            return heard.track.audible === false ? 0 : gainLinearAtBeat(heard.track, heard.beat);
+          }
+          : null,
       });
       this._gainUntil.set(t.trackIndex, scheduled.untilSec);
     }
@@ -660,15 +717,17 @@ export class RealtimeEngine {
       const pan = this.backbone.trackInputs[`pan-${t.trackIndex}`]?.pan;
       if (!pan) continue;
       const scheduled = schedulePanEnvelope(pan, t, {
-        originSec: rec.originSec,
-        map: rec.map,
-        sampleRate: this.sr,
-        bpm: this.plan.masterBpm,
-        horizonSec: 120,
-        now: rec.originSec,
+        ...clock,
+        outgoingPanAt: preserve && wired.plan.tracks[t.trackIndex]?.panPoints?.length
+          ? (time) => {
+            const heard = this.#wiredAt(wired, t.trackIndex, time);
+            return heard ? panAtBeat(heard.track, heard.beat) : 0;
+          }
+          : null,
       });
       this._panUntil.set(t.trackIndex, scheduled.untilSec);
     }
+    this._wired = { plan: this.plan, originSec: rec.originSec, map: rec.map, bpm: this.plan.masterBpm };
   }
 
   /**
@@ -1066,6 +1125,7 @@ export class RealtimeEngine {
     }
     if (shortfall <= 0) return;
     const shift = shortfall + 128 / this.sr;
+    const oldOrigin = rec.originSec;
     rec.originSec += shift;
     for (const v of this.voices.values()) {
       if (v.rec !== rec) continue;
@@ -1076,6 +1136,9 @@ export class RealtimeEngine {
     this.startDelays.push(rec.startDelayedMs);
     if (this.startDelays.length > 64) this.startDelays.shift();
     this.#warn('START_DELAYED', `first voices were built late; this ${rec.kind} is heard ${(shift * 1000).toFixed(1)} ms later than the ${((this.startLeadFrames / this.sr) * 1000).toFixed(0)} ms target so every voice keeps its priming lead`);
+    // The gain events were written on the old origin. Nothing of this epoch
+    // has been heard, so they move with the voices.
+    this.#scheduleEpochGains(rec, { cancelFrom: oldOrigin });
   }
 
   #clockReserveFrames() {

@@ -218,7 +218,8 @@ export function entranceRequest(sentence) {
   const n = normUtterance(sentence);
   if (!/\b(?:bring|fade)\b/.test(n) || !/\bvocals?\b/.test(n) || !/\bin\b/.test(n)) return null;
   if (!/\b(?:four|4) bars\b/.test(n) || !/\b(?:gradually|across|over)\b/.test(n)) return null;
-  return { first: /\bfirst four bars\b/.test(n) };
+  if (/\b(?:reverb|echo|delay|distortion|reverse|reversing)\b/.test(n)) return null;
+  return { first: /\bfirst (?:four|4) bars\b/.test(n) };
 }
 
 function vocalEntrance(sentence, entrance, ctx) {

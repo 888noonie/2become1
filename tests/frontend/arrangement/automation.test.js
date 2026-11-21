@@ -377,3 +377,41 @@ test('clearing the envelope removes it and the plan copies points without touchi
   engine.run({ name: 'setTrackGainEnvelope', args: { trackIndex: 0, points: null } });
   assert.equal(engine.state.tracks[0].gainPoints, undefined);
 });
+
+test('a hold before the first rise is not ramped away', () => {
+  const track = { volumeDb: 0, gainPoints: [{ beat: 4, db: -60 }, { beat: 8, db: 0 }] };
+  const floor = dbToLinear(-60);
+  assert.equal(gainLinearAtBeat(track, 2), floor);
+  const heard = paramAt(track, 1);
+  assert.ok(Math.abs(heard - floor) < 1e-6, `at 1.000 s the hold is ${heard}, want ${floor}`);
+  const mid = paramAt(track, 3);
+  const want = gainLinearAtBeat(track, 6);
+  assert.ok(Math.abs(mid - want) < 1e-6, `at 3.000 s the rise is ${mid}, want ${want}`);
+});
+
+test('a long loop does not reach the loop-end gain inside the first window', () => {
+  const track = { volumeDb: 0, gainPoints: [{ beat: 0, db: -60 }, { beat: 480, db: 0 }] };
+  const loopEnd = Math.round(240 * SR);
+  const map = createTransportMap({ startFrame: 0, loop: [0, loopEnd], sampleRate: SR });
+  const heard = paramAt(track, 60, { map });
+  const want = gainLinearAtBeat(track, 120);
+  assert.ok(Math.abs(heard - want) < 1e-4, `at 60 s the live window is ${heard}, want ${want}`);
+});
+
+test('a later epoch keeps the outgoing curve until the handover', () => {
+  const track = entranceTrack();
+  const map = createTransportMap({ startFrame: 0, loop: null, sampleRate: SR });
+  const param = new FakeAudioParam({ currentTime: 4 }, 0);
+  scheduleGainEnvelope(param, track, {
+    originSec: 0, map, sampleRate: SR, bpm: BPM, audible: true, now: 0,
+  });
+  const restart = createTransportMap({ startFrame: 0, loop: null, sampleRate: SR });
+  scheduleGainEnvelope(param, track, {
+    originSec: 4.104, map: restart, sampleRate: SR, bpm: BPM, audible: true,
+    anchorSec: 4, takeoverSec: 4.104,
+    outgoingValueAt: (time) => gainLinearAtBeat(track, time * (BPM / 60)),
+  });
+  const outgoing = gainLinearAtBeat(track, 4.05 * (BPM / 60));
+  assert.ok(Math.abs(param.valueAt(4.05) - outgoing) < 1e-4, `outgoing at 4.050 s is ${param.valueAt(4.05)}, want ${outgoing}`);
+  assert.ok(Math.abs(param.valueAt(4.104) - gainLinearAtBeat(track, 0)) < 1e-6);
+});

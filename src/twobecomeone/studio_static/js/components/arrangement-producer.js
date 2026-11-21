@@ -333,8 +333,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   }
 
   function hearToggle() {
-    if (!idea || idea.hearing === 'kept') return;
+    if (!idea || idea.hearing === 'kept') return false;
     noteHumanMoves();
+    if (!idea || idea.hearing === 'kept') return false;
     if (idea.hearing === 'idea') {
       if (writeAll((f) => idea.before.get(f.key), true)) idea.hearing = 'mine';
       say('Hearing your version.');
@@ -346,11 +347,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (conv.spec) conv.spec.heard = idea.hearing === 'idea';
     sync();
     rerender();
+    return true;
   }
 
   function keepOrUndo() {
-    if (!idea) return;
+    if (!idea) return false;
     noteHumanMoves();
+    if (!idea) return false;
     if (idea.hearing === 'kept') {
       writeAll((f) => idea.before.get(f.key), true);
       idea = null;
@@ -367,11 +370,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     sync();
     rerender();
+    return true;
   }
 
   function rejectIdea() {
     if (!idea) return;
     noteHumanMoves();
+    if (!idea) return;
     if (idea.hearing === 'idea') writeAll((f) => idea.before.get(f.key), true);
     idea = null;
     conv.spec = null;
@@ -555,7 +560,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (!idea) return 'There is no idea to do that with yet.';
     if (kind === 'hear_idea') { if (idea.hearing !== 'idea' && idea.hearing !== 'kept') hearToggle(); return 'Hearing the idea.'; }
     if (kind === 'hear_mine') {
-      if (idea.hearing === 'idea') { hearToggle(); return 'Hearing your version.'; }
+      if (idea.hearing === 'idea') {
+        return hearToggle() ? 'Hearing your version.' : 'Your edit stands. That level move is set aside.';
+      }
       // Kept means their mix is no longer what is playing. Undo for real, or the words are a lie.
       if (idea.hearing === 'kept') { keepOrUndo(); return 'Back to your version from before the idea.'; }
       return 'Hearing your version.';
@@ -635,6 +642,16 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         state: session.state, analyses: conv.analyses, groups, selectedClipId: selectedClipId(), pending: conv.pending,
         sentence: message, mine: project.mine,
       });
+      // An effect named in the same breath is not a level move. The local
+      // entrance rule must not drop it and offer Hear it.
+      if (/\b(?:reverb|echo|delay|distortion)\b/i.test(message)
+        && /\b(?:bring|fade)\b/i.test(message) && /\bvocals?\b/i.test(message)
+        && /\b(?:four|4) bars\b/i.test(message)) {
+        const reply = "I can't add that effect yet. Ask for the vocal entrance on its own and I can shape the level.";
+        line('producer', reply, 'is-local');
+        say(reply);
+        return;
+      }
       // A curve or a half-beat nudge we can already name must not wait on the model.
       if (entranceRequest(message) || halfBeatOnly(message) !== null) {
         const outcome = applyIntent(spec, { action: 'adjust' }, { ...intentCtx(), resolved: {} });

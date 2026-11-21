@@ -134,7 +134,12 @@ function writeCurve(param, points, valueAtBeat, linOf, options) {
 
   const emitRamp = (value, time, state) => {
     if (!(time > state.lastT + 0.5 * sample)) return state;
-    if (Math.abs(value - state.lastV) < 1e-12) return state;
+    // An equal value still needs an event. Skipping it makes the next ramp
+    // start at the previous event, so a hold before a rise is heard early.
+    if (Math.abs(value - state.lastV) < 1e-12) {
+      param.setValueAtTime(value, time);
+      return { lastT: time, lastV: value };
+    }
     param.linearRampToValueAtTime(value, time);
     return { lastT: time, lastV: value };
   };
@@ -211,8 +216,10 @@ function writeCurve(param, points, valueAtBeat, linOf, options) {
       state = writeGroup(group, time, state);
     }
     if (approach > state.lastT + 0.5 * sample && approach > seam && approach > now + 0.5 * sample && approach < passEnd) {
-      const endBeat = frameToBeat(map.loopEnd - 1, sampleRate, bpm);
-      state = emitRamp(valueAtBeat(endBeat), approach, state);
+      // The horizon can cut a pass short. The ramp ends on the beat at that
+      // sample, not on the loop end, or the first window arrives too loud.
+      const approachBeat = beatAtContextTime(approach, options);
+      state = emitRamp(valueAtBeat(approachBeat), approach, state);
     }
   }
 
@@ -229,14 +236,29 @@ function writeCurve(param, points, valueAtBeat, linOf, options) {
  * not cancel events and does not write the value at `now`.
  */
 export function scheduleGainEnvelope(param, track, options) {
-  const now = options.now ?? options.originSec;
+  const sample = 1 / options.sampleRate;
+  const anchor = options.anchorSec ?? options.now ?? options.originSec;
+  const takeover = options.takeoverSec ?? options.now ?? options.originSec;
   const append = options.append === true;
   const audible = options.audible !== false;
+  const valueAtTakeover = () => {
+    const beat = beatAtContextTime(takeover, options);
+    return audible ? gainLinearAtBeat(track, beat) : 0;
+  };
   if (!append) {
-    param.cancelScheduledValues(now);
-    const beat = beatAtContextTime(now, { ...options, now });
-    const value = audible ? gainLinearAtBeat(track, beat) : 0;
-    param.setValueAtTime(value, now);
+    const cancelAt = options.cancelFrom != null ? Math.min(options.cancelFrom, takeover) : Math.min(anchor, takeover);
+    param.cancelScheduledValues(cancelAt);
+    // A seek's new epoch starts later. Keep the curve that is already
+    // sounding until that instant; cancelling its future ramp otherwise
+    // drops the outgoing voice back to the last set point.
+    if (options.outgoingValueAt && takeover > anchor + 0.5 * sample) {
+      const v0 = options.outgoingValueAt(anchor);
+      const v1 = options.outgoingValueAt(takeover);
+      param.setValueAtTime(v0, anchor);
+      if (Math.abs(v1 - v0) > 1e-12) param.linearRampToValueAtTime(v1, takeover);
+      else param.setValueAtTime(v1, takeover);
+    }
+    param.setValueAtTime(valueAtTakeover(), takeover);
   }
   if (!audible) return { untilSec: Infinity };
   const points = pointList(track?.gainPoints);
@@ -246,7 +268,7 @@ export function scheduleGainEnvelope(param, track, options) {
     points,
     (beat) => gainLinearAtBeat(track, beat),
     (point) => dbToLinear(absoluteGainDb(track, point)),
-    options,
+    { ...options, now: takeover },
   );
   return { untilSec };
 }
@@ -257,10 +279,20 @@ export function scheduleGainEnvelope(param, track, options) {
  * today's constant pan.
  */
 export function schedulePanEnvelope(param, track, options) {
-  const now = options.now ?? options.originSec;
+  const sample = 1 / options.sampleRate;
+  const anchor = options.anchorSec ?? options.now ?? options.originSec;
+  const takeover = options.takeoverSec ?? options.now ?? options.originSec;
   if (!options.append) {
-    param.cancelScheduledValues(now);
-    param.setValueAtTime(panAtBeat(track, beatAtContextTime(now, { ...options, now })), now);
+    const cancelAt = options.cancelFrom != null ? Math.min(options.cancelFrom, takeover) : Math.min(anchor, takeover);
+    param.cancelScheduledValues(cancelAt);
+    if (options.outgoingPanAt && takeover > anchor + 0.5 * sample) {
+      const v0 = options.outgoingPanAt(anchor);
+      const v1 = options.outgoingPanAt(takeover);
+      param.setValueAtTime(v0, anchor);
+      if (Math.abs(v1 - v0) > 1e-12) param.linearRampToValueAtTime(v1, takeover);
+      else param.setValueAtTime(v1, takeover);
+    }
+    param.setValueAtTime(panAtBeat(track, beatAtContextTime(takeover, options)), takeover);
   }
   const points = pointList(track?.panPoints);
   if (!points.length) return { untilSec: Infinity };
@@ -269,7 +301,7 @@ export function schedulePanEnvelope(param, track, options) {
     points,
     (beat) => panAtBeat(track, beat),
     (point) => point.pan,
-    options,
+    { ...options, now: takeover },
   );
   return { untilSec };
 }

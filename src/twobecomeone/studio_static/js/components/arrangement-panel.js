@@ -1445,7 +1445,15 @@ export function mountArrangementPanel(opts) {
     if (ev.key === 'Escape') { session.stop(); return; }
     if (typing(ev.target)) return;
     const onClipTarget = ev.target.closest?.('.daw__clip');
-    if (!mod && ui.selectedPoint && !onClipTarget) {
+    const pointHandle = ev.target.closest?.('[data-env-point]');
+    if (pointHandle) {
+      ui.selectedPoint = {
+        trackIndex: Number(pointHandle.dataset.track),
+        index: Number(pointHandle.dataset.index),
+      };
+      ui.selectedTrack = ui.selectedPoint.trackIndex;
+    }
+    if (!mod && pointHandle && !onClipTarget) {
       if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight' || ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
         ev.preventDefault();
         nudgeSelectedPoint(ev.key);
