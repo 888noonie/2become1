@@ -130,3 +130,14 @@ test('an arrangement is two different sketches, and a pitch reading is not appli
   assert.equal(second.plans[0].parts[0].sectionId, 'chorus');
   assert.equal(second.plans[0].transition, true);
 });
+
+test('creativeDirection reads clear words and leaves the rest alone', async () => {
+  const { creativeDirection } = await import('../../src/twobecomeone/studio_static/js/arrangement/chorus-fit.js');
+  const cases = {
+    'make it bigger': 'energy', 'crank it up': 'energy', 'less energy please': 'gentle', 'let it breathe': 'gentle',
+    'give me another version': 'different', 'something totally different': 'different', 'the old singer was better': 'previous-vocal',
+    'do something weird': 'surprise',
+  };
+  for (const [text, move] of Object.entries(cases)) assert.equal(creativeDirection(text)?.move, move, text);
+  for (const text of ['what key is song B in', 'can you make tea', '']) assert.equal(creativeDirection(text), null, text);
+});

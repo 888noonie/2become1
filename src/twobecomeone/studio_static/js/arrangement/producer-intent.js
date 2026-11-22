@@ -43,7 +43,9 @@ export function barBeat(beat, bpb) {
 
 export const fmtPos = (beat, bpb) => {
   const p = barBeat(beat, bpb);
-  return `bar ${p.bar}${p.beat === 1 ? '' : ` beat ${p.beat}`}`;
+  // Off-grid positions read as two decimals, never as a float artefact.
+  const beatText = Number.isInteger(p.beat) ? String(p.beat) : String(Math.round(p.beat * 100) / 100);
+  return `bar ${p.bar}${p.beat === 1 ? '' : ` beat ${beatText}`}`;
 };
 
 /** Where a clip's sound comes from in its original recording (seconds). */
@@ -460,6 +462,33 @@ export function applyIntent(prev, intentIn, ctx) {
 
 const CLIP_KEYS = ['exists', 'ref', 'trackIndex', 'startBeat', 'sourceOffsetSec', 'durationBeats', 'pitch', 'fadeIn', 'fadeOut', 'gainDb', 'speed'];
 
+/**
+ * Where a new part of `durationBeats` may start on `trackIndex` without
+ * sounding over a clip in `keptIds`. Later starts only; a kept clip is never
+ * moved or shortened.
+ */
+export function clearOfKept(state, keptIds, trackIndex, startBeat, durationBeats) {
+  const keep = new Set(keptIds ?? []);
+  const kept = state.clips
+    .filter((c) => keep.has(c.id) && c.trackIndex === trackIndex)
+    .sort((a, b) => a.timelineStartBeat - b.timelineStartBeat);
+  let start = startBeat;
+  let last = null;
+  for (let pass = 0; pass <= kept.length; pass += 1) {
+    const hit = kept.find((c) => c.timelineStartBeat < start + durationBeats - 1e-9 && c.timelineStartBeat + c.durationBeats > start + 1e-9);
+    if (!hit) break;
+    start = Math.round((hit.timelineStartBeat + hit.durationBeats) * 1e9) / 1e9;
+    last = hit;
+  }
+  return { startBeat: start, moved: start !== startBeat, kept: last };
+}
+
+/** Kept clips on a lane. Their lane curve is the musician's: a take does not redraw it. */
+export function keptOnLane(state, keptIds, trackIndex) {
+  const keep = new Set(keptIds ?? []);
+  return state.clips.filter((c) => keep.has(c.id) && c.trackIndex === trackIndex);
+}
+
 export function clipObject(state, clipId) {
   const c = state.clips.find((x) => x.id === clipId);
   if (!c) return { exists: false };
@@ -612,7 +641,13 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
       durationBeats = Math.max(MIN_CLIP_DURATION_BEATS, durationBeats);
     }
     const trackIndex = laneIndex(m.song, m.stem);
-    const startBeat = m.afterVocal && vocalEnd != null ? vocalEnd : m.startBeat;
+    // A clip the musician kept owns its time on its lane. A new part never
+    // plays on top of it: it comes in where the kept clip ends.
+    const clear = clearOfKept(state, spec.kept, trackIndex, m.afterVocal && vocalEnd != null ? vocalEnd : m.startBeat, durationBeats);
+    const startBeat = clear.startBeat;
+    if (clear.moved) {
+      notes.push(`your kept ${state.tracks[trackIndex].name} clip stays at ${fmtPos(clear.kept.timelineStartBeat, bpb)}, so this part comes in after it`);
+    }
     const want = ordered({
       exists: true, ref: src.url, trackIndex, startBeat: rt(startBeat), sourceOffsetSec: rt(inPoint), durationBeats,
       pitch: m.pitch, fadeIn: m.fadeIn, fadeOut: m.fadeOut, gainDb: m.gainDb, speed: m.speed,

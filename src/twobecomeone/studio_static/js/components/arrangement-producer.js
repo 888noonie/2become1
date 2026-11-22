@@ -17,8 +17,8 @@ import { createElement as h, replaceChildren } from '../dom.js';
 import { GROUP_BASE, ROLES, SAMPLE_RATE, peaksFor } from '../arrangement/daw-session.js';
 import { beatsToSourceSeconds, sourceAdvanceRate } from '../arrangement/time-math.js';
 import { MIN_CLIP_DURATION_BEATS } from '../arrangement/time-math.js';
-import { applyIntent, buildIdea, clipObject, entranceRequest, halfBeatOnly, laneIndex, localCommand, mmss, projectSummary, refusalText } from '../arrangement/producer-intent.js';
-import { arrangementBeatForSource, arrangementPlans, bedDipPoints, chorusUtterance, deckChoice, descriptorFrom, entrancePoints, explainCandidate, measurePlan, pickPlan, pitchFor, playbackSpeed, scoredRows, stylePlan, targetSection } from '../arrangement/chorus-fit.js';
+import { applyIntent, buildIdea, clipObject, entranceRequest, fmtPos, keptOnLane, halfBeatOnly, laneIndex, localCommand, mmss, projectSummary, refusalText } from '../arrangement/producer-intent.js';
+import { DECK_REVISIONS, arrangementBeatForSource, arrangementPlans, bedDipPoints, chorusUtterance, creativeDirection, deckChoice, descriptorFrom, entrancePoints, explainCandidate, measurePlan, pickPlan, pitchFor, playbackSpeed, scoredRows, stylePlan, targetSection } from '../arrangement/chorus-fit.js';
 
 /**
  * The same musical rule as the accepted Stem Desk suggester, as arrangement
@@ -198,6 +198,11 @@ const flat = (cmd) => [].concat(cmd ?? []);
  * Returns {dispose, preview}; `preview()` lists the idea's clips that are not
  * on the lanes yet so the timeline can draw them as outlines.
  */
+const MOVE_WORDS = {
+  energy: 'more energy', gentle: 'a gentler entrance', different: 'a different structure',
+  'previous-vocal': 'the previous vocal', 'take-over': 'you taking over', surprise: 'a surprise',
+};
+
 export function mountArrangementProducer({ container, session, onAnnounce = () => {}, rerender = () => {}, selectedClipId = () => null, fetchImpl = null }) {
   /** idea: { fields, before: Map, last: Map, touched: Set, hearing: 'idea'|'mine'|'kept', spec? } */
   let idea = null;
@@ -208,7 +213,19 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   const youPlay = h('button', { type: 'button', class: 'button', text: 'You play', 'aria-pressed': 'false' });
   const jam = h('button', { type: 'button', class: 'button is-on', text: 'Jam together', 'aria-pressed': 'true' });
   const decks = h('button', { type: 'button', class: 'button', text: 'Take the decks', 'aria-pressed': 'false' });
-  const takeBack = h('button', { type: 'button', class: 'button', text: 'Take back' });
+  const takeBack = h('button', { type: 'button', class: 'button', text: 'Take back', title: 'Stop me and put the lanes back as they were before I took the decks' });
+  // What the Producer is doing right now, in one line a musician can read mid-take.
+  const nowState = h('strong', { class: 'daw__now-state' });
+  const nowHint = h('span', { class: 'daw__now-hint' });
+  const nowKept = h('p', { class: 'daw__now-kept', hidden: true });
+  const now = h('div', { class: 'daw__producer-now', role: 'status', 'aria-live': 'polite', dataset: { state: 'jam' } }, [nowState, ' ', nowHint]);
+  // One tap per musical direction while I hold the decks. Same path as typing.
+  const tryAnother = h('button', { type: 'button', class: 'button', text: 'Try another', title: 'A different structure from the same songs' });
+  const moreEnergy = h('button', { type: 'button', class: 'button', text: 'More energy', title: 'Bring the vocal in sooner with a shorter entrance' });
+  const prevVocal = h('button', { type: 'button', class: 'button', text: 'Previous vocal', title: 'Put back the vocal passage from my last take' });
+  const takeOver = h('button', { type: 'button', class: 'button button--primary', text: 'Take over', title: 'Stop me and keep the arrangement exactly as it is now' });
+  const restore = h('button', { type: 'button', class: 'button', text: 'Restore previous arrangement', title: 'Put the lanes back as they were before I took the decks', hidden: true });
+  const direct = h('div', { class: 'daw__ins-actions daw__direct', role: 'group', 'aria-label': 'Direct the Producer', hidden: true }, [tryAnother, moreEnergy, prevVocal, takeOver]);
   const ask = h('button', { type: 'button', class: 'button', text: 'Ask for an idea' });
   const askClip = h('button', { type: 'button', class: 'button', text: 'Ask for a clip idea' });
   const hear = h('button', { type: 'button', class: 'button', text: 'Hear it' });
@@ -228,6 +245,10 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     h('h3', { class: 'daw__ins-title', text: 'AI Producer' }),
     h('p', { class: 'daw__ins-sub', text: 'You play, jam together, or hand me the decks. Hear it, compare it with yours, then keep it or go back. Your own moves always win.' }),
     h('div', { class: 'daw__ins-actions daw__modes' }, [youPlay, jam, decks, takeBack]),
+    now,
+    nowKept,
+    direct,
+    restore,
     talk,
     modelLine,
     log,
@@ -319,6 +340,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     send.disabled = conv.busy;
     input.disabled = conv.busy;
+    showNow();
     hear.disabled = !idea || idea.hearing === 'kept';
     keep.disabled = !idea;
     reject.disabled = !idea || idea.hearing === 'kept';
@@ -329,6 +351,55 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       dataset: { field: f.key },
       text: `${f.label(session.state)}: ${f.show(f.value)}${f.clip ? ` (was ${f.show(idea.before.get(f.key))})` : ''}${idea.touched.has(f.key) ? ' — yours now' : ''}`,
     })) : []);
+  }
+
+  /**
+   * One of: you-play, jam, idea, creating, playing, finished, yours.
+   * `yours` is after a take ended with the lanes still holding it; Restore can
+   * still put back what was there before.
+   */
+  function nowShape() {
+    const playing = typeof session.isPlaying === 'function' && session.isPlaying();
+    const restorable = Boolean(conv.decks?.before) && !arrangementDirty();
+    if (conv.mode === 'you-play') return { state: 'you-play', title: 'You’re playing.', hint: 'I am listening only. I will not move a clip.' };
+    if (conv.mode === 'decks') {
+      if (conv.busy) return { state: 'creating', title: 'Creating…', hint: 'Take over or Take back at any moment; I stop at once.' };
+      if (!conv.plan) return { state: 'creating', title: 'Taking the decks.', hint: 'Choosing a section to build on.' };
+      const title = conv.plan.title.replace(/\.$/, '');
+      if ((conv.decks?.steps ?? 0) >= DECK_REVISIONS) {
+        return { state: playing ? 'playing' : 'finished', title: `${playing ? 'Playing' : 'Finished'}: ${title}.`, hint: `I have revised this ${DECK_REVISIONS} times. Take over to keep it, Take back to undo it, or tell me the one change you want.` };
+      }
+      if (playing) return { state: 'playing', title: `Playing my take: ${title}.`, hint: 'Direct me below, or take over.' };
+      return { state: 'finished', title: `Finished: ${title}.`, hint: 'Press Play to hear it, direct me below, or take over.' };
+    }
+    if (restorable) return { state: 'yours', title: 'The decks are yours.', hint: 'My last take is still on the lanes. Restore previous arrangement puts back what was there before it.' };
+    if (idea && idea.hearing !== 'kept') return { state: 'idea', title: idea.hearing === 'idea' ? 'Hearing my idea.' : 'An idea is waiting.', hint: idea.hearing === 'idea' ? 'Keep it, or Hear mine to compare.' : 'Hear it, keep it, or reject it. Nothing changes until you press Hear it.' };
+    return { state: 'jam', title: 'Jamming, waiting for your direction.', hint: 'Ask for an idea, or hand me the decks.' };
+  }
+
+  function showNow() {
+    const shape = nowShape();
+    if (now.dataset.state !== shape.state || nowState.textContent !== shape.title) {
+      now.dataset.state = shape.state;
+      nowState.textContent = shape.title;
+      nowHint.textContent = shape.hint;
+    }
+    const holding = conv.mode === 'decks';
+    direct.hidden = !holding;
+    const ready = holding && !conv.busy && Boolean(conv.plan) && (conv.decks?.steps ?? 0) < DECK_REVISIONS;
+    tryAnother.disabled = !ready;
+    moreEnergy.disabled = !ready;
+    prevVocal.disabled = !ready || !(conv.vocalChoices ?? []).slice(0, -1).length;
+    takeOver.disabled = false;
+    restore.hidden = holding || !(conv.decks?.before) || arrangementDirty();
+    restore.disabled = conv.busy;
+    const kept = keptClips();
+    nowKept.hidden = !kept.length;
+    const bpb = session.state.transport.timeSignature[0];
+    const keptText = kept.length
+      ? `Kept from earlier: ${kept.map((clip) => `${session.state.tracks[clip.trackIndex].name} at ${fmtPos(clip.timelineStartBeat, bpb)}`).join(', ')}. ${kept.length === 1 ? 'It stays' : 'They stay'} in every new take, and nothing plays on top.`
+      : '';
+    if (nowKept.textContent !== keptText) nowKept.textContent = keptText;
   }
 
   /** Dry-run the idea through propose(); only a valid one becomes an idea. */
@@ -429,10 +500,16 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     input.value = 'Take the decks';
     talk.dispatchEvent(new container.ownerDocument.defaultView.Event('submit', { bubbles: true, cancelable: true }));
   });
-  takeBack.addEventListener('click', () => {
-    input.value = 'Take back';
+  const speak = (phrase) => {
+    input.value = phrase;
     talk.dispatchEvent(new container.ownerDocument.defaultView.Event('submit', { bubbles: true, cancelable: true }));
-  });
+  };
+  takeBack.addEventListener('click', () => speak('Take back'));
+  tryAnother.addEventListener('click', () => speak('Try another arrangement'));
+  moreEnergy.addEventListener('click', () => speak('More energy'));
+  prevVocal.addEventListener('click', () => speak('Previous vocal'));
+  takeOver.addEventListener('click', () => speak('I’ll take over'));
+  restore.addEventListener('click', () => speak('Restore the arrangement'));
 
   ask.addEventListener('click', () => {
     const proposal = suggestArrangementIdea(session.state);
@@ -931,6 +1008,20 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     return `${text}${pitchNote}${alt}${tempoNote} ${heard.text || ''}`.trim();
   }
 
+  /** The clips the musician kept that are still on the lanes, as one sentence. */
+  function keptClips() {
+    const mine = conv.musicianClips ?? new Set();
+    return session.state.clips.filter((clip) => mine.has(clip.id) && String(clip.id).startsWith('idea-'));
+  }
+
+  function keptSummary() {
+    const kept = keptClips();
+    if (!kept.length) return '';
+    const bpb = session.state.transport.timeSignature[0];
+    const names = kept.map((clip) => `${session.state.tracks[clip.trackIndex].name} at ${fmtPos(clip.timelineStartBeat, bpb)}`);
+    return ` Your kept ${names.join(' and ')} ${kept.length === 1 ? 'stays' : 'stay'} in this arrangement, untouched; nothing new plays on top of ${kept.length === 1 ? 'it' : 'them'}.`;
+  }
+
   function relinquish() {
     conv.cancelled = true;
     conv.epoch += 1;
@@ -1011,12 +1102,19 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       takenIds.add(id);
       return id;
     };
+    let longFadeBeats = null;
     for (const part of plan.parts) {
       const source = sections.find((item) => item.id === part.sectionId);
       if (!source) continue;
+      // A normal handoff fades in over one bar. A longer transition is honoured
+      // up to half the passage, so the drums are still heard at full level.
+      const fadeIn = part.longFade
+        ? Math.min(part.fadeIn, Math.max(bpb, Math.floor(((source.bars || 4) * bpb) / 2)))
+        : Math.min(part.fadeIn, bpb);
+      if (part.longFade) longFadeBeats = fadeIn;
       outcome.spec.parts.push({
         song: part.song, stem: part.stem, passage: { ...source, evidence: source.evidence ?? [] },
-        startBeat: part.startBeat, pitch: 0, fadeIn: Math.min(part.fadeIn, bpb), fadeOut: part.fadeOut || 0,
+        startBeat: part.startBeat, pitch: 0, fadeIn, fadeOut: part.fadeOut || 0,
         gainDb: 0, speed: clipSpeed(part.applyStretch, part.song), applyStretch: part.applyStretch ?? null,
         afterVocal: part.afterVocal === true, clipId: freshId(),
       });
@@ -1025,15 +1123,24 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const kept = new Set([outcome.spec.main.clipId, ...outcome.spec.parts.map((part) => part.clipId)]);
     const mine = conv.musicianClips ?? new Set();
     outcome.spec.protect = [...mine];
+    // Only a part the Producer wrote and the musician kept owns its lane time.
+    outcome.spec.kept = keptClips().map((clip) => clip.id);
     outcome.spec.drop = (conv.partIds ?? []).filter((id) => !kept.has(id) && !mine.has(id));
     const start = outcome.spec.main.startBeat;
     const length = (section.bars || 4) * bpb;
     const vocal = laneIndex(plan.vocal.song, plan.vocal.stem);
     const yielded = conv.yieldedTracks ?? new Set();
     outcome.spec.envelopes = {};
-    if (!yielded.has(vocal)) outcome.spec.envelopes[vocal] = entrancePoints(start, bpb, plan.entranceBars || 4);
+    // A lane curve is heard by every clip on the lane. Where the musician kept
+    // a clip, a new entrance curve would silence it, so the entrance becomes
+    // the new clip's own fade and the kept clip's curve stays as it was.
+    const keptVocal = keptOnLane(session.state, outcome.spec.kept, vocal).length > 0;
+    if (keptVocal) {
+      outcome.spec.main.fadeIn = Math.min((plan.entranceBars || 4) * bpb, Math.max(1, length / 2));
+      outcome.spec.main.chorusAlign = false;
+    } else if (!yielded.has(vocal)) outcome.spec.envelopes[vocal] = entrancePoints(start, bpb, plan.entranceBars || 4);
     const bed = laneIndex(plan.vocal.song === 'A' ? 'B' : 'A', 'vocals');
-    if (!yielded.has(bed) && session.state.clips.some((clip) => clip.trackIndex === bed)) {
+    if (!yielded.has(bed) && !keptOnLane(session.state, outcome.spec.kept, bed).length && session.state.clips.some((clip) => clip.trackIndex === bed)) {
       outcome.spec.envelopes[bed] = bedDipPoints(start, length);
     }
     conv.harmony = {
@@ -1069,11 +1176,15 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       if (typeof session.stop === 'function') session.stop();
       return conv.mode === 'you-play' ? 'You play is on, so I have not placed it.' : 'The decks are yours. I have stopped.';
     }
-    const issue = plan.issues[0] ? ` ${plan.issues[0]}` : '';
+    const keptLine = keptSummary();
+    const fadeBars = longFadeBeats != null ? Math.round((longFadeBeats / bpb) * 100) / 100 : null;
+    const issue = fadeBars != null
+      ? ` The ${plan.parts[0].song} ${plan.parts[0].stem} now fade in over ${fadeBars} ${fadeBars === 1 ? 'bar' : 'bars'}, half the passage at most.`
+      : plan.issues[0] ? ` ${plan.issues[0]}` : '';
     const unsure = found.rank.ask ? ' The readings were close, so this is a choice, not a proof.' : '';
     const heardWord = playing ? "It's playing." : "It's on the lanes.";
     const handoff = plan.transition ? 'the handoff is a real edit' : 'this sketch has no later handoff';
-    return `${plan.title}. ${reading.count} measurable checks held: both songs are in it, ${handoff}, and no pitch was applied. I did not audition the audio.${issue}${unsure} ${heardWord} Say “try another arrangement”, or take back.`;
+    return `${plan.title}. ${reading.count} measurable checks held: both songs are in it, ${handoff}, and no pitch was applied. I did not audition the audio.${keptLine}${issue}${unsure} ${heardWord}`;
   }
 
   async function harmonyTurn(request) {
@@ -1300,8 +1411,16 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
           gentle: { kind: 'gentler' },
           surprise: { kind: 'decks', style: 'surprise' },
         };
+        const read = creativeDirection(message);
+        if (read) {
+          const reply = `${await harmonyTurn(moves[read.move])} I took “${read.words}” as ${MOVE_WORDS[read.move]}, from the words alone; no model was used.`;
+          line('producer', reply, 'is-local');
+          say(reply);
+          return;
+        }
         try {
           const epoch = conv.epoch;
+          conv.askedModel = true;
           const classified = await json('/api/producer/creative', {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message, project }),
           });
@@ -1319,7 +1438,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
             return;
           }
           const reply = await harmonyTurn(mapped);
-          const heardBy = classified.local ? ` The local model ${classified.model} chose that move. The edit itself was checked here.` : '';
+          const heardBy = classified.local ? ` The local model ${classified.model} read that as ${MOVE_WORDS[classified.move] ?? classified.move}. The edit itself was checked here.` : '';
           line('producer', `${reply}${heardBy}`, 'is-local');
           say(`${reply}${heardBy}`);
           return;
@@ -1331,6 +1450,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         }
       }
       say('Thinking…');
+      conv.askedModel = true;
       const answer = await json('/api/producer/converse', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ message, project, history: conv.history.slice(-8) }),
@@ -1348,6 +1468,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     } finally {
       conv.busy = false;
       sync();
+      if (conv.askedModel) { conv.askedModel = false; void refreshModel(); }
     }
   }
 
@@ -1358,12 +1479,16 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     void converse(text).then(() => { if (input.isConnected) input.focus(); });
   });
 
-  void json('/api/producer/model').then((m) => {
+  const refreshModel = () => json('/api/producer/model').then((m) => {
     conv.model = m;
-    modelLine.textContent = m.available
-      ? `Producer model: ${m.model} via Ollama, ${m.local ? 'on this machine; nothing leaves it' : 'external: lyrics are not sent'}.`
-      : `Producer model unavailable: ${m.note}. Every edit still works by hand.`;
+    const where = m.local ? 'on this machine; nothing leaves it' : 'external: lyrics are not sent';
+    modelLine.textContent = !m.available
+      ? `Producer model unavailable: ${m.note}. The buttons and clear words still work without it.`
+      : m.answered
+        ? `Producer model: ${m.model} via Ollama, ${where}.`
+        : `Producer model: ${m.model} is installed in Ollama, ${where}; it has not answered yet in this session.`;
   }).catch(() => { modelLine.textContent = 'The Producer’s model could not be reached. Every edit still works by hand.'; });
+  void refreshModel();
 
   sync();
   let lastGroups = '';

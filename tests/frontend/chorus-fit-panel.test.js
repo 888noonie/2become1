@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { setupDom, teardownDom } from './helpers/dom.js';
 import { mountArrangementPanel } from '../../src/twobecomeone/studio_static/js/components/arrangement-panel.js';
 import { mountArrangementProducer } from '../../src/twobecomeone/studio_static/js/components/arrangement-producer.js';
+import { gainLinearAtBeat } from '../../src/twobecomeone/studio_static/js/arrangement/automation.js';
 import { DawSession } from '../../src/twobecomeone/studio_static/js/arrangement/daw-session.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -825,4 +826,120 @@ test('taking over does not block the next jam', async () => {
   const said = await tell('Which part of B fits this chorus');
   assert.doesNotMatch(said, /You play is on/);
   assert.equal(prod.querySelector('button[aria-pressed="true"]').textContent, 'Jam together');
+});
+
+// OPERATION THE MAESTRO ------------------------------------------------------
+
+function laneOverlaps(s, lane) {
+  const clips = s.state.clips.filter((clip) => clip.trackIndex === lane);
+  const out = [];
+  for (let i = 0; i < clips.length; i += 1) {
+    for (let j = i + 1; j < clips.length; j += 1) {
+      const a = clips[i];
+      const b = clips[j];
+      const lo = Math.max(a.timelineStartBeat, b.timelineStartBeat);
+      const hi = Math.min(a.timelineStartBeat + a.durationBeats, b.timelineStartBeat + b.durationBeats);
+      if (hi - lo > 1e-6) out.push(`${a.id}&${b.id}`);
+    }
+  }
+  return out;
+}
+
+test('a kept vocal is not doubled by the next take, and the reply says it stays', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  const kept = s.state.clips.find((clip) => clip.trackIndex === 4 && String(clip.id).startsWith('idea-'));
+  btn('Keep it').click();
+  const said = await tell('Take the decks');
+  // Before the repair the same vocal and drums were stacked for 17.6 beats.
+  assert.deepEqual(laneOverlaps(s, 4), []);
+  assert.deepEqual(laneOverlaps(s, 5), []);
+  assert.match(said, /Your kept B Vocals at bar 5 .*stay in this arrangement, untouched/);
+  const still = s.state.clips.find((clip) => clip.id === kept.id);
+  assert.equal(still.timelineStartBeat, kept.timelineStartBeat);
+  assert.equal(still.durationBeats, kept.durationBeats);
+});
+
+test('a later entrance does not silence the vocal the musician kept', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  const kept = s.state.clips.find((clip) => clip.trackIndex === 4 && String(clip.id).startsWith('idea-'));
+  btn('Keep it').click();
+  const middle = kept.timelineStartBeat + kept.durationBeats / 2;
+  const heardBefore = gainLinearAtBeat(s.state.tracks[4], middle);
+  assert.match(await tell('Try another arrangement'), /Instruments lead/);
+  const newVocal = s.state.clips.find((clip) => clip.trackIndex === 4 && clip.id !== kept.id && String(clip.id).startsWith('idea-'));
+  assert.ok(newVocal.timelineStartBeat >= kept.timelineStartBeat + kept.durationBeats - 1e-6);
+  // Before the repair the new lane curve held -60 dB over the kept clip (0.001).
+  assert.ok(gainLinearAtBeat(s.state.tracks[4], middle) > 0.1, `kept vocal gain ${gainLinearAtBeat(s.state.tracks[4], middle)}`);
+  assert.equal(gainLinearAtBeat(s.state.tracks[4], middle), heardBefore);
+  assert.ok(newVocal.fadeInBeats > 1 || s.state.assets[newVocal.assetId], 'the entrance moved onto the new clip');
+});
+
+test('the Producer says what it is doing, and one tap directs it', async () => {
+  const { s, prod, btn, tell } = await mounted();
+  const now = () => prod.querySelector('.daw__producer-now');
+  const direct = () => prod.querySelector('.daw__direct');
+  assert.equal(now().dataset.state, 'jam');
+  assert.equal(direct().hidden, true);
+  await tell('Take the decks');
+  assert.equal(now().dataset.state, 'finished');
+  assert.match(now().textContent, /Finished: A keeps the drums and bass, B sings/);
+  assert.equal(direct().hidden, false);
+  assert.equal(btn('Previous vocal').disabled, true, 'only one vocal so far');
+  btn('Try another').click();
+  for (let i = 0; i < 80 && !/Instruments lead/.test(now().textContent); i += 1) await new Promise((r) => setTimeout(r, 25));
+  assert.match(now().textContent, /Instruments lead/);
+  btn('More energy').click();
+  for (let i = 0; i < 80 && prod.querySelectorAll('.daw__talk-log li').length < 6; i += 1) await new Promise((r) => setTimeout(r, 25));
+  await new Promise((r) => setTimeout(r, 50));
+  btn('Take over').click();
+  for (let i = 0; i < 80 && now().dataset.state !== 'yours'; i += 1) await new Promise((r) => setTimeout(r, 25));
+  assert.equal(now().dataset.state, 'yours');
+  assert.equal(direct().hidden, true);
+  const restore = btn('Restore previous arrangement');
+  for (let i = 0; i < 80 && restore.disabled; i += 1) await new Promise((r) => setTimeout(r, 25));
+  assert.equal(restore.hidden, false, 'Take over keeps the take and still offers to restore');
+  assert.ok(s.state.clips.some((clip) => String(clip.id).startsWith('idea-')), 'Take over kept the arrangement');
+  restore.click();
+  for (let i = 0; i < 80 && s.state.clips.some((clip) => String(clip.id).startsWith('idea-')); i += 1) await new Promise((r) => setTimeout(r, 25));
+  assert.equal(s.state.clips.some((clip) => String(clip.id).startsWith('idea-')), false, [...prod.querySelectorAll('.daw__talk-log li')].map((li) => li.textContent).join(' | '));
+  for (let i = 0; i < 80 && now().dataset.state !== 'jam'; i += 1) await new Promise((r) => setTimeout(r, 25));
+  assert.equal(now().dataset.state, 'jam');
+});
+
+test('a hand edit after Take over hides Restore instead of erasing the edit', async () => {
+  const { s, btn, tell } = await mounted();
+  await tell('Take the decks');
+  btn('Take over').click();
+  for (let i = 0; i < 80 && btn('Restore previous arrangement').hidden; i += 1) await new Promise((r) => setTimeout(r, 25));
+  s.apply({ name: 'setTrackVolume', args: { trackIndex: 2, volumeDb: -5 } });
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(btn('Restore previous arrangement').hidden, true);
+  assert.match(await tell('Take back'), /decks are yours/);
+  assert.equal(s.state.tracks[2].volumeDb, -5);
+});
+
+test('loose words direct the take without the model, and say so', async () => {
+  const { s, calls, tell } = await mounted();
+  await tell('Take the decks');
+  const vocal = () => s.state.clips.find((clip) => clip.trackIndex === 4 && String(clip.id).startsWith('idea-'));
+  const start = vocal().timelineStartBeat;
+  const said = await tell('make it punchier');
+  assert.match(said, /I took “punch” as more energy, from the words alone; no model was used/);
+  assert.ok(vocal().timelineStartBeat < start);
+  assert.equal(calls.filter((c) => c.url === '/api/producer/creative').length, 0);
+  assert.match(await tell('my turn'), /decks are yours/);
+});
+
+test('a more interesting transition really lengthens the drum fade it describes', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const drums = () => s.state.clips.filter((clip) => clip.trackIndex === 5 && String(clip.id).startsWith('idea-')).at(-1);
+  const before = drums().fadeInBeats;
+  const said = await tell('Find a more interesting transition');
+  // Before the repair the reply said eight bars while the fade stayed at one bar.
+  assert.ok(drums().fadeInBeats > before, `${before} -> ${drums().fadeInBeats}`);
+  assert.match(said, new RegExp(`fade in over ${drums().fadeInBeats / 4} bars`));
+  assert.doesNotMatch(said, /eight bars/);
 });

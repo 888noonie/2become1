@@ -302,6 +302,15 @@
 .daw__producer-list { margin: 0; padding-left: 18px; font-size: var(--text-sm); }
 .daw__producer-list .is-yours { color: var(--color-action); }
 .daw__producer-status { margin: 0; font-size: var(--text-sm); min-height: 1.4em; }
+/* What the Producer is doing now. One line, read at a glance mid-take. */
+.daw__producer-now { margin: 0; padding: var(--space-2) var(--space-3); border-left: 3px solid var(--color-ghost); font-size: var(--text-sm); line-height: 1.4; }
+.daw__producer-now[data-state="creating"] { border-left-color: var(--color-focus); }
+.daw__producer-now[data-state="playing"] { border-left-color: var(--color-accent, var(--color-focus)); }
+.daw__producer-now[data-state="you-play"], .daw__producer-now[data-state="yours"] { border-left-color: currentColor; }
+.daw__now-hint { opacity: 0.85; }
+.daw__now-kept { margin: 0; font-size: var(--text-sm); }
+.daw__direct[hidden], .daw__now-kept[hidden] { display: none; }
+
 .daw__messages { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: var(--text-sm); }
 .daw__msg { padding: 6px 10px; border-radius: var(--radius-sm); background: var(--color-surface); border-left: 3px solid var(--color-border); }
 .daw__msg--error, .daw__msg--refused { border-left-color: var(--color-danger); color: var(--color-danger); }

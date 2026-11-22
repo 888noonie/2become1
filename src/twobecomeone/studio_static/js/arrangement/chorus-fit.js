@@ -28,6 +28,7 @@ export function chorusUtterance(text) {
   if (n === 'give the build more energy') return { kind: 'decks', style: 'energy' };
   if (n === 'stop i ll take it from here' || n === 'stop ill take it from here') return { kind: 'take-back' };
   if (n === 'take back') return { kind: 'take-back' };
+  if (/^(my turn|i ve got it|i got it|i ve got it from here|i got it from here|let me drive|let me take it|i ll drive|i will take over)$/.test(n)) return { kind: 'take-over' };
   if (/\bi ll take over\b/.test(n) || /\btake over from here\b/.test(n)) return { kind: 'take-over' };
   if (/\bput the arrangement back\b/.test(n) || n === 'restore the arrangement') return { kind: 'restore' };
   if (/\bprevious vocal\b/.test(n) || /\bearlier vocal\b/.test(n)) return { kind: 'previous-vocal' };
@@ -49,6 +50,29 @@ export function chorusUtterance(text) {
   if (n === 'move it half a beat earlier' || n === 'move the idea half a beat earlier' || n === 'half a beat earlier') return { kind: 'nudge', beats: -0.5 };
   if (n === 'play the idea at its own speed' || n === 'play it at its own speed') return { kind: 'speed', speed: 'natural' };
   if (n === 'make the fade gentler' || n === 'make the entrance gentler' || n === 'make the vocals come in more gently') return { kind: 'gentler' };
+  return null;
+}
+
+/**
+ * A loose direction while the Producer holds the decks, read from the words
+ * alone. This is a keyword map, not language understanding: it returns the
+ * word it matched so the reply can say so. Anything else returns null.
+ */
+const DIRECTIONS = [
+  ['gentle', /\bless (energy|intense|busy|going on)\b|\btone it down\b|\bcalm|\bsoft|\bgentl|\bsmooth|\bmellow|\bchill|\bbreathe\b|\bease (off|in|it)\b|\bquieter\b|\bdelicate\b/],
+  ['previous-vocal', /\b(previous|earlier|old|first|last|original|other) (vocal|vocals|singer|voice|verse|chorus)\b|\bgo back to the (vocal|singer|voice)\b|\bthe vocal before\b|\bvocal from before\b/],
+  ['surprise', /\bsurprise|\bunexpected\b|\bweird\b|\bwild\b|\badventur|\bblow my mind\b|\bbold\b/],
+  ['energy', /\bmore energy\b|\benergetic\b|\bbigger\b|\bpunch|\bdrive\b|\bharder\b|\blift\b|\bhype\b|\bpump|\bcrank|\bintens|\blouder\b|\bbuild it up\b|\boomph\b|\bfaster\b|\bsooner\b|\bkick it\b/],
+  ['different', /\b(another|different|new|fresh) (one|version|idea|arrangement|structure|take|shape|approach)\b|\b(totally|completely|something|very) different\b|\brework\b|\bstart over\b|\bchange it up\b|\bsomething else\b|\bnot (this|that) one\b|\bnot feeling (it|this)\b/],
+];
+
+export function creativeDirection(text) {
+  const n = normPhrase(text);
+  if (!n) return null;
+  for (const [move, pattern] of DIRECTIONS) {
+    const hit = n.match(pattern);
+    if (hit) return { move, words: hit[0] };
+  }
   return null;
 }
 
@@ -262,11 +286,12 @@ export function stylePlan(plan, style, { bpb = 4 } = {}) {
     next.vocal.startBeat = earlier;
     next.vocal.fadeIn = bpb;
     next.entranceBars = 1;
-    next.issues = [...next.issues, 'The vocal comes in sooner and the entrance is one bar. That is a structural move, not a measurement of energy.'];
+    next.issues = ['The vocal comes in sooner and the entrance is one bar. That is a structural move, not a measurement of energy.', ...next.issues];
   }
   if (style === 'transition' && next.parts[0]) {
+    // Up to eight bars; the take caps it at half the passage and says what it applied.
     next.parts[0].fadeIn = 8 * bpb;
-    next.issues = [...next.issues, 'The handoff fade is eight bars.'];
+    next.parts[0].longFade = true;
   }
   if (style === 'gentle') {
     next.vocal.fadeIn = 8 * bpb;
