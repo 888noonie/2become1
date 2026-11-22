@@ -387,6 +387,27 @@ against lanes that may have changed. Each review round found new edge cases
 in that replay, and each was fixed field by field. The durable fix is for
 each take to be computed as a fresh diff from the current ProjectState.
 
+### Grok review of `fbf7732`
+
+The release challenge reproduced two blockers. The remembered plan was not
+replaced with a new project model. Restore's revision check does not run
+before a new take writes, so it did not stop these.
+
+1. **More energy deleted a clip the musician had just changed.** Moving B's
+   vocal, or setting its gain, then asking for more energy removed that clip
+   and wrote a new one from the plan. The undo of the previous idea cleared
+   the touched mark first, so it deleted the clip, and the new plan did not
+   write it back. A clip this command does not name stays on the lanes. A
+   command that names the same clip still replaces that passage, so a hand
+   move keeps its bar while the source can change. Tests fail on `fbf7732`.
+2. **Take over during a stalled load left the input disabled.** Take over,
+   Take back and You play release the text input immediately and retire that
+   turn. A load that finishes afterwards cannot write, start playback, or
+   clear a newer command. The same test fails on `fbf7732`.
+
+Static assets after this repair: 1,453,757 bytes in 97 files, +1,514 over
+`b04e4fe`'s recorded 1,452,243. The growth is in `arrangement-producer.js`.
+
 ## Local model runtime — measured, not assumed
 
 **Cause of the crashes.** The loaded and installed NVIDIA kernel module is

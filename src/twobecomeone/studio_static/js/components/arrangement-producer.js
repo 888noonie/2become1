@@ -207,7 +207,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   /** idea: { fields, before: Map, last: Map, touched: Set, hearing: 'idea'|'mine'|'kept', spec? } */
   let idea = null;
   const fetcher = fetchImpl ?? session.deps?.fetchImpl ?? ((...a) => fetch(...a));
-  const conv = { spec: null, history: [], analyses: {}, busy: false, model: null, absorbed: null, pending: null, mode: 'jam', harmony: null, decks: null, epoch: 0 };
+  const conv = { spec: null, history: [], analyses: {}, busy: false, model: null, absorbed: null, pending: null, mode: 'jam', harmony: null, decks: null, epoch: 0, turn: 0, loadAbort: null };
 
   const status = h('p', { class: 'daw__producer-status', role: 'status', 'aria-live': 'polite' });
   const youPlay = h('button', { type: 'button', class: 'button', text: 'You play', 'aria-pressed': 'false' });
@@ -717,11 +717,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
 
   /** Turn a spec into fields, decode its passage (silently) if needed, then offer or re-hear it. */
   async function realise(spec, guard = null) {
+    const turn = conv.turn;
     const stopped = () => ({
       ok: false,
       text: conv.mode === 'you-play' ? 'You play is on, so I have not placed it.' : 'The decks are yours, so I have not placed it.',
     });
     const replaced = () => ({ ok: false, text: 'A new arrangement is open, so I have not placed it.' });
+    const retired = () => conv.turn !== turn || stale(guard);
     const engine = session.edit;
     const bank = bankStamp();
     const groups = session.groups();
@@ -732,22 +734,35 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     // hand while the passage loaded belongs to the musician: the write is dropped.
     conv.loadBase = structuredClone(session.state);
     conv.loadOwn = new Map();
+    const abort = new AbortController();
+    conv.loadAbort = abort;
+    const dropLoad = () => {
+      if (conv.loadAbort === abort) conv.loadAbort = null;
+      conv.loadBase = null;
+      conv.loadOwn = null;
+    };
     while (built.needsSource && loads < 6) {
       say('Fetching that passage of the stem…');
-      try { await session.loadSource(built.needsSource); } catch (err) { return { ok: false, text: `I couldn't load that passage: ${err.message}` }; }
-      if (session.edit !== engine) return replaced();
+      try { await session.loadSource(built.needsSource, { signal: abort.signal }); } catch (err) {
+        dropLoad();
+        if (retired()) return stopped();
+        return { ok: false, text: `I couldn't load that passage: ${err.message}` };
+      }
+      if (session.edit !== engine) { dropLoad(); return replaced(); }
       if (bankStamp() !== bank) {
+        dropLoad();
         return { ok: false, text: 'The songs on the lanes changed, so I have not placed it.' };
       }
-      if (stale(guard)) return stopped();
+      if (retired()) { dropLoad(); return stopped(); }
       loads += 1;
       built = buildIdea(session.state, spec, ctx);
     }
-    if (session.edit !== engine) return replaced();
+    if (conv.loadAbort === abort) conv.loadAbort = null;
+    if (session.edit !== engine) { dropLoad(); return replaced(); }
     // A hand move or a Keep made while the passage loaded is read now, not at
     // the next poll: the write below must not roll it back or drop it.
     noteHumanMoves();
-    if (stale(guard)) return stopped();
+    if (retired()) { dropLoad(); return stopped(); }
     spec = respectKept(followTempo(spec));
     built = buildIdea(session.state, spec, ctx);
     if (built.refusal) return { ok: false, text: built.refusal };
@@ -783,12 +798,18 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const wasHearing = idea?.hearing === 'idea';
     const old = idea;
     const key = `producer-${Date.now()}`;
-    if (wasHearing && conv.absorbed) idea.touched.delete(conv.absorbed);
     conv.absorbed = null;
     const beforeWrite = editingSerial();
     const beforeRevision = session.edit.revision;
     if (wasHearing) {
-      // Swap the heard version for the refined one as ONE undo step.
+      // Undo the previous idea before writing the next one. A clip this command
+      // will write again may be replaced. A clip the musician changed, and which
+      // this command does not name, is left on the lanes.
+      const rewritten = new Set([spec?.main, ...(spec?.parts ?? [])].filter((part) => part?.clipId).map((part) => part.clipId));
+      for (const id of Object.keys(spec?.clips ?? {})) rewritten.add(id);
+      for (const fieldKey of [...idea.touched]) {
+        if (String(fieldKey).endsWith(':clip') && rewritten.has(fieldKey.slice(0, -5))) idea.touched.delete(fieldKey);
+      }
       writeAll((f) => idea.before.get(f.key), true, key);
       const rationale = built.rationale;
       built = buildIdea(session.state, spec, ctx);
@@ -887,6 +908,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
 
   /** Say the outcome of applyIntent. `via` is set only when a model answered. */
   async function settle(outcome, via) {
+    const turn = conv.turn;
     conv.pending = outcome.pending ?? null;
     let reply;
     if (outcome.control === 'relabel') {
@@ -904,6 +926,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       reply = (await realise(outcome.spec)).text;
     }
     const spoken = reply || via?.reply || 'OK.';
+    if (conv.turn !== turn) return;
     line('producer', spoken, via ? `is-${via.action}` : 'is-local');
     if (via?.model) {
       log.lastElementChild.title = `${via.model.name} (${via.model.local ? 'on this machine' : 'external'}) chose “${via.action}” in ${via.model.elapsedMs} ms`;
@@ -1293,10 +1316,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       && Math.abs(trim.endBeat - plan.vocal.startBeat) < 1e-9 ? { ...trim, atVocalStart: true } : trim));
     const kept = new Set([outcome.spec.main.clipId, ...outcome.spec.parts.map((part) => part.clipId)]);
     const mine = conv.musicianClips ?? new Set();
+    const touchedIds = new Set([...(idea?.touched ?? [])].filter((key) => String(key).endsWith(':clip')).map((key) => key.slice(0, -5)));
     outcome.spec.protect = [...mine];
     // Only a part the Producer wrote and the musician kept owns its lane time.
     outcome.spec.kept = keptClips().map((clip) => clip.id);
-    outcome.spec.drop = (conv.partIds ?? []).filter((id) => !kept.has(id) && !mine.has(id));
+    // A clip the musician changed is not deleted to make room for the new plan.
+    // The same clip can still be retargeted when this command names it.
+    outcome.spec.drop = (conv.partIds ?? []).filter((id) => !kept.has(id) && !mine.has(id) && !touchedIds.has(id));
     const start = outcome.spec.main.startBeat;
     const length = (section.bars || 4) * bpb;
     const vocal = laneIndex(plan.vocal.song, plan.vocal.stem);
@@ -1372,6 +1398,8 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   }
 
   async function harmonyTurn(request) {
+    const turn = conv.turn;
+    const abandoned = () => conv.turn !== turn;
     if (request.kind === 'you-play') {
       conv.cancelled = true;
       conv.epoch += 1;
@@ -1398,6 +1426,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       if (!earlier) return 'I have only placed one vocal so far.';
       const found = await rankedFit({ kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
       if (found.say) return found.say;
+      if (abandoned()) return 'The decks are yours, so I have not placed it.';
       if (!conv.plan) return 'I do not have an arrangement to keep.';
       // The passage changes; where it sits does not. A bar the musician named stays.
       return commitArrangement(found, conv.planStyle || 'lock', { plan: planAsPlaced(), vocalSectionId: earlier });
@@ -1408,6 +1437,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       if ((conv.decks?.steps ?? 0) >= 4) return 'I have revised this four times. Take back, or tell me the one change you want.';
       const found = await rankedFit({ kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
       if (found.say) return found.say;
+      if (abandoned()) return 'The decks are yours, so I have not placed it.';
       conv.planIndex = (conv.planIndex ?? 0) + 1;
       return commitArrangement(found, 'another');
     }
@@ -1417,7 +1447,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       if ((request.style === 'energy' || request.style === 'transition') && conv.mode === 'decks' && conv.plan) {
         const found = await rankedFit({ kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
         if (found.say) return found.say;
-        if (conv.cancelled || conv.mode !== 'decks') return 'The decks are yours, so I have not placed it.';
+        if (abandoned() || conv.cancelled || conv.mode !== 'decks') return 'The decks are yours, so I have not placed it.';
         const current = planAsPlaced();
         const styled = stylePlan(current, request.style, { bpb: session.state.transport.timeSignature[0] });
         if (request.style === 'energy' && styled.vocal.startBeat === current.vocal.startBeat
@@ -1430,7 +1460,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       setMode('decks');
       const found = await rankedFit({ kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
       if (found.say) return found.say;
-      if (conv.cancelled || conv.mode !== 'decks') return 'The decks are yours, so I have not placed it.';
+      if (abandoned() || conv.cancelled || conv.mode !== 'decks') return 'The decks are yours, so I have not placed it.';
       conv.planIndex = request.style === 'surprise' ? 1 : 0;
       return commitArrangement(found, request.style || 'lock');
     }
@@ -1480,6 +1510,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     const found = await rankedFit(request);
     if (found.say) return found.say;
+    if (abandoned()) return 'The decks are yours, so I have not placed it.';
     if (conv.mode === 'you-play') {
       conv.harmony = {
         targetSong: found.targetSong, sourceSong: found.sourceSong, target: found.target, label: found.target.label,
@@ -1518,6 +1549,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       if (urgent?.kind === 'take-back' || urgent?.kind === 'take-over' || urgent?.kind === 'you-play') {
         conv.cancelled = true;
         conv.epoch += 1;
+        conv.turn += 1;
+        conv.loadAbort?.abort();
+        conv.busy = false;
         if (typeof session.stop === 'function') session.stop();
         if (urgent.kind === 'you-play') setMode('you-play');
         else if (conv.mode !== 'jam') setMode('jam');
@@ -1529,12 +1563,20 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         line('you', text.trim());
         line('producer', reply, 'is-local');
         say(reply);
+        sync();
       }
       return;
     }
     if (urgent?.kind !== 'take-back' && urgent?.kind !== 'take-over' && urgent?.kind !== 'you-play') conv.cancelled = false;
     const message = text.trim();
     if (!message) return;
+    const myTurn = ++conv.turn;
+    const live = () => conv.turn === myTurn;
+    const answer = (reply, kind = 'is-local') => {
+      if (!live()) return;
+      line('producer', reply, kind);
+      say(reply);
+    };
     conv.busy = true;
     sync();
     line('you', message);
@@ -1551,17 +1593,15 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         let reply;
         if (local.transport === 'play') reply = (await session.play()) ? 'Playing.' : 'Play did not start.';
         else { session.stop(); reply = 'Stopped.'; }
-        line('producer', reply, 'is-local');
-        say(reply);
+        answer(reply);
         return;
       }
       if (local?.control) {
         const reply = await control(local.control);
-        line('producer', reply, 'is-local');
-        say(reply);
+        answer(reply);
         return;
       }
-      if (!Object.keys(groups).length) { line('producer', 'Bring a song onto the lanes first, then tell me what to do with it.'); return; }
+      if (!Object.keys(groups).length) { answer('Bring a song onto the lanes first, then tell me what to do with it.'); return; }
       const intentCtx = () => ({
         state: session.state, analyses: conv.analyses, groups, selectedClipId: selectedClipId(), pending: conv.pending,
         sentence: message, mine: project.mine,
@@ -1571,16 +1611,12 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       // is unavailable and does not offer Hear it.
       const chorusNudge = halfBeatOnly(message);
       if (chorusNudge !== null && conv.mode === 'you-play') {
-        const reply = 'You play is on, so I will not move that. Say “jam together” when you want an idea.';
-        line('producer', reply, 'is-local');
-        say(reply);
+        answer('You play is on, so I will not move that. Say “jam together” when you want an idea.');
         return;
       }
       if (chorusNudge !== null && (conv.harmony || conv.decks)) {
         conv.spec = spec;
-        const reply = await harmonyTurn({ kind: 'nudge', beats: chorusNudge });
-        line('producer', reply, 'is-local');
-        say(reply);
+        answer(await harmonyTurn({ kind: 'nudge', beats: chorusNudge }));
         return;
       }
       if (entranceRequest(message) || chorusNudge !== null) {
@@ -1589,15 +1625,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
           idea = null;
           conv.spec = null;
         }
-        await settle(outcome, null);
+        if (live()) await settle(outcome, null);
         return;
       }
       const musical = chorusUtterance(message);
       if (musical) {
         conv.spec = spec;
-        const reply = await harmonyTurn(musical);
-        line('producer', reply, 'is-local');
-        say(reply);
+        answer(await harmonyTurn(musical));
         return;
       }
       if (conv.mode === 'decks') {
@@ -1611,9 +1645,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         };
         const read = creativeDirection(message);
         if (read) {
-          const reply = `${await harmonyTurn(moves[read.move])} I took “${read.words}” as ${MOVE_WORDS[read.move]}, from the words alone; no model was used.`;
-          line('producer', reply, 'is-local');
-          say(reply);
+          answer(`${await harmonyTurn(moves[read.move])} I took “${read.words}” as ${MOVE_WORDS[read.move]}, from the words alone; no model was used.`);
           return;
         }
         try {
@@ -1622,51 +1654,48 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
           const classified = await json('/api/producer/creative', {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message, project }),
           });
-          if (conv.cancelled || conv.epoch !== epoch || conv.mode !== 'decks') {
-            const reply = 'The decks are yours, so I have not placed it.';
-            line('producer', reply, 'is-local');
-            say(reply);
+          if (!live() || conv.cancelled || conv.epoch !== epoch || conv.mode !== 'decks') {
+            answer('The decks are yours, so I have not placed it.');
             return;
           }
           const mapped = moves[classified.move];
           if (!mapped) {
-            const reply = 'I did not map that onto a musical change. I can give it more energy, try a different structure, bring the previous vocal back, or hand the decks back.';
-            line('producer', reply, 'is-local');
-            say(reply);
+            answer('I did not map that onto a musical change. I can give it more energy, try a different structure, bring the previous vocal back, or hand the decks back.');
             return;
           }
           const reply = await harmonyTurn(mapped);
           const heardBy = classified.local ? ` The local model ${classified.model} read that as ${MOVE_WORDS[classified.move] ?? classified.move}. The edit itself was checked here.` : '';
-          line('producer', `${reply}${heardBy}`, 'is-local');
-          say(`${reply}${heardBy}`);
+          answer(`${reply}${heardBy}`);
           return;
         } catch (err) {
-          const reply = `The local model did not classify that (${err.message}). I can give it more energy, try a different structure, bring the previous vocal back, or hand the decks back.`;
-          line('producer', reply, 'is-local');
-          say(reply);
+          answer(`The local model did not classify that (${err.message}). I can give it more energy, try a different structure, bring the previous vocal back, or hand the decks back.`);
           return;
         }
       }
+      if (!live()) return;
       say('Thinking…');
       conv.askedModel = true;
-      const answer = await json('/api/producer/converse', {
+      const modelAnswer = await json('/api/producer/converse', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ message, project, history: conv.history.slice(-8) }),
       });
+      if (!live()) return;
       await analysesFor(groups);
-      const { intent, resolved, model } = answer;
+      if (!live()) return;
+      const { intent, resolved, model } = modelAnswer;
       const outcome = applyIntent(spec, intent, { ...intentCtx(), analyses: conv.analyses, resolved });
       await settle(outcome, { action: intent.action, reply: intent.reply, model });
     } catch (err) {
       const text = err.status === 503
         ? `The Producer's model isn't answering (${err.message}). Every edit still works by hand.`
         : `Something went wrong: ${err.message}`;
-      line('producer', text, 'is-error');
-      say(text);
+      answer(text, 'is-error');
     } finally {
-      conv.busy = false;
-      sync();
-      if (conv.askedModel) { conv.askedModel = false; void refreshModel(); }
+      if (live()) {
+        conv.busy = false;
+        sync();
+        if (conv.askedModel) { conv.askedModel = false; void refreshModel(); }
+      }
     }
   }
 

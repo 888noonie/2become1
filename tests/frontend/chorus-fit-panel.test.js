@@ -1528,3 +1528,45 @@ test('More energy with nothing left to change writes nothing', async () => {
   assert.equal(s.edit.revision, revision);
   assert.equal(s.state.clips.map((clip) => clip.id).join(','), ids);
 });
+
+// Grok review of fbf7732 ------------------------------------------------------
+
+test('More energy after a hand move keeps the vocal the musician placed', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const vocal = latestVocal(s);
+  const movedTo = vocal.timelineStartBeat + 8;
+  assert.ok(s.apply({ name: 'moveClip', args: { clipId: vocal.id, newTrackIndex: vocal.trackIndex, newStartBeat: movedTo } }).ok);
+  await tell('More energy');
+  const still = s.state.clips.find((clip) => clip.id === vocal.id);
+  assert.ok(still, 'the moved vocal was deleted and replaced from the remembered plan');
+  assert.equal(still.timelineStartBeat, movedTo);
+});
+
+test('More energy after a hand gain keeps that gain on the same clip', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const vocal = latestVocal(s);
+  assert.ok(s.apply({ name: 'setClipGain', args: { clipId: vocal.id, gainDb: -4 } }).ok);
+  await tell('More energy');
+  const still = s.state.clips.find((clip) => clip.id === vocal.id);
+  assert.ok(still, 'the edited vocal was deleted');
+  assert.equal(still.clipGainDb, -4);
+});
+
+test('Take over during a stalled load re-enables ordinary commands and places nothing', async () => {
+  const { s, prod, tell } = await mounted();
+  const gate = holdLoads(s);
+  const pending = tell('Take the decks');
+  for (let i = 0; i < 150 && !gate.release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(gate.release, 'the take waited on the passage');
+  const input = prod.querySelector('.daw__talk-input');
+  assert.equal(input.disabled, true);
+  [...prod.querySelectorAll('button')].find((b) => b.textContent === 'Take over').click();
+  for (let i = 0; i < 40 && input.disabled; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(input.disabled, false, 'Take over left the input disabled while the load was stalled');
+  assert.match(await tell('Stop'), /Stopped/);
+  gate.release();
+  await pending;
+  assert.equal(s.state.clips.filter((clip) => String(clip.id).startsWith('idea-')).length, 0);
+});
