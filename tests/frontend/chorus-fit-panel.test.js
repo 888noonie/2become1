@@ -753,6 +753,28 @@ test('Take back during preparation does not start playback', async () => {
   assert.equal(s.isPlaying(), false);
 });
 
+test('typing You play stops a take that is already playing', async () => {
+  class Engine {
+    constructor() { this.phaseName = 'ready'; }
+    prepare() { return Promise.resolve(); }
+    play() { this.phaseName = 'playing'; }
+    stop() { this.phaseName = 'stopped'; }
+    state() { return { phase: this.phaseName, loop: null }; }
+    setLoop() {}
+    dispose() {}
+  }
+  const gain = { connect() {}, gain: { value: 1 } };
+  const { s, tell, prod } = await mounted({
+    createContext: () => ({ state: 'running', currentTime: 0, destination: {}, createGain: () => gain, resume: async () => {} }),
+    RealtimeEngine: Engine,
+  });
+  await tell('Take the decks');
+  assert.equal(s.isPlaying(), true);
+  await tell('You play');
+  assert.equal(s.isPlaying(), false);
+  assert.equal(prod.querySelector('button[aria-pressed="true"]').textContent, 'You play');
+});
+
 test('a late creative reply does not retake the decks', async () => {
   let release;
   globalThis.creativeGate = new Promise((done) => { release = done; });

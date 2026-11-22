@@ -1077,7 +1077,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   }
 
   async function harmonyTurn(request) {
-    if (request.kind === 'you-play') { setMode('you-play'); return 'You play. I will not move a clip until you jam with me or hand me the decks.'; }
+    if (request.kind === 'you-play') {
+      conv.cancelled = true;
+      conv.epoch += 1;
+      if (typeof session.stop === 'function') session.stop();
+      setMode('you-play');
+      return 'You play. I will not move a clip until you jam with me or hand me the decks.';
+    }
     if (request.kind === 'jam') { setMode('jam'); return 'Jam together. I will show an idea, and nothing is written until you press Hear it.'; }
     if (request.kind === 'take-over') {
       relinquish();
