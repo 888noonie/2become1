@@ -92,6 +92,11 @@ def status(*, opener: Callable[..., Any] | None = None, env: Mapping[str, str] |
     if cfg["model"] not in names:
         out["note"] = f"{cfg['model']} is not installed in the local daemon"
         return out
+    last = _LAST_CALL.get((cfg["url"], cfg["model"])) if opener is None else None
+    out["answered"] = None if last is None else bool(last.get("ok"))
+    if last is not None and not last.get("ok"):
+        out["note"] = f"{cfg['model']} is installed, but its last call failed: {last.get('note')}"
+        return out
     out["available"] = True
     out["note"] = ("runs on this machine" if cfg["local"]
                    else "relayed to an external service by the local daemon; heard lyrics are not sent")
@@ -324,16 +329,44 @@ def _few_shot() -> list[dict]:
     return out
 
 
+# The outcome of the last real call per (daemon, model). A model listed by
+# /api/tags can still crash on load (2026-11-21: every llama-server load
+# segfaulted on this machine), so "installed" is not "answering".
+_LAST_CALL: dict[tuple[str, str], dict] = {}
+
+
+def _daemon_error(exc: urllib.error.HTTPError) -> str:
+    try:
+        body = json.loads(exc.read().decode("utf-8", "replace"))
+        if isinstance(body, dict) and body.get("error"):
+            return _clean(body["error"], 160)
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    return f"HTTP {exc.code}"
+
+
 def _post(opener, url: str, body: dict, timeout: float) -> dict:
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(f"{url}/api/chat", data=data, headers={"Content-Type": "application/json"}, method="POST")
+    real = opener is urllib.request.urlopen
+    key = (url, str(body.get("model")))
     try:
         with opener(req, timeout=timeout) as res:
-            return json.loads(res.read().decode("utf-8", "replace"))
+            out = json.loads(res.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        detail = _daemon_error(exc)
+        if real:
+            _LAST_CALL[key] = {"ok": False, "note": detail}
+        raise ProducerUnavailable(f"the model daemon could not run it: {detail}") from exc
     except (OSError, urllib.error.URLError, TimeoutError) as exc:
+        if real:
+            _LAST_CALL[key] = {"ok": False, "note": f"no answer ({type(exc).__name__})"}
         raise ProducerUnavailable(f"the model did not answer: {type(exc).__name__}") from exc
     except (ValueError, json.JSONDecodeError) as exc:
         raise ProducerUnavailable("the model answered with something that is not JSON") from exc
+    if real:
+        _LAST_CALL[key] = {"ok": True}
+    return out
 
 
 _NUM_LIMITS = {
@@ -422,6 +455,25 @@ _ALL_FIELDS = set().union(*_FIELDS_FOR.values()) | {"label"}
 _IDENTIFIERS = {"song", "stem", "section", "lyric", "occurrence", "clip", "lane"}
 
 
+# Each move is described. On 20 phrases (CPU runner, 2026-11-22) the bare list
+# of names this replaced scored 10/20 on qwen2.5:3b-instruct and 3/20 on
+# qwen2.5:1.5b-instruct (it answered "energy" to almost everything); with the
+# descriptions they scored 18/20 and 14/20. The phrases were not held out from
+# writing this prompt. The Studio reads clear words itself before asking.
+_CREATIVE_SYSTEM = (
+    "You route a musician's sentence to ONE arrangement move for an AI producer "
+    "that is currently playing an arrangement of two songs.\n"
+    "Moves:\n"
+    "- energy: louder, bigger, punchier, more drive, lift, hype, faster entrance, more intensity\n"
+    "- gentle: softer, calmer, smoother, quieter, ease in, less intense\n"
+    "- different: a new or different arrangement, another idea, change the structure, start over\n"
+    "- previous-vocal: go back to the earlier, old, first or last vocal or singer\n"
+    "- take-over: the musician wants control now, stop, I've got it, my turn, let me drive\n"
+    "- surprise: surprise me, something unexpected, be adventurous, go wild\n"
+    "- none: anything else, or unclear\n"
+    'Reply with JSON only: {"move": "<one move>"}. No numbers.'
+)
+
 _CREATIVE_MOVES = {"energy", "different", "previous-vocal", "take-over", "gentle", "surprise", "none"}
 
 
@@ -447,7 +499,7 @@ def classify_creative(
     payload = _post(opener or urllib.request.urlopen, cfg["url"], {
         "model": cfg["model"], "stream": False,
         "messages": [
-            {"role": "system", "content": "Reply with JSON only: {\"move\":\"energy|different|previous-vocal|take-over|gentle|surprise|none\"}. No numbers."},
+            {"role": "system", "content": _CREATIVE_SYSTEM},
             {"role": "user", "content": text},
         ],
         "format": {"type": "object", "properties": {"move": {"type": "string", "enum": sorted(_CREATIVE_MOVES)}}, "required": ["move"]},

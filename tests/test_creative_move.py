@@ -49,3 +49,46 @@ def test_classify_creative_drops_an_unknown_move():
 def test_classify_creative_drops_a_non_string_move():
     out = classify_creative("punch it up", opener=_opener({"move": []}))
     assert out["move"] == "none"
+
+
+def test_the_creative_prompt_describes_every_move():
+    seen = {}
+
+    def opener(req, timeout):
+        seen["system"] = json.loads(req.data.decode())["messages"][0]["content"]
+        return _Response(json.dumps({"message": {"content": json.dumps({"move": "gentle"})}}).encode())
+
+    assert classify_creative("let it breathe", opener=opener)["move"] == "gentle"
+    for move in ("energy", "gentle", "different", "previous-vocal", "take-over", "surprise", "none"):
+        assert f"- {move}:" in seen["system"], move
+
+
+def test_a_crashed_load_makes_status_say_so(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    from twobecomeone import producer_brain
+
+    class _Tags(_Response):
+        pass
+
+    def fake_urlopen(req, timeout):
+        if req.full_url.endswith("/api/tags"):
+            return _Tags(json.dumps({"models": [{"name": "qwen2.5:3b-instruct"}]}).encode())
+        raise urllib.error.HTTPError(req.full_url, 500, "Internal Server Error", {}, io.BytesIO(
+            b'{"error":"llama-server process has terminated: signal: segmentation fault (core dumped)"}'))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(producer_brain, "_LAST_CALL", {})
+    env = {"TWOBECOMEONE_PRODUCER_URL": "http://127.0.0.1:11434"}
+    assert producer_brain.status(env=env)["available"] is True
+    assert producer_brain.status(env=env)["answered"] is None
+    try:
+        classify_creative("punch it up", env=env)
+    except ProducerUnavailable as exc:
+        assert "segmentation fault" in str(exc)
+    else:
+        raise AssertionError("a crashed load was reported as an answer")
+    after = producer_brain.status(env=env)
+    assert after["available"] is False
+    assert "installed, but its last call failed" in after["note"] and "segmentation fault" in after["note"]
