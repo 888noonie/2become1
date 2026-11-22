@@ -264,8 +264,40 @@ Still open:
 - Take over hands the transport back at once, but the input stays disabled
   until a stalled passage load settles.
 - The layered original vocal in point 4 is admitted, not prevented.
-- Each of four review rounds found new edge cases in this stateful card. Treat
-  the race handling as improved and tested, not proven exhaustive.
+- Each review round found new edge cases in this stateful card. Treat the
+  race handling as improved and tested, not proven exhaustive.
+
+### Open after the fifth Codex review (`9dd8765`)
+
+The fifth review verified every repair in `9dd8765`. It then reported four
+blocking cases that need no race. **They are not fixed on this branch.**
+
+1. **A later request re-applies a stale bed trim.** "Make the fade gentler"
+   after a hand trim of A Drums puts the old trim back (27.6 → 33.6 beats).
+   `spec.clips` keeps the previous take's trim, and `buildIdea` re-applies it
+   when the bed is already shorter than the new endpoint.
+2. **Kept status does not survive save and reopen.** Kept ownership lives only
+   in the card (`conv.musicianClips`). After reopening, Take the decks doubles
+   the kept vocal again. Fixing this means storing ownership in ProjectState,
+   which this brief said to preserve.
+3. **More energy can bring A's vocal back under B's.** It rolls back the
+   previous take's A-vocal trim, then skips the replacement trim because it
+   would leave zero beats. The reply admits the B layer but not the A one.
+4. **Previous vocal misses a typed match.** A vocal that landed through a
+   typed match ("Try the next best match") is not recorded, so Previous vocal
+   stays disabled.
+
+Non-blocking:
+
+- A failed first fetch leaves the card on "Taking the decks".
+- A malformed daemon body (`{"message":"broken"}`) raises before the failure
+  is recorded.
+
+All six share one root. The Producer's pending spec (`conv.spec`, its
+`clips` trims and `drop` list) is replayed against lanes that have since
+changed, and ownership is held outside the project. The next loop should make
+each take a fresh diff from the current ProjectState, with kept and hand-owned
+marks stored in it, instead of replaying a remembered spec.
 
 ## Local model runtime — measured, not assumed
 
