@@ -292,6 +292,29 @@ Evidence, model choice, limits and the demo: `docs/listening-room.md`.
 - No audio is ever sent to a model. Talking to the Producer never opens an
   AudioContext.
 
+### Directing a take (OPERATION THE MAESTRO)
+
+Evidence, model runtime diagnosis and limits: `docs/the-maestro.md`.
+
+- A Producer clip the musician kept (`conv.musicianClips` ∩ `idea-*`) owns its
+  time on its lane. A later take never stacks a part over it
+  (`clearOfKept`); the part starts where the kept clip ends. A lane holding a
+  kept clip keeps its own gain curve; the new entrance is the clip's fade-in.
+  Every later take names the kept clips in its reply and on the card.
+- `.daw__producer-now[data-state]` is one of you-play, jam, idea, creating,
+  playing, finished, yours. The direction row (Try another, More energy,
+  Previous vocal, Take over) shows only while the Producer holds the decks and
+  sends the same phrases as typing. Take over keeps the take; Restore previous
+  arrangement is offered after it only while the lanes are exactly as the take
+  left them; Take back keeps its meaning and never erases a hand edit.
+- `creativeDirection` is a keyword map, not language understanding. Its reply
+  says which word it read and that no model was used. A reply must state the
+  fade, length or position actually applied, never the one requested.
+- `producer_brain.status` reports `answered` from the last real call. A model
+  listed by `/api/tags` that crashes on load is unavailable, with the daemon's
+  error. As of 2026-11-22 the GPU daemon segfaults (NVIDIA 620.70 module vs
+  620.73 user space); do not claim a working model without a successful call.
+
 ## Static assets
 
 - There is no byte ceiling. Record the total uncompressed bytes under
