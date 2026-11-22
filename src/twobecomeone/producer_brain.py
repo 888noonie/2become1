@@ -519,7 +519,8 @@ def classify_creative(
         "format": {"type": "object", "properties": {"move": {"type": "string", "enum": sorted(_CREATIVE_MOVES)}}, "required": ["move"]},
         "options": {"temperature": 0},
     }, timeout_s)
-    content = (payload.get("message") or {}).get("content") if isinstance(payload, dict) else None
+    message = payload.get("message") if isinstance(payload, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str):
         _bad_answer(cfg, "no arrangement move in the answer")
         raise ProducerUnavailable("the model returned no arrangement move", "PRODUCER_BAD_ANSWER")
@@ -566,7 +567,8 @@ def converse(
         "format": schema(vocab), "options": {"temperature": 0, "num_ctx": 8192},
         "keep_alive": "10m",
     }, timeout_s)
-    content = (payload.get("message") or {}).get("content") if isinstance(payload, dict) else None
+    message = payload.get("message") if isinstance(payload, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str):
         if isinstance(payload, dict) and payload.get("error"):
             raise ProducerUnavailable(f"the model daemon said: {_clean(payload['error'], 160)}")

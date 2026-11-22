@@ -300,9 +300,12 @@ Evidence, model runtime diagnosis and limits: `docs/the-maestro.md`.
   time on its lane. A later take never stacks a part over it
   (`clearOfKept`); the part starts where the kept clip ends. A lane holding a
   kept clip keeps its own gain curve; the new entrance is the clip's fade-in.
-  Every later take names the kept clips in its reply and on the card.
+  Every later take names the kept clips in its reply and on the card. After a
+  reload or Open, `idea-*` clips already on the lanes are kept: they have no
+  pending idea behind them. Kept status is derived, not stored in ProjectState.
+  A bed trim is recomputed from the lanes on every build, never replayed.
 - `.daw__producer-now[data-state]` is one of you-play, jam, idea, creating,
-  playing, finished, yours. The direction row (Try another, More energy,
+  waiting, playing, finished, yours. The direction row (Try another, More energy,
   Previous vocal, Take over) shows only while the Producer holds the decks and
   sends the same phrases as typing. Take over keeps the take; Restore previous
   arrangement is offered after it only while the lanes are exactly as the take

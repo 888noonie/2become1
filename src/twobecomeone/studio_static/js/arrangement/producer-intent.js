@@ -703,6 +703,11 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
       m.fadeOut ? `fade out ${plural(r3(m.fadeOut), 'beat')}` : null, m.gainDb ? `${signed(m.gainDb)} dB` : null].filter(Boolean);
     notes.unshift(`${m.song} ${ROLE_LABEL[m.stem]}: ${m.passage.name} of “${group.title}” (song bars ${m.passage.startBar}–${m.passage.startBar + m.passage.bars - 1}, ${mmss(m.passage.startSec)}–${mmss(m.passage.endSec)}; ${evidence})${m.heardNote ? `, ${m.heardNote}` : ''}, at ${fmtPos(want.startBeat, bpb)}${fit}${extras.length ? `, ${extras.join(', ')}` : ''}`);
   }
+  // A trim is worked out from the lanes as they are now. The previous build's
+  // trims are forgotten first, so a bed the musician already shortened by hand
+  // is not stretched back to an old endpoint.
+  for (const id of spec.trimmedIds ?? []) if (spec.clips) delete spec.clips[id];
+  spec.trimmedIds = [];
   for (const trim of spec.trims ?? []) {
     const lane = laneIndex(trim.song, trim.stem);
     const clip = state.clips.find((item) => item.trackIndex === lane && !String(item.id).startsWith('idea-'));
@@ -711,6 +716,7 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
     const duration = rt(endBeat - clip.timelineStartBeat);
     if (!(duration >= 1) || duration >= clip.durationBeats - 0.05) continue;
     spec.clips = { ...(spec.clips ?? {}), [clip.id]: { durationBeats: duration, fadeOut: duration >= 4 ? 2 : 0 } };
+    spec.trimmedIds.push(clip.id);
   }
   for (const clipId of spec.drop ?? []) {
     const before = clipObject(state, clipId);

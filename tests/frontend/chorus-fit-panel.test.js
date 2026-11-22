@@ -1253,3 +1253,75 @@ test('a take that leaves another clip sounding on its lane says so', async () =>
   const said = await tell('More energy');
   if (laneOverlaps(s, 4).length) assert.match(said, /Another B Vocals clip also plays from bar \d/);
 });
+
+// Fifth independent Codex review (9dd8765) -----------------------------------
+
+test('a later request does not stretch a bed the musician shortened by hand', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const bed = s.state.clips.find((clip) => clip.trackIndex === 1);
+  s.apply({ name: 'trimClip', args: { clipId: bed.id, edge: 'end', deltaBeats: -6 } });
+  const trimmed = s.state.clips.find((clip) => clip.id === bed.id).durationBeats;
+  await new Promise((r) => setTimeout(r, 600));
+  const said = await tell('Make the fade gentler');
+  assert.equal(s.state.clips.find((clip) => clip.id === bed.id).durationBeats, trimmed, said);
+});
+
+test('a reopened arrangement keeps its Producer clips as the musician’s', async () => {
+  const { s, tell, btn } = await mounted();
+  const saved = {};
+  const inner = s.deps.fetchImpl;
+  s.deps.fetchImpl = async (url, init = {}) => {
+    const m = /^\/api\/arrangements\/([^/?]+)$/.exec(url);
+    if (m && init.method === 'PUT') { saved[m[1]] = { id: m[1], ...JSON.parse(init.body) }; return { ok: true, status: 200, json: async () => saved[m[1]] }; }
+    if (m && saved[decodeURIComponent(m[1])]) return { ok: true, status: 200, json: async () => saved[decodeURIComponent(m[1])] };
+    return inner(url, init);
+  };
+  await tell('Take the decks');
+  const kept = latestVocal(s);
+  btn('Keep it').click();
+  const { id } = await s.save('Kept take');
+  await s.open(id);
+  // A reload mounts a fresh card with no memory of the Keep.
+  const fresh = document.createElement('div');
+  document.body.append(fresh);
+  const card = mountArrangementProducer({ container: fresh, session: s, rerender: () => {} });
+  await card.converse('Take the decks');
+  const said = [...fresh.querySelectorAll('.daw__talk-log li')].at(-1)?.textContent ?? '';
+  card.dispose();
+  assert.deepEqual(laneOverlaps(s, 4), [], said);
+  assert.ok(s.state.clips.some((clip) => clip.id === kept.id));
+  assert.match(said, /Your kept B Vocals/);
+});
+
+test('More energy leaves the other song’s vocal a bar and does not sing over it', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  await tell('More energy');
+  const vocal = latestVocal(s);
+  const aVocal = s.state.clips.find((clip) => clip.trackIndex === 0 && !String(clip.id).startsWith('idea-'));
+  assert.ok(aVocal.timelineStartBeat + aVocal.durationBeats <= vocal.timelineStartBeat + 1e-6,
+    `A vocal ${aVocal.timelineStartBeat}+${aVocal.durationBeats} vs B vocal at ${vocal.timelineStartBeat}`);
+  assert.ok(vocal.timelineStartBeat >= aVocal.timelineStartBeat + 4 - 1e-6);
+});
+
+test('Previous vocal returns to the vocal before a typed match', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  const passage = (clip) => s.state.assets[clip.assetId]?.source?.passage?.name;
+  const first = passage(latestVocal(s));
+  await tell('Try the next best match instead');
+  assert.notEqual(passage(latestVocal(s)), first);
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(btn('Previous vocal').disabled, false);
+  const said = await tell('Previous vocal');
+  assert.equal(passage(latestVocal(s)), first, said);
+});
+
+test('a decks attempt that placed nothing says so', async () => {
+  const { s, tell, prod } = await mounted();
+  s.loadSource = () => Promise.reject(new Error('network gone'));
+  await tell('Take the decks');
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(prod.querySelector('.daw__producer-now').dataset.state, 'waiting');
+});

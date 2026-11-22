@@ -373,12 +373,22 @@ try {
     return ideas[0]?.timelineStartBeat ?? null;
   });
   const firstStart = await vocalStart();
-  await tell('Try something completely different');
+  const secondReply = await tell('Try something completely different');
   const secondStart = await vocalStart();
-  await tell('Try something completely different');
+  const thirdReply = await tell('Try something completely different');
   const thirdStart = await vocalStart();
   const starts = [firstStart, secondStart, thirdStart];
-  check('three arrangements do not share one entrance', new Set(starts.filter((value) => value != null)).size >= 3, JSON.stringify(starts));
+  const titles = [took, secondReply, thirdReply].map((reply) => reply.split('.')[0]);
+  // The passage kept and reopened above owns its lane time, so two structures
+  // may both enter where it ends. Then the reply must name the kept clip.
+  const keptNamed = [took, secondReply, thirdReply].every((reply) => /Your kept B Vocals/.test(reply));
+  check('three arrangements are three different structures', new Set(titles).size >= 3, JSON.stringify(titles));
+  check('three arrangements do not share one entrance unless a kept clip holds the lane',
+    new Set(starts.filter((value) => value != null)).size >= 3 || keptNamed, `${JSON.stringify(starts)}; kept clip named: ${keptNamed}`);
+  const laneFour = await page.evaluate(() => window.__arrangement.session.state.clips.filter((item) => item.trackIndex === 4)
+    .map((item) => [item.timelineStartBeat, item.timelineStartBeat + item.durationBeats]));
+  const stacked = laneFour.some(([a0, a1], i) => laneFour.some(([b0, b1], j) => j > i && Math.min(a1, b1) - Math.max(a0, b0) > 1e-6));
+  check('no two B vocal clips sound at once', !stacked, JSON.stringify(laneFour));
   await page.getByLabel('Arrangement name').fill('Autonomous take');
   await page.getByRole('button', { name: 'Save' }).click();
   await page.waitForFunction(() => [...document.querySelectorAll('[aria-live], .daw__messages')].some((el) => el.textContent.includes('Saved')));

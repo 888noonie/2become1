@@ -159,3 +159,28 @@ def test_an_answer_without_a_move_is_not_an_answer(monkeypatch):
     env = {"TWOBECOMEONE_PRODUCER_URL": "http://127.0.0.1:11434"}
     assert classify_creative("hmm", env=env)["move"] == "none"
     assert producer_brain.status(env=env)["answered"] is False
+
+
+def test_a_malformed_daemon_body_is_a_failed_call(monkeypatch):
+    import urllib.request
+
+    from twobecomeone import producer_brain
+
+    replies = iter([b'{"message":{"content":"{\\"move\\":\\"energy\\"}"}}', b'{"message":"broken"}'])
+
+    def fake_urlopen(req, timeout):
+        if req.full_url.endswith("/api/tags"):
+            return _Response(json.dumps({"models": [{"name": "qwen2.5:3b-instruct"}]}).encode())
+        return _Response(next(replies))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(producer_brain, "_LAST_CALL", {})
+    env = {"TWOBECOMEONE_PRODUCER_URL": "http://127.0.0.1:11434"}
+    classify_creative("punch it up", env=env)
+    try:
+        classify_creative("punch it up", env=env)
+    except ProducerUnavailable:
+        pass
+    else:
+        raise AssertionError("a malformed body was accepted")
+    assert producer_brain.status(env=env)["answered"] is False

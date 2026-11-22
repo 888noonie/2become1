@@ -267,37 +267,47 @@ Still open:
 - Each review round found new edge cases in this stateful card. Treat the
   race handling as improved and tested, not proven exhaustive.
 
-### Open after the fifth Codex review (`9dd8765`)
+### Fifth Codex review (`9dd8765`) and its repair
 
 The fifth review verified every repair in `9dd8765`. It then reported four
-blocking cases that need no race. **They are not fixed on this branch.**
+blocking cases that need no race. The repair commit after `54d4dc1` fixes all
+four, each with a test that fails on `9dd8765`:
 
-1. **A later request re-applies a stale bed trim.** "Make the fade gentler"
-   after a hand trim of A Drums puts the old trim back (27.6 → 33.6 beats).
-   `spec.clips` keeps the previous take's trim, and `buildIdea` re-applies it
-   when the bed is already shorter than the new endpoint.
-2. **Kept status does not survive save and reopen.** Kept ownership lives only
-   in the card (`conv.musicianClips`). After reopening, Take the decks doubles
-   the kept vocal again. Fixing this means storing ownership in ProjectState,
-   which this brief said to preserve.
-3. **More energy can bring A's vocal back under B's.** It rolls back the
-   previous take's A-vocal trim, then skips the replacement trim because it
-   would leave zero beats. The reply admits the B layer but not the A one.
-4. **Previous vocal misses a typed match.** A vocal that landed through a
-   typed match ("Try the next best match") is not recorded, so Previous vocal
-   stays disabled.
+1. **A stale bed trim was re-applied.** "Make the fade gentler" after a hand
+   trim of A Drums put the old trim back (27.6 → 33.6 beats). Trims are now
+   recomputed from the lanes on every build (`spec.trimmedIds`), so a stale
+   trim is never replayed.
+2. **Kept status was lost on save and reopen.** After a reload, a new take
+   doubled the kept vocal again. When the card is new (a reload) or another
+   arrangement is opened, Producer clips already on the lanes have no pending
+   idea behind them, so they are treated as kept. This reads only the clip
+   ids ProjectState already stores; ProjectState is unchanged.
+3. **More energy put A's vocal back under B's.** The other song's vocal bed
+   now keeps at least its first bar. The new vocal comes in after it, and the
+   bed is trimmed there.
+4. **Previous vocal missed a typed match.** A vocal that lands through a typed
+   match in decks mode is now recorded, so Previous vocal returns to the one
+   before it.
 
-Non-blocking:
+Also fixed: a decks attempt that placed nothing now shows *Holding the decks;
+nothing placed yet* (`data-state="waiting"`). A malformed daemon body is
+recorded as a failed call.
 
-- A failed first fetch leaves the card on "Taking the decks".
-- A malformed daemon body (`{"message":"broken"}`) raises before the failure
-  is recorded.
+What changed in behaviour:
 
-All six share one root. The Producer's pending spec (`conv.spec`, its
-`clips` trims and `drop` list) is replayed against lanes that have since
-changed, and ownership is held outside the project. The next loop should make
-each take a fresh diff from the current ProjectState, with kept and hand-owned
-marks stored in it, instead of replaying a remembered spec.
+- Because a saved Producer clip is kept, the Chorus Fit journey's reopened
+  passage now holds its lane. Two structures can then enter at the same beat,
+  just after it, and the reply names the kept clip. The journey check now
+  says this.
+- Still admitted, not prevented: B's own original vocal can play under the
+  Producer's vocal; the reply says so.
+- Still open: Take over leaves the input disabled until a stalled load
+  settles.
+
+The remaining risk is architectural. The card replays a remembered spec
+against lanes that may have changed. Each review round found new edge cases
+in that replay, and each was fixed field by field. The durable fix is for
+each take to be computed as a fresh diff from the current ProjectState.
 
 ## Local model runtime — measured, not assumed
 
@@ -347,10 +357,11 @@ daemon's error after a failure.
 
 ## Evidence
 
-- `node --test tests/frontend/*.js`: 362/362 pass. That includes 26 new tests.
+- `node --test tests/frontend/*.js`: 367/367 pass. That includes 31 new tests.
   The two layering tests and the transition test fail on `24e2850`; each review
-  test fails on the commit it repairs (`32fdceb`, `355d945`, `6ddcdbb`, `6c33051`).
-- `pytest -q` (full suite at `355d945`): 681 pass, 6 skipped. After the last `producer_brain.py` change, the targeted Producer, listening and chorus-fit tests pass (42 pass, 4 skipped). The full suite was not re-run, because each run leaves about 3 GB in the `/tmp` RAM disk. Only the two live-model tests fail, and only
+  test fails on the commit it repairs (`32fdceb`, `355d945`, `6ddcdbb`,
+  `6c33051`, `9dd8765`).
+- `pytest -q` (full suite at `355d945`): 681 pass, 6 skipped. After the last `producer_brain.py` change, the targeted Producer, listening and chorus-fit tests pass (43 pass, 4 skipped). The full suite was not re-run, because each run leaves about 3 GB in the `/tmp` RAM disk. Only the two live-model tests fail, and only
   because `:11434` segfaults; they were also run against the CPU runner, with
   the results in the table above.
 - `node tests/browser/maestro_journey.js`: 31/31 in real Chromium, against a
@@ -366,7 +377,7 @@ daemon's error after a failure.
 
   Set `MAESTRO_EVIDENCE=<dir>` to write `maestro-evidence.json` and card
   screenshots.
-- `node tests/browser/chorus_fit_journey.js`: 26/26.
+- `node tests/browser/chorus_fit_journey.js`: 28/28 (two checks added; see the fifth review).
 - Not run: `listening_room_daw.js`. It needs a seeded Studio with the owner's
   library songs and a working model.
 

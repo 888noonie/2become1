@@ -331,7 +331,29 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     return ok;
   }
 
+  /**
+   * The card is new (a reload) or a different arrangement is open (Open,
+   * New). Producer clips already on the lanes then have no pending idea behind
+   * them: the musician saved or kept them, so they are kept. Nothing is added
+   * to ProjectState; the clip ids it stores are enough.
+   */
+  function followArrangement() {
+    if (conv.engine === session.edit) return;
+    conv.engine = session.edit;
+    idea = null;
+    conv.spec = null;
+    conv.decks = null;
+    conv.plan = null;
+    conv.partIds = [];
+    conv.vocalChoices = [];
+    conv.harmony = null;
+    conv.yieldedTracks = new Set();
+    conv.musicianClips = new Set(session.state.clips.filter((clip) => String(clip.id).startsWith('idea-')).map((clip) => clip.id));
+    if (conv.mode === 'decks') { conv.mode = 'jam'; conv.epoch += 1; }
+  }
+
   function sync() {
+    followArrangement();
     noteHumanMoves();
     const ready = session.state.clips.length > 0;
     ask.disabled = !ready;
@@ -366,7 +388,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (conv.mode === 'you-play') return { state: 'you-play', title: 'You’re playing.', hint: 'I am listening only. I will not move a clip.' };
     if (conv.mode === 'decks') {
       if (conv.busy) return { state: 'creating', title: 'Creating…', hint: 'Take over or Take back at any moment; I stop at once.' };
-      if (!conv.plan) return { state: 'creating', title: 'Taking the decks.', hint: 'Choosing a section to build on.' };
+      if (!conv.plan) return { state: 'waiting', title: 'Holding the decks; nothing placed yet.', hint: 'That attempt did not land. Take the decks again, or take over.' };
       const title = conv.plan.title.replace(/\.$/, '');
       if ((conv.decks?.steps ?? 0) >= DECK_REVISIONS) {
         return { state: playing ? 'playing' : 'finished', title: `${playing ? 'Playing' : 'Finished'}: ${title}.`, hint: `I have revised this ${DECK_REVISIONS} times. Take over to keep it, Take back to undo it, or tell me the one change you want.` };
@@ -1082,6 +1104,10 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         if (!idea || idea.hearing !== 'idea') return `${text}${pitchNote}${alt} The arrangement did not change.`;
         rememberWrite(beforeWrite, beforeRevision, true);
       }
+      if ((outcome.spec.main?.stem || 'vocals') === 'vocals') {
+        conv.vocalChoices = conv.vocalChoices ?? [];
+        if (conv.vocalChoices.at(-1) !== section.id) conv.vocalChoices.push(section.id);
+      }
       const playing = typeof session.play === 'function' ? await session.play() : false;
       const surprise = deckChoice(found.rank);
       const extra = surprise?.adventurous ? ' I took a playable neighbour of the closest chroma match, not only the safest one.' : '';
@@ -1192,6 +1218,19 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       plan = structuredClone(plan);
       plan.vocal.sectionId = options.vocalSectionId;
       plan.vocal.stem = 'vocals';
+    }
+    {
+      // The other song's vocal bed keeps at least its first bar. Without this a
+      // vocal moved to the bed's start leaves no room to trim it, and both sing.
+      const bedLane = laneIndex(plan.vocal.song === 'A' ? 'B' : 'A', 'vocals');
+      const beds = session.state.clips.filter((clip) => clip.trackIndex === bedLane && !String(clip.id).startsWith('idea-'));
+      const floor = beds.length ? Math.min(...beds.map((clip) => clip.timelineStartBeat)) + bpb : null;
+      if (floor != null && plan.vocal.startBeat < floor - 1e-9 && (plan.trims ?? []).some((trim) => trim.stem === 'vocals' && trim.song !== plan.vocal.song)) {
+        plan = structuredClone(plan);
+        const was = plan.vocal.startBeat;
+        plan.vocal.startBeat = floor;
+        for (const trim of plan.trims) if (trim.stem === 'vocals' && trim.song !== plan.vocal.song && trim.endBeat === was) trim.endBeat = floor;
+      }
     }
     if (style === 'second' && !secondId) plan.issues = [...plan.issues, 'Song B has no second chorus in the analysis, so the vocal choice stays.'];
     const reading = measurePlan(plan);
@@ -1447,6 +1486,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   }
 
   async function converse(text) {
+    followArrangement();
     const urgent = chorusUtterance(text);
     if (conv.busy) {
       if (urgent?.kind === 'take-back' || urgent?.kind === 'take-over' || urgent?.kind === 'you-play') {
