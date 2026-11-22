@@ -322,6 +322,8 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       wrote.push(f);
     }
     const ok = commands.length ? session.apply({ name: 'batch', args: { commands } }, gestureKey).ok : true;
+    // A Producer write (Hear it, Hear mine, Undo) during a load is not a hand edit.
+    if (ok && conv.loadBase) conv.loadBase = structuredClone(session.state);
     // Remember what the project now holds (the edit API may round or clamp),
     // so only a real human move counts as one.
     state = session.state;
@@ -404,6 +406,26 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
 
   /** Dry-run the idea through propose(); only a valid one becomes an idea. */
   function offer(proposal, empty, spec = null) {
+    // Every idea passes here, so this is where a kept clip is protected: no
+    // write to it, no mute or level cut on its lane, no solo that silences it.
+    const kept = keptClips();
+    if (kept.length) {
+      const keptIds = new Set(kept.map((clip) => clip.id));
+      const keptLanes = new Set(kept.map((clip) => clip.trackIndex));
+      const silences = (f) => {
+        const m = /^(\d+):(mute|solo|volumeDb)$/.exec(f.key);
+        if (!m) return false;
+        const lane = Number(m[1]);
+        if (m[2] === 'solo') return f.value === true && !keptLanes.has(lane);
+        if (!keptLanes.has(lane)) return false;
+        return m[2] === 'mute' ? f.value === true : f.value < session.state.tracks[lane].volumeDb;
+      };
+      const allowed = proposal.fields.filter((f) => !(f.key.endsWith(':clip') && keptIds.has(f.key.slice(0, -5))) && !silences(f));
+      if (allowed.length !== proposal.fields.length) {
+        proposal = { ...proposal, fields: allowed, rationale: `${proposal.rationale} Your kept clips are left as they are.` };
+        if (!allowed.length) { say('That idea would change a clip you kept, so I have left it alone.'); return false; }
+      }
+    }
     if (!proposal.fields.length) { say(proposal.refusal ?? empty); return false; }
     const commands = proposal.fields.flatMap((f) => flat(f.command(session.state, f.value)));
     const dry = commands.length ? session.edit.propose({ name: 'batch', args: { commands } }) : { status: 'pending' };
@@ -668,7 +690,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     let loads = 0;
     // What the lanes held when the request was made. A field that changed by
     // hand while the passage loaded belongs to the musician: the write is dropped.
-    const asked = structuredClone(session.state);
+    conv.loadBase = structuredClone(session.state);
     while (built.needsSource && loads < 6) {
       say('Fetching that passage of the stem…');
       try { await session.loadSource(built.needsSource); } catch (err) { return { ok: false, text: `I couldn't load that passage: ${err.message}` }; }
@@ -693,14 +715,24 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (onKept) {
       return { ok: false, text: `You kept ${onKept.label(session.state)}, so I have not changed it. Ask again and I will build around it.` };
     }
-    if (loads) {
-      // Bed clips are rebuilt from the lanes as they are now, so a hand edit to
-      // one is carried into the take. A Producer clip or a lane curve is written
-      // from the request, so a hand edit to one would be put back: drop the write.
-      const ours = (f) => f.key.endsWith(':gainEnvelope') || (f.key.endsWith(':clip') && String(f.key).startsWith('idea-'));
-      const changed = built.fields.find((f) => ours(f) && typeof f.read === 'function' && !same(f.read(asked), f.read(session.state)));
-      if (changed) {
-        return { ok: false, text: `You changed ${changed.label(session.state)} while I was loading that passage, so I have not placed it. Ask again and I will start from your version.` };
+    const asked = conv.loadBase;
+    conv.loadBase = null;
+    let handKeys = new Set();
+    if (loads && asked) {
+      // A field changed by hand while the passage loaded keeps the hand value:
+      // that field is left out of the write. If it is the Producer clip being
+      // rewritten, the whole write is dropped, since the passage was that clip.
+      const byHand = built.fields.filter((f) => typeof f.read === 'function'
+        && !same(f.read(asked), f.read(session.state)) && !same(f.read(session.state), f.value));
+      const rewritten = byHand.find((f) => f.key.endsWith(':clip') && String(f.key).startsWith('idea-')
+        && f.read(asked)?.exists);
+      if (rewritten) {
+        return { ok: false, text: `You changed ${rewritten.label(session.state)} while I was loading that passage, so I have not replaced it. Ask again and I will start from your version.` };
+      }
+      if (byHand.length) {
+        handKeys = new Set(byHand.map((f) => f.key));
+        built = { ...built, fields: built.fields.filter((f) => !handKeys.has(f.key)), rationale: `${built.rationale}; your edit to ${byHand.map((f) => f.label(session.state)).join(' and ')} stands` };
+        if (!built.fields.length) return { ok: false, text: 'You already made that change by hand while I was loading it.' };
       }
     }
     const wasHearing = idea?.hearing === 'idea';
@@ -713,7 +745,10 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (wasHearing) {
       // Swap the heard version for the refined one as ONE undo step.
       writeAll((f) => idea.before.get(f.key), true, key);
+      const rationale = built.rationale;
       built = buildIdea(session.state, spec, ctx);
+      // The rebuild must not bring back a field the musician set by hand.
+      if (handKeys.size && built.fields) built = { ...built, fields: built.fields.filter((f) => !handKeys.has(f.key)), rationale };
       if (built.refusal || built.needsSource) { idea = old; writeAll((f) => f.value, false, key); session.endGesture(); return { ok: false, text: built.refusal ?? 'Try that again.' }; }
     }
     const commands = built.fields.flatMap((f) => flat(f.command(session.state, f.value)));
@@ -1209,6 +1244,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       stem: plan.vocal.stem, rank: found.rank, index: 0,
     };
     conv.partIds = [...kept];
+    const priorPlan = conv.plan;
     conv.plan = plan;
     conv.planStyle = style;
     conv.vocalChoices = conv.vocalChoices ?? [];
@@ -1217,6 +1253,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const guard = { epoch: conv.epoch, mode: 'decks' };
     const engine = session.edit;
     const heard = await realise(outcome.spec, guard);
+    if (!heard.ok) conv.plan = priorPlan;
     if (conv.mode === 'you-play') return heard.text || 'You play is on, so I have not placed it.';
     if (conv.cancelled || conv.mode !== 'decks') return heard.ok ? 'The decks are yours. I have stopped.' : 'The decks are yours, so I have not placed it.';
     if (!heard.ok) return heard.text;

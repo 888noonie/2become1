@@ -211,6 +211,35 @@ Also fixed from the second review:
 - Undo of a kept take forgets that it was kept.
 - *Find another section* respects the revision cap.
 
+A third Codex review of `6ddcdbb` confirmed those repairs. It found three
+further blocking cases. The fourth repair commit fixes them, and the guards
+now work field by field instead of refusing the whole write:
+
+1. **A hand trim during a Jam load was put back.** A bed trimmed by hand
+   while a Jam revision loaded was restored by a stale trim in the pending
+   spec. A field the musician changed during a load now keeps the hand value;
+   only that field is left out of the write, including after the heard
+   version is rolled back and rebuilt.
+2. **Ask for an idea could still silence a kept clip.** The idea buttons went
+   around `realise`, so Ask for an idea could mute the kept B drums, and Ask
+   for a clip idea could move a kept clip. `offer()`, which every idea passes
+   through, now drops any write to a kept clip and any mute, level cut or solo
+   that would silence one. The mute case has a test that fails first. The
+   clip-idea case needs a stem with two detected phrases, so it is covered by
+   the same filter but not by a test that fails first.
+3. **The guard refused valid takes.** Drawing the same curve the take would
+   apply, or pressing Hear mine during a load, made the Producer refuse.
+   Producer writes during a load no longer count as hand edits, and a field
+   that already holds the value it would write is not a conflict.
+
+Also from the third review:
+
+- A refused take no longer leaves the card saying *Finished*.
+- Unusable content inside a 200 answer counts as a failed model call.
+
+Still open: Take over hands the transport back at once, but the input stays
+disabled until a stalled passage load settles.
+
 ## Local model runtime — measured, not assumed
 
 **Cause of the crashes.** The loaded and installed NVIDIA kernel module is
@@ -259,10 +288,10 @@ daemon's error after a failure.
 
 ## Evidence
 
-- `node --test tests/frontend/*.js`: 353/353 pass. That includes 17 new tests.
-  The two layering tests and the transition test fail on `24e2850`; the review
-  tests fail on the commit each one repairs (`32fdceb`, `355d945`).
-- `pytest -q` (at `355d945`; Python is unchanged since): 681 pass, 6 skipped. Only the two live-model tests fail, and only
+- `node --test tests/frontend/*.js`: 358/358 pass. That includes 22 new tests.
+  The two layering tests and the transition test fail on `24e2850`; each review
+  test fails on the commit it repairs (`32fdceb`, `355d945`, `6ddcdbb`).
+- `pytest -q` (full suite at `355d945`): 681 pass, 6 skipped. After the last `producer_brain.py` change, the targeted Producer, listening and chorus-fit tests pass (41 pass, 4 skipped). The full suite was not re-run, because each run leaves about 3 GB in the `/tmp` RAM disk. Only the two live-model tests fail, and only
   because `:11434` segfaults; they were also run against the CPU runner, with
   the results in the table above.
 - `node tests/browser/maestro_journey.js`: 31/31 in real Chromium, against a

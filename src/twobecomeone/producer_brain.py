@@ -335,6 +335,13 @@ def _few_shot() -> list[dict]:
 _LAST_CALL: dict[tuple[str, str], dict] = {}
 
 
+def _bad_answer(cfg: dict, note: str) -> None:
+    """An HTTP success whose content is unusable is not an answer."""
+    key = (cfg["url"], cfg["model"])
+    if key in _LAST_CALL:
+        _LAST_CALL[key] = {"ok": False, "note": note}
+
+
 def _daemon_error(exc: urllib.error.HTTPError) -> str:
     try:
         body = json.loads(exc.read().decode("utf-8", "replace"))
@@ -514,10 +521,12 @@ def classify_creative(
     }, timeout_s)
     content = (payload.get("message") or {}).get("content") if isinstance(payload, dict) else None
     if not isinstance(content, str):
+        _bad_answer(cfg, "no arrangement move in the answer")
         raise ProducerUnavailable("the model returned no arrangement move", "PRODUCER_BAD_ANSWER")
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
+        _bad_answer(cfg, "the arrangement move was not JSON")
         raise ProducerUnavailable("the model's arrangement move was not JSON", "PRODUCER_BAD_ANSWER") from exc
     move = parsed.get("move") if isinstance(parsed, dict) else None
     if not isinstance(move, str) or move not in _CREATIVE_MOVES:
@@ -559,10 +568,12 @@ def converse(
     if not isinstance(content, str):
         if isinstance(payload, dict) and payload.get("error"):
             raise ProducerUnavailable(f"the model daemon said: {_clean(payload['error'], 160)}")
+        _bad_answer(cfg, "no answer in the reply")
         raise ProducerUnavailable("the model returned no answer", "PRODUCER_BAD_ANSWER")
     try:
         raw = json.loads(content)
     except json.JSONDecodeError as exc:
+        _bad_answer(cfg, "the answer was not valid JSON")
         raise ProducerUnavailable("the model's answer was not valid JSON", "PRODUCER_BAD_ANSWER") from exc
     intent = validate_intent(raw, vocab)
     asks = raw.get("asks")

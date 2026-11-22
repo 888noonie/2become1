@@ -1099,3 +1099,94 @@ test('the revision cap also holds on Find another section', async () => {
   assert.match(await tell('Find another section that would work with A'), /revised this 4 times/);
   assert.equal(s.edit.revision, revision);
 });
+
+// Third independent Codex review (6ddcdbb) -----------------------------------
+
+test('a bed trimmed by hand while a Jam revision loads keeps the hand trim', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  btn('Jam together').click();
+  const bed = s.state.clips.find((clip) => clip.trackIndex === 1);
+  const gate = holdLoads(s);
+  const pending = tell('Try the next best match instead');
+  for (let i = 0; i < 150 && !gate.release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(gate.release, 'the next match fetches a passage');
+  const trimmed = Math.round((s.state.clips.find((clip) => clip.id === bed.id).durationBeats - 6) * 1e6) / 1e6;
+  s.apply({ name: 'trimClip', args: { clipId: bed.id, edge: 'end', deltaBeats: -6 } });
+  gate.release();
+  const said = await pending;
+  gate.restore();
+  const hear = btn('Hear it');
+  if (hear && !hear.disabled) hear.click();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(Math.round(s.state.clips.find((clip) => clip.id === bed.id).durationBeats * 1e6) / 1e6, trimmed, said);
+});
+
+test('Ask for a clip idea and Ask for an idea leave a kept clip alone', async () => {
+  const { s, tell, btn, prod } = await mounted();
+  const bed = s.state.clips.find((clip) => clip.trackIndex === 4);
+  s.apply({ name: 'deleteClip', args: { clipId: bed.id } });
+  await tell('Take the decks');
+  const kept = latestVocal(s);
+  btn('Keep it').click();
+  await tell('I’ll take over');
+  const before = JSON.stringify(s.state.clips.find((clip) => clip.id === kept.id));
+  btn('Ask for a clip idea').click();
+  if (!btn('Hear it').disabled) btn('Hear it').click();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(JSON.stringify(s.state.clips.find((clip) => clip.id === kept.id)), before, prod.querySelector('.daw__producer-status').textContent);
+  const keptLanes = s.state.clips.filter((clip) => String(clip.id).startsWith('idea-')).map((clip) => clip.trackIndex);
+  const levels = keptLanes.map((lane) => s.state.tracks[lane].volumeDb);
+  btn('Ask for an idea').click();
+  if (!btn('Hear it').disabled) btn('Hear it').click();
+  await new Promise((r) => setTimeout(r, 50));
+  for (const [i, lane] of keptLanes.entries()) {
+    assert.equal(s.state.tracks[lane].mute, false, `lane ${lane} muted`);
+    assert.ok(s.state.tracks[lane].volumeDb >= levels[i], `lane ${lane} cut`);
+  }
+  const soloed = s.state.tracks.map((track, lane) => (track.solo ? lane : null)).filter((lane) => lane != null);
+  assert.ok(!soloed.length || keptLanes.every((lane) => soloed.includes(lane)), `solo ${soloed} silences a kept lane`);
+  assert.equal(JSON.stringify(s.state.clips.find((clip) => clip.id === kept.id)), before);
+});
+
+test('a curve drawn while the first take loads stands, and the take still lands', async () => {
+  const { s, tell } = await mounted();
+  const gate = holdLoads(s);
+  const pending = tell('Take the decks');
+  for (let i = 0; i < 150 && !gate.release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(gate.release);
+  const flat = [{ beat: 0, db: -5 }, { beat: 40, db: -5 }];
+  s.apply({ name: 'setTrackGainEnvelope', args: { trackIndex: 4, points: flat } });
+  gate.release();
+  const said = await pending;
+  gate.restore();
+  assert.ok(latestVocal(s), `the take landed: ${said}`);
+  assert.deepEqual(s.state.tracks[4].gainPoints.map((p) => ({ beat: p.beat, db: p.db })), flat);
+});
+
+test('Hear mine during a Jam load is not mistaken for a hand edit', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Try the strongest match');
+  btn('Hear it').click();
+  await new Promise((r) => setTimeout(r, 50));
+  const gate = holdLoads(s);
+  const pending = tell('Try the next best match instead');
+  for (let i = 0; i < 150 && !gate.release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(gate.release);
+  btn('Hear mine').click();
+  gate.release();
+  const said = await pending;
+  gate.restore();
+  assert.doesNotMatch(said, /while I was loading/);
+  assert.equal(btn('Hear it').disabled, false, `a new preview is offered: ${said}`);
+});
+
+test('a refused take does not leave the card claiming a finished take', async () => {
+  const { s, tell, prod } = await mounted();
+  s.loadSource = () => Promise.reject(new Error('network gone'));
+  const said = await tell('Take the decks');
+  assert.match(said, /network gone/);
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(s.state.clips.some((clip) => String(clip.id).startsWith('idea-')), false);
+  assert.doesNotMatch(prod.querySelector('.daw__producer-now').textContent, /Finished|Playing my take/);
+});
