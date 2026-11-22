@@ -1030,3 +1030,72 @@ test('the revision cap holds on typed choices, and a new Take the decks starts a
   await tell('I’ll take over');
   assert.doesNotMatch(await tell('Take the decks'), /revised this/);
 });
+
+// Second independent Codex review (355d945) ----------------------------------
+
+test('Keep pressed while a typed revision loads is not overwritten', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  const gate = holdLoads(s);
+  const pending = tell('Try the next best match instead');
+  for (let i = 0; i < 150 && !gate.release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(gate.release, 'the next match fetches a passage');
+  const kept = latestVocal(s);
+  const before = JSON.stringify(kept);
+  btn('Keep it').click();
+  gate.release();
+  const said = await pending;
+  gate.restore();
+  assert.equal(JSON.stringify(s.state.clips.find((clip) => clip.id === kept.id)), before, said);
+  assert.deepEqual(laneOverlaps(s, 4), []);
+});
+
+test('a hand move in Jam while the next match loads is not put back', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Try the strongest match');
+  btn('Hear it').click();
+  await new Promise((r) => setTimeout(r, 50));
+  const vocal = latestVocal(s);
+  assert.ok(vocal, 'the match is heard');
+  const gate = holdLoads(s);
+  const pending = tell('Try the next best match instead');
+  for (let i = 0; i < 150 && !gate.release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(gate.release);
+  s.apply({ name: 'moveClip', args: { clipId: vocal.id, newTrackIndex: 4, newStartBeat: vocal.timelineStartBeat + 4 } });
+  gate.release();
+  const said = await pending;
+  gate.restore();
+  assert.equal(s.state.clips.find((clip) => clip.id === vocal.id)?.timelineStartBeat, vocal.timelineStartBeat + 4, said);
+  assert.match(said, /while I was loading that passage/);
+});
+
+test('Restore right after a Keep changes nothing and says so', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  btn('Keep it').click();
+  await tell('I’ll take over');
+  const before = s.edit.revision;
+  assert.match(await tell('Restore the arrangement'), /nothing of mine to put back/);
+  assert.equal(s.edit.revision, before);
+  assert.equal(btn('Undo').disabled, false, 'the Producer’s Undo is still there');
+});
+
+test('Undo of a kept take forgets it was kept', async () => {
+  const { prod, tell, btn } = await mounted();
+  await tell('Take the decks');
+  btn('Keep it').click();
+  btn('Undo').click();
+  await tell('Try another arrangement');
+  assert.equal(prod.querySelector('.daw__now-kept').hidden, true, prod.querySelector('.daw__now-kept').textContent);
+});
+
+test('the revision cap also holds on Find another section', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  await tell('Try another arrangement');
+  await tell('Try another arrangement');
+  await tell('More energy');
+  const revision = s.edit.revision;
+  assert.match(await tell('Find another section that would work with A'), /revised this 4 times/);
+  assert.equal(s.edit.revision, revision);
+});

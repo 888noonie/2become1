@@ -188,6 +188,29 @@ Smaller findings, also fixed:
 Not changed: the status note repeats the loopback daemon's own error text, up
 to 160 characters. It is shown only on this machine.
 
+A second Codex review of `355d945` confirmed those three repairs. It found two
+more blocking races, which the following commit repairs:
+
+1. **A Keep during a typed revision was overwritten.** A typed revision ("Try
+   the next best match"), requested before the musician pressed Keep, still
+   wrote to the clip they had just kept.
+2. **A hand move in Jam during a load was put back.** In Jam, a hand move or a
+   drawn curve made while the next match loaded was rolled back by the write.
+
+The rules now:
+
+- No Producer write ever targets a kept clip.
+- If a Producer clip or lane curve that the write would change was edited by
+  hand during the load, the write is dropped and the reply says so.
+- Bed clips are rebuilt from the current lanes, so a hand edit to a bed clip
+  is still carried into the take (the existing `1f9f495` contract).
+
+Also fixed from the second review:
+
+- A Restore right after a Keep is a no-op that says so and keeps Undo.
+- Undo of a kept take forgets that it was kept.
+- *Find another section* respects the revision cap.
+
 ## Local model runtime — measured, not assumed
 
 **Cause of the crashes.** The loaded and installed NVIDIA kernel module is
@@ -236,10 +259,10 @@ daemon's error after a failure.
 
 ## Evidence
 
-- `node --test tests/frontend/*.js`: 348/348 pass. That includes 12 new tests.
-  The two layering tests and the transition test fail on `24e2850`; the five
-  review tests fail on `32fdceb`.
-- `pytest -q`: 681 pass, 6 skipped. Only the two live-model tests fail, and only
+- `node --test tests/frontend/*.js`: 353/353 pass. That includes 17 new tests.
+  The two layering tests and the transition test fail on `24e2850`; the review
+  tests fail on the commit each one repairs (`32fdceb`, `355d945`).
+- `pytest -q` (at `355d945`; Python is unchanged since): 681 pass, 6 skipped. Only the two live-model tests fail, and only
   because `:11434` segfaults; they were also run against the CPU runner, with
   the results in the table above.
 - `node tests/browser/maestro_journey.js`: 31/31 in real Chromium, against a

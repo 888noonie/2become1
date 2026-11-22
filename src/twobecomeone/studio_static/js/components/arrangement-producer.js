@@ -452,6 +452,8 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (!idea) return false;
     if (idea.hearing === 'kept') {
       writeAll((f) => idea.before.get(f.key), true);
+      const owned = idea.fields.filter((f) => f.key.endsWith(':clip')).map((f) => f.key.slice(0, -5));
+      if (conv.musicianClips) for (const id of owned) conv.musicianClips.delete(id);
       idea = null;
       conv.spec = null;
       say('Back to your version from before the idea. Your own moves were kept.');
@@ -664,6 +666,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const ctx = { analyses: conv.analyses, groups, records: session.buffers };
     let built = buildIdea(session.state, spec, ctx);
     let loads = 0;
+    // What the lanes held when the request was made. A field that changed by
+    // hand while the passage loaded belongs to the musician: the write is dropped.
+    const asked = structuredClone(session.state);
     while (built.needsSource && loads < 6) {
       say('Fetching that passage of the stem…');
       try { await session.loadSource(built.needsSource); } catch (err) { return { ok: false, text: `I couldn't load that passage: ${err.message}` }; }
@@ -683,6 +688,21 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     spec = respectKept(followTempo(spec));
     built = buildIdea(session.state, spec, ctx);
     if (built.refusal) return { ok: false, text: built.refusal };
+    const keptIds = new Set(keptClips().map((clip) => clip.id));
+    const onKept = built.fields.find((f) => f.key.endsWith(':clip') && keptIds.has(f.key.slice(0, -5)));
+    if (onKept) {
+      return { ok: false, text: `You kept ${onKept.label(session.state)}, so I have not changed it. Ask again and I will build around it.` };
+    }
+    if (loads) {
+      // Bed clips are rebuilt from the lanes as they are now, so a hand edit to
+      // one is carried into the take. A Producer clip or a lane curve is written
+      // from the request, so a hand edit to one would be put back: drop the write.
+      const ours = (f) => f.key.endsWith(':gainEnvelope') || (f.key.endsWith(':clip') && String(f.key).startsWith('idea-'));
+      const changed = built.fields.find((f) => ours(f) && typeof f.read === 'function' && !same(f.read(asked), f.read(session.state)));
+      if (changed) {
+        return { ok: false, text: `You changed ${changed.label(session.state)} while I was loading that passage, so I have not placed it. Ask again and I will start from your version.` };
+      }
+    }
     const wasHearing = idea?.hearing === 'idea';
     const old = idea;
     const key = `producer-${Date.now()}`;
@@ -1078,6 +1098,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     if (arrangementDirty()) return 'The decks are yours. I will not take that away. Undo walks one step when you want it to.';
     const checkpoint = conv.decks.before;
     const started = editingSerial();
+    if (started === checkpoint) return 'There is nothing of mine to put back: the lanes are as you kept them.';
     let guard = 0;
     while (editingSerial() !== checkpoint && guard < 32) {
       if (!session.undo()) break;
@@ -1328,6 +1349,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       }
       return heard.text;
     }
+    if (conv.mode === 'decks' && (conv.decks?.steps ?? 0) >= DECK_REVISIONS && (request.kind === 'choose' || request.kind === 'fit')) {
+      return `I have revised this ${DECK_REVISIONS} times. Take back, or tell me the one change you want.`;
+    }
     const found = await rankedFit(request);
     if (found.say) return found.say;
     if (conv.mode === 'you-play') {
@@ -1350,9 +1374,6 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       conv.harmony = { targetSong: found.targetSong, sourceSong: found.sourceSong, target: found.target, label: found.target.label, stem: 'vocals', rank: found.rank, index: 0 };
       const names = scoredRows(found.rank).slice(0, 2).map((row) => row.label || row.id).join(' or ');
       return `${explainCandidate(found.rank.candidates[0], { targetName: found.target.name || 'the chorus', sourceTitle: found.groups[found.sourceSong]?.title || 'song B', rank: found.rank })} Say “try the strongest match” or name ${names}.`;
-    }
-    if (conv.mode === 'decks' && (conv.decks?.steps ?? 0) >= DECK_REVISIONS && (request.kind === 'choose' || request.kind === 'fit')) {
-      return `I have revised this ${DECK_REVISIONS} times. Take back, or tell me the one change you want.`;
     }
     if (request.kind === 'choose') {
       if (!conv.harmony?.rank && !found.rank) return 'Ask which part fits, and then I can try the next one.';
