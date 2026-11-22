@@ -332,6 +332,10 @@ Evidence, model runtime diagnosis and limits: `docs/the-maestro.md`.
   audits and the OfflineAudioContext audio capture passing where the change
   touches playback or UI. See `docs/static-asset-policy.md`.
 
+## Arrangement skills
+
+Reusable notes for the eight-lane DAW, Clockwork, chorus ranking, the Producer, audio checks, and release promotion live in `skills/`. Read the matching skill before changing that surface. When a skill and this file disagree, trust the code and this file.
+
 ## Commits
 
 Stage the source, tests, and docs for the change. Leave personal documents,
