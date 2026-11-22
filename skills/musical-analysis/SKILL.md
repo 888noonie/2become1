@@ -26,7 +26,17 @@ Two songs can share a pitch-class shape and still be a bad musical fit. The rank
 
 ## Boundaries
 
-`rank_fit` compares section descriptors the listening pass already stored. It does not separate stems and it does not call a language model. Whisper runs only when `TWOBECOMEONE_WHISPER_MODEL` is set; nothing is downloaded. Keyword and button directions work with no model.
+`rank_fit` compares section descriptors the listening pass already stored. It does not separate stems and it does not call a language model. Whisper runs only when `TWOBECOMEONE_WHISPER_MODEL` is set; nothing is downloaded. Keyword and button directions work with no model. Nothing in this path hears the audio. Chroma, tempo, and swing are measurements.
+
+## What the ranker decides
+
+`rank_fit` in `src/twobecomeone/chorus_fit.py` orders candidates by the best cosine over twelve chroma rotations. Duration, vocal presence, tempo, and swing stay beside that score and do not outrank a clearly better pitch-class match. Missing chroma is omitted, not stored as zero.
+
+A gap under `CHROMA_AMBIGUITY_GAP` (0.05) is ambiguous. Swing separates that cluster only when the swing gap reaches `SWING_DECISIVE_GAP` (0.12). Otherwise the result asks which candidate to try. Stretch is applied only for the tempo as read, and only inside 0.857–1.2. Half-time and double-time are reported relationships, not stretch rates. The reply must keep the `_LIMITATIONS` text: a rotation is a pitch hypothesis, not a chord progression, a lyric, or a judgement of taste.
+
+## What worked, and what does not
+
+The Chorus Fit Chromium journey on `cbe6984` ranked two synthetic songs, placed a finite source offset at zero pitch, and did not call a model. Treating a rotation as permission to retune is the failure this skill exists to prevent. The local language-model tests are a separate path. On this machine they failed because `llama-server` segfaulted under the NVIDIA driver mismatch. Ranking must not wait on that runtime.
 
 ## Invariants
 

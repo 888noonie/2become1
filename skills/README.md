@@ -1,6 +1,8 @@
 # 2become1 skills
 
-Practical notes for the arrangement DAW promoted in `cbe6984`. Read the skill that matches the surface, then trust the code and `AGENTS.md` when a note is older than the file.
+Practical notes for the arrangement DAW. The application behavior they describe is `cbe6984` on `main`. Read the skill that matches the surface, then trust the code and `AGENTS.md` when a note is older than the file.
+
+The Producer ranks and plans from measurements. It does not hear the music. The local language-model path is optional. On this machine `llama-server` segfaults because the NVIDIA kernel module and userspace disagree, and that stack is left unchanged. The latest autonomous arrangement still needs the PM listening steps in `docs/the-maestro.md`.
 
 | Skill | Use it for |
 | --- | --- |

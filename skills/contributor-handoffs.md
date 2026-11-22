@@ -1,6 +1,8 @@
 # Contributor skill handoffs
 
-Repository skills in this directory were written by Grok against `cbe6984` and the files on `main`. A local skill counts only after that agent's own file exists. Claude Sonnet and Claude Opus have no skill directory on this machine (`~/.claude` has no `skills/` tree and `claude` is not on `PATH`).
+Repository skills in this directory were written by Grok against the published code on `main`. A local skill counts only after that agent's own file exists.
+
+`docs/golden-encore-opus` is a local branch and worktree at `/home/richardn/MISIX-worktrees/golden-encore`. It has no commit of its own. Claude Opus left uncommitted notes there. Those notes were checked against `time-math.js`, `automation.js`, `producer-intent.js`, `project-state.js`, `daw-session.js`, and `arrangement-producer.js`, then folded into `skills/black-tie-daw/SKILL.md`, `skills/clockwork-audio/SKILL.md`, `skills/autonomous-producer/SKILL.md`, and `skills/audio-validation/SKILL.md`. Claude Sonnet has no separate commit.
 
 ## Codex
 
@@ -8,15 +10,13 @@ Saved by Codex during this release. Verified file: `~/.codex/skills/2become1-aud
 
 ## Claude Sonnet
 
-Pending. No local skill system was available.
+Pending. `~/.claude/skills` exists, and Sonnet has not written a file there.
 
-When a Claude skill directory exists, save a short skill for direct waveform editing, Draw Levels pointer and keyboard behaviour, focus staying on the selected point, and keeping the musical flow of Black Tie. Source of truth: `skills/black-tie-daw/SKILL.md`, `skills/clockwork-audio/SKILL.md`, `tests/browser/final_movement_levels.js`, `tests/browser/black_tie_encore.js`.
+When Sonnet runs, save `~/.claude/skills/2become1-sonnet-craft/SKILL.md` for direct waveform editing, Draw Levels pointer and keyboard behaviour, focus staying on the selected point, and the musical flow of Black Tie. Source of truth: `skills/black-tie-daw/SKILL.md`, `skills/clockwork-audio/SKILL.md`, `tests/browser/final_movement_levels.js`, `tests/browser/black_tie_encore.js`. Write it from Sonnet's own session.
 
 ## Claude Opus
 
-Pending. No local skill system was available.
-
-When a Claude skill directory exists, save a short skill for Black Tie integration, arrangement timing, Producer proposal semantics (Preview does not apply; Hear it / Hear mine / Reject), touch targets, and export evidence. Source of truth: `skills/black-tie-daw/SKILL.md`, `skills/audio-validation/SKILL.md`, `docs/black-tie.md`, `docs/full-house-daw.md`.
+Saved by Claude Opus. Verified file: `~/.claude/skills/2become1-opus-craft/SKILL.md`. It points at the repository skills. There is still no Claude commit on `docs/golden-encore-opus`.
 
 ## Hermes
 

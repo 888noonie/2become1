@@ -34,6 +34,8 @@ Synthetic songs prove clip identity, timing, levels, and handoffs. They do not p
 - A negative control fails on the implementation being replaced.
 - Export is 48 kHz, stereo, 24-bit, arrangement length plus the journey's tail.
 - On `cbe6984`, the Maestro journey measured peak −0.30 dBFS and 0 samples at or above 0.999. The Full House journey measured about −1.49 dBFS, under the −0.3 dBFS ceiling. Re-measure after any render change. Those numbers are evidence for that commit, not a permanent certificate.
+- The latest autonomous arrangement still needs the PM listening steps in `docs/the-maestro.md`. A green journey is not that acceptance.
+- Analysis and deterministic planning are not hearing. A model call, when one runs, reads text. No audio is sent to it.
 - Live versus export on that Maestro run: 50 ms envelope correlation 0.963 at 115 ms lag, median level difference −0.12 dB.
 - One skipped frontend test, the saved bounce artifact, is skipped when `artifacts/living-daylights-bounce.wav` is absent. Do not add that wav to git.
 
@@ -43,6 +45,8 @@ Synthetic songs prove clip identity, timing, levels, and handoffs. They do not p
 2. Make the smallest code change that turns that assertion green.
 3. Run the surrounding frontend file, then the browser journey if timing or export changed.
 4. Record passed, failed, skipped, and unrun counts from that run.
+5. Prove the red run against the previous file, then restore the candidate. In zsh, `for f in $FILES` does not split the variable, so an unquoted list swaps nothing and the red run quietly tests the new code. Name each path.
+6. Hold a load open for a race: `holdLoads` in `tests/frontend/chorus-fit-panel.test.js` replaces `session.loadSource` with a promise you release by hand.
 
 ## Failure modes
 
@@ -50,6 +54,9 @@ Synthetic songs prove clip identity, timing, levels, and handoffs. They do not p
 - A probe that only checks that some new clip exists, missing that the musician's clip was deleted.
 - Calling a synthetic export "accepted" or "acoustically perfect".
 - Using tone probes alone where the desk contract requires real stems and a negative control.
+- A fixture that exits before the path under test. A one-phrase stem makes Ask for a clip idea stop at "Only 1 phrase found", so a kept-clip test passes on the old code too.
+- Testing a reload on the same card. Mount a fresh card to reproduce a reload.
+- A conditional assertion that never fires, or a setup command that returns `ok: false` (for example `splitClip` instead of `splitClipAtBeat`) and is not checked.
 
 ## Tests
 
@@ -58,6 +65,10 @@ node --test tests/frontend/chorus-fit-panel.test.js tests/frontend/arrangement/n
 node tests/browser/maestro_journey.js
 node tests/browser/full_house_daw.js
 ```
+
+## Resource traps
+
+`/tmp` on this machine is a RAM disk of about 6.7 GB. One full `pytest -q` left about 3 GB in `/tmp/pytest-of-richardn`. Check `df -h /tmp` before a second full run, and prefer a targeted file. Run one Chromium journey at a time.
 
 ## Recovery
 

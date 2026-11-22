@@ -37,12 +37,32 @@ The arrangement panel owns the eight lanes. The Stem Performance Desk remains th
 - Fades, clip gain, track EQ, pan, and level are project state and undo as gestures.
 - Lane labels use the real stem role. Never label center, sides, or imported material as vocals or Demucs.
 - Desktop `1280x800` and phone `390x844` stay usable. Black Tie at `e53b266` is the accepted mixer look.
+- Touch targets in the arrangement are at least 44 px high (`.daw .button`, lane heads in `arrangement.css`). A narrow layout stacks controls; it does not shrink them.
+- The original source audio is never rewritten. Every edit is a clip field (`timelineStartBeat`, `sourceOffsetSec`, `durationBeats`, gain, fades, pitch, stretch) over an untouched asset.
+
+## Source-offset arithmetic
+
+- Source seconds advance at `sourceAdvanceRate(clip, asset, masterBpm)` (`time-math.js`): `masterBpm / asset.nativeBpm` for beat-sync, `customStretchRatio` for manual. Beat-sync throws while `nativeBpm` is unknown, so guard the call. Seconds on the timeline are `beats * 60 / masterBpm`; seconds of source are that times the rate.
+- To start a clip later without changing what is heard at a given moment, move and slip together: `sourceOffsetSec += (newStart - oldStart) * (60 / masterBpm) * rate`, and shorten by the same beats. `resumeAfter` in `producer-intent.js` is the worked example.
+- A passage is cut from the stem file at a sample index (`startFrame / sampleRate`), one source bar early, so its in-point inside the cut is non-zero. A bar number in the source song is not a project bar: map it with `arrangementBeatForSource` (`chorus-fit.js`).
+- Apply length changes as shrink, then slip, then grow (`clipCommands`), so every step stays inside the asset.
+- `MIN_CLIP_DURATION_BEATS` is 1/64. `MIN_CLIP_GAIN_DB` is −24, so clip gain cannot silence a clip. `MIN_VOLUME_DB` is −60 for lanes.
+
+## Reversibility
+
+Every musical edit must be undoable, and Hear mine / Undo restore by writing the previous field values back. A deleted clip can only be recreated with a load (`loadStemToTrack` with `reuseAsset`). An automatic write that deletes a musician's clip without one cannot be put back. Move or trim instead.
 
 ## Procedure
 
-1. Serve this checkout on `127.0.0.1` with a temporary `--data-dir`. Leave port 8765 alone.
-2. Use the synthetic Midnight Circuit and Paper Lanterns stems, not the musician's library.
-3. Run `node tests/browser/full_house_daw.js <url> <out-dir>` and `node tests/browser/black_tie_ux.js <out-dir> <url>`.
+1. Seed a temporary data dir with the synthetic Midnight Circuit and Paper Lanterns stems, and serve it on a spare loopback port. Leave port 8765 alone. The recipe is in `docs/full-house-daw.md`:
+   ```bash
+   .venv/bin/python tests/browser/for_your_ears_fixture.py --out "$T/fixture"
+   PYTHONPATH=src .venv/bin/python tests/browser/for_your_ears_seed.py --data-dir "$T/demo" --fixture "$T/fixture"
+   PYTHONPATH=src .venv/bin/python -m twobecomeone.cli web --port 8791 --data-dir "$T/demo"
+   ```
+   `$T` is any scratch directory outside the repo.
+2. Run `node tests/browser/full_house_daw.js http://127.0.0.1:8791 "$T/out"` and `node tests/browser/black_tie_ux.js "$T/out" http://127.0.0.1:8791`. Note the argument order: `black_tie_ux.js` takes the output directory first.
+3. Always pass an output directory outside the repo. The defaults (`full-house-out`, …) are relative and land in the checkout.
 4. Copy screenshots out of the repo and delete any in-tree copy.
 
 ## Failure modes
@@ -51,6 +71,8 @@ The arrangement panel owns the eight lanes. The Stem Performance Desk remains th
 - Stretch that also retunes, or pitch that changes length.
 - A second `AudioContext` added to "support" the arrangement.
 - Screenshots or a scratch data dir left tracked.
+- A later start written without the matching slip, so the clip replays its opening at the new position.
+- Clip gain used to "mute" a clip. It stops at −24 dB.
 
 ## Tests
 
