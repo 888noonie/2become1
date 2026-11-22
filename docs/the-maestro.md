@@ -361,6 +361,27 @@ entrance.
 Also fixed: an idea asked for right after Open stays offered, and a second
 More energy with nothing left to change says so.
 
+### Eighth and final Codex review (`b04e4fe`) and its repair
+
+The final review verified the seventh-round repairs. `resumeAfter` keeps the
+clip id, the slipped source offset stays in time at a 1.25× bed rate, and
+Hear mine and Undo restore the clip exactly. It found two blocking cases and
+one minor one, all fixed in the last commit, each with a test that fails on
+`b04e4fe`:
+
+1. **The reply missed pieces.** With several split pieces under the new
+   vocal, the reply named only the first. It now names every piece.
+2. **A named bar left the other song singing.** "Put it at bar 1" moved the
+   vocal, but the other song's vocal stayed trimmed at the old entrance, so A
+   sang under B for four bars without a warning. That trim now follows the
+   vocal's current entrance.
+3. **Minor: a no-op More energy still wrote.** A second More energy with
+   nothing left to change said so, but still rewrote the clip. It now writes
+   nothing.
+
+No further review was run after this commit, by the owner's decision. The
+fixes are covered by the tests below and both browser journeys.
+
 The remaining risk is architectural. The card replays a remembered spec
 against lanes that may have changed. Each review round found new edge cases
 in that replay, and each was fixed field by field. The durable fix is for
@@ -414,10 +435,12 @@ daemon's error after a failure.
 
 ## Evidence
 
-- `node --test tests/frontend/*.js`: 376/376 pass. That includes 40 new tests.
+- `node --test tests/frontend/*.js`: 379/379 pass. That includes 43 new tests.
   The two layering tests and the transition test fail on `24e2850`; each review
   test fails on the commit it repairs (`32fdceb`, `355d945`, `6ddcdbb`,
-  `6c33051`, `9dd8765`, `1243d87`, `1f16d6a`).
+  `6c33051`, `9dd8765`, `1243d87`, `1f16d6a`, `b04e4fe`).
+- Static assets: 1,452,243 bytes in 97 files, +27,802 over `24e2850`. All of
+  the growth is in the four Producer files changed here; nothing was minified.
 - `pytest -q` (full suite at `355d945`): 681 pass, 6 skipped. After the last `producer_brain.py` change, the targeted Producer, listening and chorus-fit tests pass (43 pass, 4 skipped). The full suite was not re-run, because each run leaves about 3 GB in the `/tmp` RAM disk. Only the two live-model tests fail, and only
   because `:11434` segfaults; they were also run against the CPU runner, with
   the results in the table above.

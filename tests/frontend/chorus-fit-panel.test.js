@@ -1480,3 +1480,51 @@ test('a second More energy with nothing left to move says so', async () => {
   const said = await tell('More energy');
   assert.match(said, /nothing left to move/);
 });
+
+// Eighth (final) independent Codex review (b04e4fe) --------------------------
+
+test('the take names every vocal piece that still plays under it', async () => {
+  const { s, tell } = await mounted();
+  let piece = s.state.clips.find((clip) => clip.trackIndex === 0);
+  for (const at of [18, 22, 26]) {
+    assert.ok(s.apply({ name: 'splitClipAtBeat', args: { clipId: piece.id, splitBeat: at } }).ok);
+    piece = s.state.clips.filter((clip) => clip.trackIndex === 0).sort((a, b) => b.timelineStartBeat - a.timelineStartBeat)[0];
+  }
+  const said = await tell('Take the decks');
+  const vocal = latestVocal(s);
+  const end = vocal.timelineStartBeat + vocal.durationBeats;
+  const under = s.state.clips.filter((clip) => clip.trackIndex === 0
+    && clip.timelineStartBeat >= vocal.timelineStartBeat - 1e-6 && clip.timelineStartBeat < end - 1e-6
+    && clip.timelineStartBeat + clip.durationBeats <= end + 1e-6);
+  assert.ok(under.length >= 2, `pieces wholly under B: ${under.map((clip) => clip.timelineStartBeat)}`);
+  for (const clip of under) {
+    const bar = Math.floor(clip.timelineStartBeat / 4) + 1;
+    const beat = (clip.timelineStartBeat % 4) + 1;
+    assert.match(said, new RegExp(`from bar ${bar}${beat === 1 ? '' : ` beat ${beat}`}\\b`), said);
+  }
+});
+
+test('naming an earlier bar moves the other song’s vocal ending with it', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const said = await tell('Put it at bar 1');
+  const vocal = latestVocal(s);
+  assert.equal(vocal.timelineStartBeat, 0);
+  const end = vocal.timelineStartBeat + vocal.durationBeats;
+  for (const clip of s.state.clips.filter((item) => item.trackIndex === 0)) {
+    const sings = clip.timelineStartBeat < end - 1e-6 && clip.timelineStartBeat + clip.durationBeats > vocal.timelineStartBeat + 1e-6;
+    assert.ok(!sings || /A Vocals clip also plays from/.test(said), `${JSON.stringify(clip)} sings under B: ${said}`);
+  }
+});
+
+test('More energy with nothing left to change writes nothing', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  await tell('Put it at bar 1');
+  await tell('More energy');
+  const revision = s.edit.revision;
+  const ids = s.state.clips.map((clip) => clip.id).join(',');
+  assert.match(await tell('More energy'), /nothing left to move/);
+  assert.equal(s.edit.revision, revision);
+  assert.equal(s.state.clips.map((clip) => clip.id).join(','), ids);
+});

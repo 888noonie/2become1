@@ -640,6 +640,7 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
   if (spec.main && spec.main.startBeat !== null) passages.push(spec.main);
   for (const part of spec.parts ?? []) if (part && part.startBeat !== null) passages.push(part);
   let vocalEnd = null;
+  let vocalStart = null;
   for (const m of passages) {
     const analysis = analyses[m.song];
     const group = groups[m.song];
@@ -723,7 +724,10 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
         }
       }
     }
-    if (spec.main && m.clipId === spec.main.clipId) vocalEnd = want.startBeat + want.durationBeats;
+    if (spec.main && m.clipId === spec.main.clipId) {
+      vocalEnd = want.startBeat + want.durationBeats;
+      vocalStart = want.startBeat;
+    }
     fields.push({
       key: `${m.clipId}:clip`, value: want, main: Boolean(spec.main && m.clipId === spec.main.clipId),
       label: () => `${m.song} ${ROLE_LABEL[m.stem]} idea`,
@@ -752,7 +756,8 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
   const resumed = [];
   for (const trim of spec.trims ?? []) {
     const lane = laneIndex(trim.song, trim.stem);
-    const endBeat = trim.atVocalEnd && vocalEnd != null ? vocalEnd : trim.endBeat;
+    const endBeat = trim.atVocalEnd && vocalEnd != null ? vocalEnd
+      : trim.atVocalStart && vocalStart != null ? vocalStart : trim.endBeat;
     // Every piece of the bed on that lane, so a split bed is trimmed as one.
     for (const clip of state.clips.filter((item) => item.trackIndex === lane && !String(item.id).startsWith('idea-'))) {
       if (clip.timelineStartBeat + clip.durationBeats <= endBeat + 0.05) continue;

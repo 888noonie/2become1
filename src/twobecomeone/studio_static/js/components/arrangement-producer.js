@@ -1287,7 +1287,10 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         afterVocal: part.afterVocal === true, clipId: freshId(),
       });
     }
-    outcome.spec.trims = plan.trims;
+    // A trim that ends the other song's vocal at this vocal's entrance follows
+    // the entrance when the musician later names a bar or nudges it.
+    outcome.spec.trims = plan.trims.map((trim) => (trim.stem === 'vocals' && trim.song !== plan.vocal.song
+      && Math.abs(trim.endBeat - plan.vocal.startBeat) < 1e-9 ? { ...trim, atVocalStart: true } : trim));
     const kept = new Set([outcome.spec.main.clipId, ...outcome.spec.parts.map((part) => part.clipId)]);
     const mine = conv.musicianClips ?? new Set();
     outcome.spec.protect = [...mine];
@@ -1349,9 +1352,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       return conv.mode === 'you-play' ? 'You play is on, so I have not placed it.' : 'The decks are yours. I have stopped.';
     }
     const keptLine = keptSummary();
-    const layered = /another ([A-Z] [A-Za-z]+) clip also plays from (bar [0-9]+(?: beat [0-9.]+)?)/.exec(heard.text ?? '');
+    const layered = [...(heard.text ?? '').matchAll(/another ([A-Z] [A-Za-z]+) clip also plays from (bar [0-9]+(?: beat [0-9.]+)?)/g)];
     const resumes = [...(heard.text ?? '').matchAll(/the ([A-Z] [A-Za-z]+) clip (?:from (bar [0-9]+(?: beat [0-9.]+)?) |that started there )?now comes back at (bar [0-9]+(?: beat [0-9.]+)?)/g)];
-    const layerLine = `${layered ? ` Another ${layered[1]} clip also plays from ${layered[2]}, under mine: mute or trim it if you do not want both.` : ''}${resumes.length
+    const layerLine = `${layered.length ? ` ${layered.length === 1 ? 'Another' : 'Other'} ${layered.map((m) => `${m[1]} clip${layered.length === 1 ? ' also plays' : ''} from ${m[2]}`).join(', ')}${layered.length === 1 ? '' : ' also play'}, under mine: mute or trim ${layered.length === 1 ? 'it' : 'them'} if you do not want both.` : ''}${resumes.length
       ? ` To keep mine on its own, ${resumes.map((m) => `your ${m[1]} clip${m[2] ? ` from ${m[2]}` : ''} now comes back at ${m[3]}`).join(', and ')}; Hear mine puts it back.`
       : ''}`;
     const placedClip = session.state.clips.find((clip) => clip.id === outcome.spec.main.clipId);
@@ -1415,7 +1418,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         const found = await rankedFit({ kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
         if (found.say) return found.say;
         if (conv.cancelled || conv.mode !== 'decks') return 'The decks are yours, so I have not placed it.';
-        return commitArrangement(found, request.style, { plan: stylePlan(planAsPlaced(), request.style, { bpb: session.state.transport.timeSignature[0] }) });
+        const current = planAsPlaced();
+        const styled = stylePlan(current, request.style, { bpb: session.state.transport.timeSignature[0] });
+        if (request.style === 'energy' && styled.vocal.startBeat === current.vocal.startBeat
+          && styled.vocal.fadeIn === current.vocal.fadeIn && styled.entranceBars === current.entranceBars) {
+          return 'The vocal already enters as early as it can with a one-bar entrance. More energy has nothing left to move here, so I have left the take as it is. Try another structure.';
+        }
+        return commitArrangement(found, request.style, { plan: styled });
       }
       conv.cancelled = false;
       setMode('decks');
