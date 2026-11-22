@@ -284,12 +284,15 @@ export function stylePlan(plan, style, { bpb = 4 } = {}) {
       if (trim.song === 'A' && trim.stem === 'vocals' && trim.endBeat === next.vocal.startBeat) trim.endBeat = earlier;
     }
     const sooner = earlier < next.vocal.startBeat - 1e-9;
+    const alreadyShort = (next.entranceBars ?? 4) <= 1 && (next.vocal.fadeIn ?? 0) <= bpb;
     next.vocal.startBeat = earlier;
     next.vocal.fadeIn = bpb;
     next.entranceBars = 1;
     next.issues = [sooner
       ? 'The vocal comes in sooner and the entrance is one bar. That is a structural move, not a measurement of energy.'
-      : 'The vocal already enters as early as it can, so only its entrance is shorter: one bar. That is a structural move, not a measurement of energy.', ...next.issues];
+      : alreadyShort
+        ? 'The vocal already enters as early as it can with a one-bar entrance. More energy has nothing left to move here; try another structure.'
+        : 'The vocal already enters as early as it can, so only its entrance is shorter: one bar. That is a structural move, not a measurement of energy.', ...next.issues];
   }
   if (style === 'transition' && next.parts[0]) {
     // Up to eight bars; the take caps it at half the passage and says what it applied.

@@ -304,6 +304,9 @@ Evidence, model runtime diagnosis and limits: `docs/the-maestro.md`.
   reload or Open, `idea-*` clips already on the lanes are kept: they have no
   pending idea behind them. Kept status is derived, not stored in ProjectState.
   A bed trim is recomputed from the lanes on every build, never replayed.
+  The Producer never deletes a musician's clip. A bed piece that starts inside
+  a new part and runs past it comes back where the part ends (move + slip, so
+  Hear mine restores it). A piece wholly inside stays, and the reply names it.
 - `.daw__producer-now[data-state]` is one of you-play, jam, idea, creating,
   waiting, playing, finished, yours. The direction row (Try another, More energy,
   Previous vocal, Take over) shows only while the Producer holds the decks and

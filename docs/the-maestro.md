@@ -331,9 +331,35 @@ that is the only layout where the floor moves a first take.
 Also fixed: clearing a stale trim no longer erases another edit to the same
 clip.
 
-One behaviour change to know about: when the new vocal starts exactly where
-the other song's vocal bed starts, that bed clip is now removed for the take.
-Before, it was left singing underneath. Take back and Undo bring it back.
+(The bed-piece deletion and the More-energy floor from this round were
+replaced in the next round; see below.)
+
+### Seventh Codex review (`1f16d6a`) and its repair
+
+The seventh review found three blocking cases. The first was a regression
+from the sixth round, and it lost data. All three have tests that fail on
+`1f16d6a`, as do two non-blocking cases.
+
+1. **A deleted bed piece could not come back.** A split vocal piece was
+   deleted whole, and Hear mine could not restore it. **The Producer no longer
+   deletes a musician's clip.** A bed piece that starts inside the new
+   vocal's window and runs past it now starts where the new vocal ends. Its
+   audio is slipped to match, which is a move plus a slip, so Hear mine and
+   Undo put it back exactly. A piece wholly inside the window stays, and the
+   reply names it. The reply also says which clips now come back later.
+2. **More energy measured from the remembered plan.** It could move the
+   vocal later while saying "sooner". It now measures from where the vocal
+   sits on the lanes, so a bar the musician named counts.
+3. **A first take at bar 1 doubled B's vocal.** B's original vocal starting
+   on the same beat now comes back after the new passage, instead of singing
+   under it.
+
+The More-energy floor is gone. Its only job was to make room to trim the
+other song's vocal, and the resume rule now does that without moving the
+entrance.
+
+Also fixed: an idea asked for right after Open stays offered, and a second
+More energy with nothing left to change says so.
 
 The remaining risk is architectural. The card replays a remembered spec
 against lanes that may have changed. Each review round found new edge cases
@@ -388,10 +414,10 @@ daemon's error after a failure.
 
 ## Evidence
 
-- `node --test tests/frontend/*.js`: 371/371 pass. That includes 35 new tests.
+- `node --test tests/frontend/*.js`: 376/376 pass. That includes 40 new tests.
   The two layering tests and the transition test fail on `24e2850`; each review
   test fails on the commit it repairs (`32fdceb`, `355d945`, `6ddcdbb`,
-  `6c33051`, `9dd8765`, `1243d87`).
+  `6c33051`, `9dd8765`, `1243d87`, `1f16d6a`).
 - `pytest -q` (full suite at `355d945`): 681 pass, 6 skipped. After the last `producer_brain.py` change, the targeted Producer, listening and chorus-fit tests pass (43 pass, 4 skipped). The full suite was not re-run, because each run leaves about 3 GB in the `/tmp` RAM disk. Only the two live-model tests fail, and only
   because `:11434` segfaults; they were also run against the CPU runner, with
   the results in the table above.

@@ -1294,15 +1294,17 @@ test('a reopened arrangement keeps its Producer clips as the musician’s', asyn
   assert.match(said, /Your kept B Vocals/);
 });
 
-test('More energy leaves the other song’s vocal a bar and does not sing over it', async () => {
+test('More energy does not sing over the other song’s vocal', async () => {
   const { s, tell } = await mounted();
   await tell('Take the decks');
   await tell('More energy');
   const vocal = latestVocal(s);
-  const aVocal = s.state.clips.find((clip) => clip.trackIndex === 0 && !String(clip.id).startsWith('idea-'));
-  assert.ok(aVocal.timelineStartBeat + aVocal.durationBeats <= vocal.timelineStartBeat + 1e-6,
-    `A vocal ${aVocal.timelineStartBeat}+${aVocal.durationBeats} vs B vocal at ${vocal.timelineStartBeat}`);
-  assert.ok(vocal.timelineStartBeat >= aVocal.timelineStartBeat + 4 - 1e-6);
+  const end = vocal.timelineStartBeat + vocal.durationBeats;
+  // A's vocal is never under B's new vocal: it ends before it or comes back after it.
+  for (const aVocal of s.state.clips.filter((clip) => clip.trackIndex === 0)) {
+    assert.ok(aVocal.timelineStartBeat + aVocal.durationBeats <= vocal.timelineStartBeat + 1e-6 || aVocal.timelineStartBeat >= end - 1e-6,
+      `A vocal ${aVocal.timelineStartBeat}+${aVocal.durationBeats} vs B vocal ${vocal.timelineStartBeat}-${end}`);
+  }
 });
 
 test('Previous vocal returns to the vocal before a typed match', async () => {
@@ -1353,15 +1355,22 @@ test('More energy trims every piece of a split vocal bed', async () => {
   assert.ok(s.apply({ name: 'splitClipAtBeat', args: { clipId: aVocal.id, splitBeat: 2 } }).ok, 'the A vocal is split');
   assert.equal(s.state.clips.filter((clip) => clip.trackIndex === 0).length, 2);
   await tell('Take the decks');
-  await tell('More energy');
+  const said = await tell('More energy');
   const vocal = latestVocal(s);
+  const end = vocal.timelineStartBeat + vocal.durationBeats;
   const singing = s.state.clips.filter((clip) => clip.trackIndex === 0
-    && clip.timelineStartBeat < vocal.timelineStartBeat + vocal.durationBeats - 1e-6
+    && clip.timelineStartBeat < end - 1e-6
     && clip.timelineStartBeat + clip.durationBeats > vocal.timelineStartBeat + 1e-6);
-  assert.deepEqual(singing.map((clip) => clip.id), [], JSON.stringify(s.state.clips.filter((clip) => clip.trackIndex === 0)));
+  // A piece that runs past B's vocal comes back after it. A piece wholly inside
+  // it cannot be removed reversibly, so it stays and the reply names it.
+  for (const clip of singing) {
+    assert.ok(clip.timelineStartBeat + clip.durationBeats <= end + 1e-6, `${clip.id} runs on under B: ${JSON.stringify(clip)}`);
+    assert.match(said, /Another A Vocals clip also plays from/);
+  }
+  assert.ok(s.state.clips.filter((clip) => clip.trackIndex === 0).length >= 2, 'no piece was deleted');
 });
 
-test('the first take is not moved by the More energy floor, and More energy never enters later', async () => {
+test('a first take on a bar-1 chorus enters on the chorus, and More energy never enters later', async () => {
   const original = ANALYSIS.A.sections;
   // A's chorus opens the song, so its vocal bed starts on the chorus.
   ANALYSIS.A.sections = [
@@ -1390,4 +1399,84 @@ test('Previous vocal keeps the bar the musician named', async () => {
   assert.equal(placed, 24);
   const said = await tell('Previous vocal');
   assert.equal(latestVocal(s).timelineStartBeat, placed, said);
+});
+
+// Seventh independent Codex review (1f16d6a) ---------------------------------
+
+const clipShape = (s, id) => {
+  const c = s.state.clips.find((clip) => clip.id === id);
+  return c ? { start: c.timelineStartBeat, beats: c.durationBeats, offset: c.sourceOffsetSec } : null;
+};
+
+test('a split vocal piece inside the new vocal is moved, not deleted, and Hear mine restores it', async () => {
+  const { s, tell, btn } = await mounted();
+  const aVocal = s.state.clips.find((clip) => clip.trackIndex === 0);
+  assert.ok(s.apply({ name: 'splitClipAtBeat', args: { clipId: aVocal.id, splitBeat: 20 } }).ok);
+  const pieces = s.state.clips.filter((clip) => clip.trackIndex === 0).map((clip) => clip.id);
+  const before = pieces.map((id) => clipShape(s, id));
+  const said = await tell('Take the decks');
+  const vocal = latestVocal(s);
+  const vocalEnd = vocal.timelineStartBeat + vocal.durationBeats;
+  for (const id of pieces) {
+    const now = clipShape(s, id);
+    assert.ok(now, `${id} still exists: ${said}`);
+    assert.ok(now.start + now.beats <= vocal.timelineStartBeat + 1e-6 || now.start >= vocalEnd - 1e-6, `${id} ${JSON.stringify(now)} sings during ${vocal.timelineStartBeat}-${vocalEnd}`);
+  }
+  assert.match(said, /now comes back at/);
+  btn('Hear mine').click();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(pieces.map((id) => clipShape(s, id)), before);
+});
+
+test('More energy measures from where the musician put the vocal', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  await tell('Put it at bar 1');
+  assert.equal(latestVocal(s).timelineStartBeat, 0);
+  const said = await tell('More energy');
+  assert.equal(latestVocal(s).timelineStartBeat, 0, said);
+  assert.doesNotMatch(said, /comes in sooner/);
+});
+
+test('a first take on a bar-1 chorus does not sing over B’s original vocal', async () => {
+  const original = ANALYSIS.A.sections;
+  ANALYSIS.A.sections = [
+    section('a-chorus', 'chorus 1', 'chorus', 1, MAJOR, 0.9),
+    section('a-verse', 'verse 1', 'verse', 5, CLUSTER, 0.1),
+  ];
+  try {
+    const { s, tell } = await mounted();
+    const said = await tell('Take the decks');
+    assert.equal(latestVocal(s).timelineStartBeat, 0);
+    assert.deepEqual(laneOverlaps(s, 4), [], said);
+  } finally {
+    ANALYSIS.A.sections = original;
+  }
+});
+
+test('an idea asked for right after Open stays offered', async () => {
+  const { s, tell, btn } = await mounted();
+  const saved = {};
+  const inner = s.deps.fetchImpl;
+  s.deps.fetchImpl = async (url, init = {}) => {
+    const m = /^\/api\/arrangements\/([^/?]+)$/.exec(url);
+    if (m && init.method === 'PUT') { saved[m[1]] = { id: m[1], ...JSON.parse(init.body) }; return { ok: true, status: 200, json: async () => saved[m[1]] }; }
+    if (m && saved[decodeURIComponent(m[1])]) return { ok: true, status: 200, json: async () => saved[decodeURIComponent(m[1])] };
+    return inner(url, init);
+  };
+  const { id } = await s.save('Plain');
+  await tell('Try the strongest match');
+  await s.open(id);
+  btn('Ask for an idea').click();
+  await new Promise((r) => setTimeout(r, 700));
+  assert.equal(btn('Hear it').disabled, false);
+});
+
+test('a second More energy with nothing left to move says so', async () => {
+  const { tell } = await mounted();
+  await tell('Take the decks');
+  await tell('Put it at bar 1');
+  await tell('More energy');
+  const said = await tell('More energy');
+  assert.match(said, /nothing left to move/);
 });

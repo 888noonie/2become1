@@ -489,6 +489,35 @@ export function keptOnLane(state, keptIds, trackIndex) {
   return state.clips.filter((c) => keep.has(c.id) && c.trackIndex === trackIndex);
 }
 
+/**
+ * A bed clip that starts inside a window and runs past it is not deleted: it
+ * starts where the window ends and keeps its own audio time there (a move and
+ * a slip). Hear mine and Undo put it back exactly. Null when it cannot.
+ */
+function resumeAfter(state, c, at, bpb) {
+  const end = c.timelineStartBeat + c.durationBeats;
+  if (!(end > at + MIN_CLIP_DURATION_BEATS)) return null;
+  const asset = state.assets[c.assetId];
+  let rate;
+  try { rate = sourceAdvanceRate(c, asset, state.transport.masterBpm); } catch { return null; }
+  if (!Number.isFinite(rate) || rate <= 0) return null;
+  const before = clipObject(state, c.id);
+  const shift = at - c.timelineStartBeat;
+  const value = {
+    ...before,
+    startBeat: rt(at),
+    durationBeats: rt(end - at),
+    sourceOffsetSec: Math.round((before.sourceOffsetSec + shift * (60 / state.transport.masterBpm) * rate) * 1e9) / 1e9,
+  };
+  return {
+    key: `${c.id}:clip`, value,
+    label: (st) => `${st.tracks[c.trackIndex].name} clip`,
+    read: (st) => clipObject(st, c.id),
+    command: (st, v) => clipCommands(st, c.id, v, null),
+    show: showClip(bpb),
+  };
+}
+
 export function clipObject(state, clipId) {
   const c = state.clips.find((x) => x.id === clipId);
   if (!c) return { exists: false };
@@ -685,7 +714,13 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
           notes.push(`the ${state.tracks[trackIndex].name} clip underneath now ends at ${fmtPos(want.startBeat, bpb)}`);
         }
       } else if (c.timelineStartBeat >= want.startBeat - 1e-9 && c.timelineStartBeat < ideaEnd - 1e-9) {
-        notes.push(`another ${state.tracks[trackIndex].name} clip also plays from ${fmtPos(c.timelineStartBeat, bpb)}`);
+        const later = String(c.id).startsWith('idea-') ? null : resumeAfter(state, c, ideaEnd, bpb);
+        if (later) {
+          fields.push(later);
+          notes.push(`the ${state.tracks[trackIndex].name} clip that started there now comes back at ${fmtPos(ideaEnd, bpb)}`);
+        } else {
+          notes.push(`another ${state.tracks[trackIndex].name} clip also plays from ${fmtPos(c.timelineStartBeat, bpb)}`);
+        }
       }
     }
     if (spec.main && m.clipId === spec.main.clipId) vocalEnd = want.startBeat + want.durationBeats;
@@ -714,26 +749,34 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
     if (!Object.keys(entry).length) delete spec.clips[id];
   }
   spec.trimmedIds = [];
-  const trimDrops = [];
+  const resumed = [];
   for (const trim of spec.trims ?? []) {
     const lane = laneIndex(trim.song, trim.stem);
     const endBeat = trim.atVocalEnd && vocalEnd != null ? vocalEnd : trim.endBeat;
     // Every piece of the bed on that lane, so a split bed is trimmed as one.
     for (const clip of state.clips.filter((item) => item.trackIndex === lane && !String(item.id).startsWith('idea-'))) {
       if (clip.timelineStartBeat + clip.durationBeats <= endBeat + 0.05) continue;
-      if (clip.timelineStartBeat >= endBeat - 1e-9) {
-        // A later vocal piece leaves only if it would sing during the new vocal.
-        // Anything after the new vocal ends, and any later non-vocal piece, stays.
-        if (trim.stem === 'vocals' && vocalEnd != null && clip.timelineStartBeat < vocalEnd - 1e-9) trimDrops.push(clip.id);
+      const duration = rt(endBeat - clip.timelineStartBeat);
+      if (clip.timelineStartBeat >= endBeat - 1e-9 || !(duration >= MIN_CLIP_DURATION_BEATS)) {
+        // Never deleted. A vocal piece that would sing during the new vocal
+        // comes back where the new vocal ends; one wholly inside it is named.
+        if (trim.stem === 'vocals' && vocalEnd != null && clip.timelineStartBeat < vocalEnd - 1e-9) {
+          const later = resumeAfter(state, clip, vocalEnd, bpb);
+          if (later) {
+            resumed.push(later);
+            notes.push(`the ${state.tracks[lane].name} clip from ${fmtPos(clip.timelineStartBeat, bpb)} now comes back at ${fmtPos(vocalEnd, bpb)}`);
+          } else {
+            notes.push(`another ${state.tracks[lane].name} clip also plays from ${fmtPos(clip.timelineStartBeat, bpb)}`);
+          }
+        }
         continue;
       }
-      const duration = rt(endBeat - clip.timelineStartBeat);
-      if (!(duration >= MIN_CLIP_DURATION_BEATS)) { trimDrops.push(clip.id); continue; }
       spec.clips = { ...(spec.clips ?? {}), [clip.id]: { ...(spec.clips?.[clip.id] ?? {}), durationBeats: duration, fadeOut: duration >= 4 ? 2 : 0 } };
       spec.trimmedIds.push(clip.id);
     }
   }
-  for (const clipId of [...(spec.drop ?? []), ...trimDrops.filter((id) => !(spec.drop ?? []).includes(id))]) {
+  for (const field of resumed) if (!fields.some((f) => f.key === field.key)) fields.push(field);
+  for (const clipId of spec.drop ?? []) {
     const before = clipObject(state, clipId);
     if (!before.exists) continue;
     const c = state.clips.find((x) => x.id === clipId);

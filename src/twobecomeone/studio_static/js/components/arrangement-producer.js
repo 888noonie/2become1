@@ -428,6 +428,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
 
   /** Dry-run the idea through propose(); only a valid one becomes an idea. */
   function offer(proposal, empty, spec = null) {
+    followArrangement();
     // Every idea passes here, so this is where a kept clip is protected: no
     // write to it, no mute or level cut on its lane, no solo that silences it.
     const kept = keptClips();
@@ -1162,6 +1163,18 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     return spec;
   }
 
+  /** The plan as it stands on the lanes: a bar the musician named replaces the plan's. */
+  function planAsPlaced() {
+    if (!conv.plan) return null;
+    const plan = structuredClone(conv.plan);
+    const placed = conv.spec?.main?.startBeat;
+    if (Number.isFinite(placed) && Math.abs(placed - plan.vocal.startBeat) > 1e-9) {
+      for (const trim of plan.trims ?? []) if (trim.endBeat === plan.vocal.startBeat) trim.endBeat = placed;
+      plan.vocal.startBeat = placed;
+    }
+    return plan;
+  }
+
   /** The clips the musician kept that are still on the lanes, as one sentence. */
   function keptClips() {
     const mine = conv.musicianClips ?? new Set();
@@ -1231,26 +1244,6 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       plan = structuredClone(plan);
       plan.vocal.sectionId = options.vocalSectionId;
       plan.vocal.stem = 'vocals';
-    }
-    if (style === 'energy') {
-      // The other song's vocal bed keeps at least its first bar. Without this a
-      // vocal moved to the bed's start leaves no room to trim it, and both sing.
-      const bedLane = laneIndex(plan.vocal.song === 'A' ? 'B' : 'A', 'vocals');
-      const beds = session.state.clips.filter((clip) => clip.trackIndex === bedLane && !String(clip.id).startsWith('idea-'));
-      const floor = beds.length ? Math.min(...beds.map((clip) => clip.timelineStartBeat)) + bpb : null;
-      if (floor != null && plan.vocal.startBeat < floor - 1e-9 && (plan.trims ?? []).some((trim) => trim.stem === 'vocals' && trim.song !== plan.vocal.song)) {
-        plan = structuredClone(plan);
-        const was = plan.vocal.startBeat;
-        const before = conv.plan?.vocal?.startBeat;
-        // Never later than the entrance it replaces: then only the entrance shortens.
-        const start = Number.isFinite(before) && floor >= before - 1e-9 ? before : floor;
-        plan.vocal.startBeat = start;
-        for (const trim of plan.trims) if (trim.stem === 'vocals' && trim.song !== plan.vocal.song && trim.endBeat === was) trim.endBeat = start;
-        if (start === before) {
-          plan.issues = ['The vocal already comes in as early as it can without singing over the other song’s first bar, so only its entrance is shorter: one bar.',
-            ...plan.issues.filter((line) => !/comes in sooner/.test(line))];
-        }
-      }
     }
     if (style === 'second' && !secondId) plan.issues = [...plan.issues, 'Song B has no second chorus in the analysis, so the vocal choice stays.'];
     const reading = measurePlan(plan);
@@ -1357,7 +1350,10 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     const keptLine = keptSummary();
     const layered = /another ([A-Z] [A-Za-z]+) clip also plays from (bar [0-9]+(?: beat [0-9.]+)?)/.exec(heard.text ?? '');
-    const layerLine = layered ? ` Another ${layered[1]} clip also plays from ${layered[2]}, under mine: mute or trim it if you do not want both.` : '';
+    const resumes = [...(heard.text ?? '').matchAll(/the ([A-Z] [A-Za-z]+) clip (?:from (bar [0-9]+(?: beat [0-9.]+)?) |that started there )?now comes back at (bar [0-9]+(?: beat [0-9.]+)?)/g)];
+    const layerLine = `${layered ? ` Another ${layered[1]} clip also plays from ${layered[2]}, under mine: mute or trim it if you do not want both.` : ''}${resumes.length
+      ? ` To keep mine on its own, ${resumes.map((m) => `your ${m[1]} clip${m[2] ? ` from ${m[2]}` : ''} now comes back at ${m[3]}`).join(', and ')}; Hear mine puts it back.`
+      : ''}`;
     const placedClip = session.state.clips.find((clip) => clip.id === outcome.spec.main.clipId);
     const heldBack = placedClip && placedClip.timelineStartBeat > plan.vocal.startBeat + 1e-6;
     const fadeBars = longFadeBeats != null ? Math.round((longFadeBeats / bpb) * 100) / 100 : null;
@@ -1401,13 +1397,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       if (found.say) return found.say;
       if (!conv.plan) return 'I do not have an arrangement to keep.';
       // The passage changes; where it sits does not. A bar the musician named stays.
-      const plan = structuredClone(conv.plan);
-      const placed = conv.spec?.main?.startBeat;
-      if (Number.isFinite(placed) && Math.abs(placed - plan.vocal.startBeat) > 1e-9) {
-        for (const trim of plan.trims ?? []) if (trim.endBeat === plan.vocal.startBeat) trim.endBeat = placed;
-        plan.vocal.startBeat = placed;
-      }
-      return commitArrangement(found, conv.planStyle || 'lock', { plan, vocalSectionId: earlier });
+      return commitArrangement(found, conv.planStyle || 'lock', { plan: planAsPlaced(), vocalSectionId: earlier });
     }
     if (request.kind === 'another-plan') {
       if (conv.mode === 'you-play') return 'You play is on, so I will not write another arrangement.';
@@ -1425,7 +1415,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         const found = await rankedFit({ kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
         if (found.say) return found.say;
         if (conv.cancelled || conv.mode !== 'decks') return 'The decks are yours, so I have not placed it.';
-        return commitArrangement(found, request.style, { plan: stylePlan(conv.plan, request.style, { bpb: session.state.transport.timeSignature[0] }) });
+        return commitArrangement(found, request.style, { plan: stylePlan(planAsPlaced(), request.style, { bpb: session.state.transport.timeSignature[0] }) });
       }
       conv.cancelled = false;
       setMode('decks');
