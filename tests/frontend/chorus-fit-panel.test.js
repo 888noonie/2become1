@@ -1325,3 +1325,69 @@ test('a decks attempt that placed nothing says so', async () => {
   await new Promise((r) => setTimeout(r, 600));
   assert.equal(prod.querySelector('.daw__producer-now').dataset.state, 'waiting');
 });
+
+// Sixth independent Codex review (1243d87) -----------------------------------
+
+test('Hear it right after Open does not write the old idea into the new arrangement', async () => {
+  const { s, tell, btn, prod } = await mounted();
+  const saved = {};
+  const inner = s.deps.fetchImpl;
+  s.deps.fetchImpl = async (url, init = {}) => {
+    const m = /^\/api\/arrangements\/([^/?]+)$/.exec(url);
+    if (m && init.method === 'PUT') { saved[m[1]] = { id: m[1], ...JSON.parse(init.body) }; return { ok: true, status: 200, json: async () => saved[m[1]] }; }
+    if (m && saved[decodeURIComponent(m[1])]) return { ok: true, status: 200, json: async () => saved[decodeURIComponent(m[1])] };
+    return inner(url, init);
+  };
+  const { id } = await s.save('Before the idea');
+  await tell('Try the strongest match');
+  await s.open(id);
+  btn('Hear it').click();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(s.state.clips.some((clip) => String(clip.id).startsWith('idea-')), false);
+  assert.match(prod.querySelector('.daw__producer-status').textContent, /Another arrangement is open/);
+});
+
+test('More energy trims every piece of a split vocal bed', async () => {
+  const { s, tell } = await mounted();
+  const aVocal = s.state.clips.find((clip) => clip.trackIndex === 0);
+  assert.ok(s.apply({ name: 'splitClipAtBeat', args: { clipId: aVocal.id, splitBeat: 2 } }).ok, 'the A vocal is split');
+  assert.equal(s.state.clips.filter((clip) => clip.trackIndex === 0).length, 2);
+  await tell('Take the decks');
+  await tell('More energy');
+  const vocal = latestVocal(s);
+  const singing = s.state.clips.filter((clip) => clip.trackIndex === 0
+    && clip.timelineStartBeat < vocal.timelineStartBeat + vocal.durationBeats - 1e-6
+    && clip.timelineStartBeat + clip.durationBeats > vocal.timelineStartBeat + 1e-6);
+  assert.deepEqual(singing.map((clip) => clip.id), [], JSON.stringify(s.state.clips.filter((clip) => clip.trackIndex === 0)));
+});
+
+test('the first take is not moved by the More energy floor, and More energy never enters later', async () => {
+  const original = ANALYSIS.A.sections;
+  // A's chorus opens the song, so its vocal bed starts on the chorus.
+  ANALYSIS.A.sections = [
+    section('a-chorus', 'chorus 1', 'chorus', 1, MAJOR, 0.9),
+    section('a-verse', 'verse 1', 'verse', 5, CLUSTER, 0.1),
+  ];
+  try {
+    const { tell, s } = await mounted();
+    await tell('Take the decks');
+    const first = latestVocal(s).timelineStartBeat;
+    assert.equal(first, 0, 'the first take enters on the chorus at bar 1');
+    const said = await tell('More energy');
+    assert.ok(latestVocal(s).timelineStartBeat <= first, said);
+    assert.doesNotMatch(said, /comes in sooner/);
+  } finally {
+    ANALYSIS.A.sections = original;
+  }
+});
+
+test('Previous vocal keeps the bar the musician named', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  await tell('Try the next best match instead');
+  await tell('Put it at bar 7');
+  const placed = latestVocal(s).timelineStartBeat;
+  assert.equal(placed, 24);
+  const said = await tell('Previous vocal');
+  assert.equal(latestVocal(s).timelineStartBeat, placed, said);
+});

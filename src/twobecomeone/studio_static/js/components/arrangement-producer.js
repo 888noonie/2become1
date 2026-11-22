@@ -470,7 +470,17 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     return true;
   }
 
+  /** True (and the idea set aside) when another arrangement opened since the idea. */
+  function ideaIsStale() {
+    if (conv.engine === session.edit) return false;
+    const had = Boolean(idea);
+    followArrangement();
+    if (had) { say('Another arrangement is open, so that idea was set aside.'); rerender(); }
+    return true;
+  }
+
   function hearToggle() {
+    if (ideaIsStale()) return false;
     if (!idea || idea.hearing === 'kept') return false;
     noteHumanMoves();
     if (!idea || idea.hearing === 'kept') return false;
@@ -492,6 +502,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   }
 
   function keepOrUndo() {
+    if (ideaIsStale()) return false;
     if (!idea) return false;
     noteHumanMoves();
     if (!idea) return false;
@@ -527,6 +538,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   }
 
   function rejectIdea() {
+    if (ideaIsStale()) return;
     if (!idea) return;
     noteHumanMoves();
     if (!idea) return;
@@ -816,6 +828,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
   }
 
   async function commitIdea() {
+    if (ideaIsStale()) return false;
     if (conv.mode === 'you-play') { say('You play is on, so I have not placed it.'); return false; }
     if (conv.bank && bankStamp() !== conv.bank) {
       idea = null;
@@ -1219,7 +1232,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       plan.vocal.sectionId = options.vocalSectionId;
       plan.vocal.stem = 'vocals';
     }
-    {
+    if (style === 'energy') {
       // The other song's vocal bed keeps at least its first bar. Without this a
       // vocal moved to the bed's start leaves no room to trim it, and both sing.
       const bedLane = laneIndex(plan.vocal.song === 'A' ? 'B' : 'A', 'vocals');
@@ -1228,8 +1241,15 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       if (floor != null && plan.vocal.startBeat < floor - 1e-9 && (plan.trims ?? []).some((trim) => trim.stem === 'vocals' && trim.song !== plan.vocal.song)) {
         plan = structuredClone(plan);
         const was = plan.vocal.startBeat;
-        plan.vocal.startBeat = floor;
-        for (const trim of plan.trims) if (trim.stem === 'vocals' && trim.song !== plan.vocal.song && trim.endBeat === was) trim.endBeat = floor;
+        const before = conv.plan?.vocal?.startBeat;
+        // Never later than the entrance it replaces: then only the entrance shortens.
+        const start = Number.isFinite(before) && floor >= before - 1e-9 ? before : floor;
+        plan.vocal.startBeat = start;
+        for (const trim of plan.trims) if (trim.stem === 'vocals' && trim.song !== plan.vocal.song && trim.endBeat === was) trim.endBeat = start;
+        if (start === before) {
+          plan.issues = ['The vocal already comes in as early as it can without singing over the other song’s first bar, so only its entrance is shorter: one bar.',
+            ...plan.issues.filter((line) => !/comes in sooner/.test(line))];
+        }
       }
     }
     if (style === 'second' && !secondId) plan.issues = [...plan.issues, 'Song B has no second chorus in the analysis, so the vocal choice stays.'];
@@ -1380,7 +1400,14 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       const found = await rankedFit({ kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
       if (found.say) return found.say;
       if (!conv.plan) return 'I do not have an arrangement to keep.';
-      return commitArrangement(found, conv.planStyle || 'lock', { plan: conv.plan, vocalSectionId: earlier });
+      // The passage changes; where it sits does not. A bar the musician named stays.
+      const plan = structuredClone(conv.plan);
+      const placed = conv.spec?.main?.startBeat;
+      if (Number.isFinite(placed) && Math.abs(placed - plan.vocal.startBeat) > 1e-9) {
+        for (const trim of plan.trims ?? []) if (trim.endBeat === plan.vocal.startBeat) trim.endBeat = placed;
+        plan.vocal.startBeat = placed;
+      }
+      return commitArrangement(found, conv.planStyle || 'lock', { plan, vocalSectionId: earlier });
     }
     if (request.kind === 'another-plan') {
       if (conv.mode === 'you-play') return 'You play is on, so I will not write another arrangement.';

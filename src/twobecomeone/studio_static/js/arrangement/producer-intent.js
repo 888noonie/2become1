@@ -706,19 +706,34 @@ export function buildIdea(state, spec, { analyses = {}, groups = {}, records = {
   // A trim is worked out from the lanes as they are now. The previous build's
   // trims are forgotten first, so a bed the musician already shortened by hand
   // is not stretched back to an old endpoint.
-  for (const id of spec.trimmedIds ?? []) if (spec.clips) delete spec.clips[id];
+  for (const id of spec.trimmedIds ?? []) {
+    const entry = spec.clips?.[id];
+    if (!entry) continue;
+    delete entry.durationBeats;
+    delete entry.fadeOut;
+    if (!Object.keys(entry).length) delete spec.clips[id];
+  }
   spec.trimmedIds = [];
+  const trimDrops = [];
   for (const trim of spec.trims ?? []) {
     const lane = laneIndex(trim.song, trim.stem);
-    const clip = state.clips.find((item) => item.trackIndex === lane && !String(item.id).startsWith('idea-'));
-    if (!clip) continue;
     const endBeat = trim.atVocalEnd && vocalEnd != null ? vocalEnd : trim.endBeat;
-    const duration = rt(endBeat - clip.timelineStartBeat);
-    if (!(duration >= 1) || duration >= clip.durationBeats - 0.05) continue;
-    spec.clips = { ...(spec.clips ?? {}), [clip.id]: { durationBeats: duration, fadeOut: duration >= 4 ? 2 : 0 } };
-    spec.trimmedIds.push(clip.id);
+    // Every piece of the bed on that lane, so a split bed is trimmed as one.
+    for (const clip of state.clips.filter((item) => item.trackIndex === lane && !String(item.id).startsWith('idea-'))) {
+      if (clip.timelineStartBeat + clip.durationBeats <= endBeat + 0.05) continue;
+      if (clip.timelineStartBeat >= endBeat - 1e-9) {
+        // A later vocal piece leaves only if it would sing during the new vocal.
+        // Anything after the new vocal ends, and any later non-vocal piece, stays.
+        if (trim.stem === 'vocals' && vocalEnd != null && clip.timelineStartBeat < vocalEnd - 1e-9) trimDrops.push(clip.id);
+        continue;
+      }
+      const duration = rt(endBeat - clip.timelineStartBeat);
+      if (!(duration >= MIN_CLIP_DURATION_BEATS)) { trimDrops.push(clip.id); continue; }
+      spec.clips = { ...(spec.clips ?? {}), [clip.id]: { ...(spec.clips?.[clip.id] ?? {}), durationBeats: duration, fadeOut: duration >= 4 ? 2 : 0 } };
+      spec.trimmedIds.push(clip.id);
+    }
   }
-  for (const clipId of spec.drop ?? []) {
+  for (const clipId of [...(spec.drop ?? []), ...trimDrops.filter((id) => !(spec.drop ?? []).includes(id))]) {
     const before = clipObject(state, clipId);
     if (!before.exists) continue;
     const c = state.clips.find((x) => x.id === clipId);

@@ -304,6 +304,37 @@ What changed in behaviour:
 - Still open: Take over leaves the input disabled until a stalled load
   settles.
 
+### Sixth Codex review (`1243d87`) and its repair
+
+The sixth review verified the four fifth-round repairs. It found four more
+blocking cases, which the next commit fixes. Each has a test that fails on
+`1243d87`. The floor test uses a song whose chorus opens at bar 1, because
+that is the only layout where the floor moves a first take.
+
+1. **A pending idea could land in a newly opened arrangement.** Hear it
+   pressed within the 500 ms after Open wrote the old idea into the reopened
+   arrangement. Every idea button now checks first that the arrangement is
+   still the one the idea was made for.
+2. **A split vocal bed kept singing.** With a vocal bed split by hand, More
+   energy trimmed only the first piece. Every bed piece on the lane is now
+   trimmed. A later vocal piece leaves only if it would sing during the new
+   vocal. Pieces after the new vocal ends, and non-vocal pieces, stay.
+3. **The floor moved the first take, my regression.** The More-energy floor
+   also moved the first take off a chorus at bar 1. It now applies only to an
+   energy move and never makes the entrance later. When the vocal is already
+   as early as it can be, the reply says only the entrance got shorter,
+   instead of claiming "sooner".
+4. **Previous vocal threw away a named bar.** Previous vocal discarded a bar
+   the musician had named ("Put it at bar 7"). It now keeps the current
+   placement.
+
+Also fixed: clearing a stale trim no longer erases another edit to the same
+clip.
+
+One behaviour change to know about: when the new vocal starts exactly where
+the other song's vocal bed starts, that bed clip is now removed for the take.
+Before, it was left singing underneath. Take back and Undo bring it back.
+
 The remaining risk is architectural. The card replays a remembered spec
 against lanes that may have changed. Each review round found new edge cases
 in that replay, and each was fixed field by field. The durable fix is for
@@ -357,10 +388,10 @@ daemon's error after a failure.
 
 ## Evidence
 
-- `node --test tests/frontend/*.js`: 367/367 pass. That includes 31 new tests.
+- `node --test tests/frontend/*.js`: 371/371 pass. That includes 35 new tests.
   The two layering tests and the transition test fail on `24e2850`; each review
   test fails on the commit it repairs (`32fdceb`, `355d945`, `6ddcdbb`,
-  `6c33051`, `9dd8765`).
+  `6c33051`, `9dd8765`, `1243d87`).
 - `pytest -q` (full suite at `355d945`): 681 pass, 6 skipped. After the last `producer_brain.py` change, the targeted Producer, listening and chorus-fit tests pass (43 pass, 4 skipped). The full suite was not re-run, because each run leaves about 3 GB in the `/tmp` RAM disk. Only the two live-model tests fail, and only
   because `:11434` segfaults; they were also run against the CPU runner, with
   the results in the table above.
