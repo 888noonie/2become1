@@ -363,7 +363,14 @@ def _post(opener, url: str, body: dict, timeout: float) -> dict:
             _LAST_CALL[key] = {"ok": False, "note": f"no answer ({type(exc).__name__})"}
         raise ProducerUnavailable(f"the model did not answer: {type(exc).__name__}") from exc
     except (ValueError, json.JSONDecodeError) as exc:
+        if real:
+            _LAST_CALL[key] = {"ok": False, "note": "the daemon's answer was not JSON"}
         raise ProducerUnavailable("the model answered with something that is not JSON") from exc
+    if isinstance(out, dict) and out.get("error"):
+        detail = _clean(out["error"], 160)
+        if real:
+            _LAST_CALL[key] = {"ok": False, "note": detail}
+        raise ProducerUnavailable(f"the model daemon could not run it: {detail}")
     if real:
         _LAST_CALL[key] = {"ok": True}
     return out

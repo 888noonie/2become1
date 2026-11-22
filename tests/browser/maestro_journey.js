@@ -386,7 +386,7 @@ try {
   await settle('more energy');
   const reply3 = await page.locator('.daw__talk-log li').last().textContent();
   const after = await newVocal();
-  check('More energy brings the new vocal in sooner and says what it did', after && before && after.start < before.start && /comes in sooner/.test(reply3), `${before?.start} -> ${after?.start}`);
+  check('More energy brings the new vocal in sooner and says what it did', after && before && after.start < before.start && /comes in sooner|Your kept clip holds that lane, so my vocal comes in at/.test(reply3), `${before?.start} -> ${after?.start}: ${reply3.match(/(The vocal comes in sooner|Your kept clip holds)[^.]*\./)?.[0] ?? reply3.slice(0, 120)}`);
   const fadeBefore = (await newVocal()).fadeIn;
   const tookWords = await tell('let it breathe');
   check('loose words direct the take without the model', /I took “breathe” as a gentler entrance, from the words alone; no model was used/.test(tookWords) && (await newVocal()).fadeIn > fadeBefore && !apiCalls.some((line) => line.startsWith('POST /api/producer/creative')), `${fadeBefore} -> ${(await newVocal()).fadeIn} beats: ${tookWords.slice(-110)}`);

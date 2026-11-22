@@ -943,3 +943,90 @@ test('a more interesting transition really lengthens the drum fade it describes'
   assert.match(said, new RegExp(`fade in over ${drums().fadeInBeats / 4} bars`));
   assert.doesNotMatch(said, /eight bars/);
 });
+
+// Independent Codex review of 32fdceb ----------------------------------------
+
+function holdLoads(s) {
+  const original = s.loadSource.bind(s);
+  const gate = { release: null };
+  s.loadSource = (spec) => new Promise((resolve, reject) => {
+    gate.release = () => original(spec).then(resolve, reject);
+  });
+  gate.restore = () => { s.loadSource = original; };
+  return gate;
+}
+const latestVocal = (s) => s.state.clips.filter((clip) => clip.trackIndex === 4 && String(clip.id).startsWith('idea-'))
+  .sort((a, b) => Number(a.id.slice(5)) - Number(b.id.slice(5))).at(-1);
+
+test('Keep pressed while the next take loads keeps that vocal on the lanes', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  await tell('Try another arrangement');
+  const gate = holdLoads(s);
+  const pending = tell('Try another arrangement');
+  for (let i = 0; i < 150 && !gate.release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(gate.release, 'the third take fetches a passage');
+  const kept = latestVocal(s);
+  btn('Keep it').click();
+  gate.release();
+  await pending;
+  gate.restore();
+  const still = s.state.clips.find((clip) => clip.id === kept.id);
+  assert.ok(still, 'the vocal kept during the fetch is still on the lanes');
+  assert.equal(still.timelineStartBeat, kept.timelineStartBeat);
+  assert.deepEqual(laneOverlaps(s, 4), []);
+});
+
+test('a clip moved while the next take loads stays where the musician put it', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  await tell('Try another arrangement');
+  const gate = holdLoads(s);
+  const pending = tell('Try another arrangement');
+  for (let i = 0; i < 150 && !gate.release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(gate.release);
+  const vocal = latestVocal(s);
+  s.apply({ name: 'moveClip', args: { clipId: vocal.id, newTrackIndex: 4, newStartBeat: vocal.timelineStartBeat + 4 } });
+  gate.release();
+  await pending;
+  gate.restore();
+  assert.equal(s.state.clips.find((clip) => clip.id === vocal.id)?.timelineStartBeat, vocal.timelineStartBeat + 4);
+});
+
+test('a chorus-fit choice while holding the decks does not double or silence a kept vocal', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  const kept = latestVocal(s);
+  btn('Keep it').click();
+  const middle = kept.timelineStartBeat + kept.durationBeats / 2;
+  const heard = gainLinearAtBeat(s.state.tracks[4], middle);
+  await tell('Try the strongest match');
+  assert.deepEqual(laneOverlaps(s, 4), []);
+  assert.ok(s.state.clips.some((clip) => clip.id === kept.id));
+  assert.equal(gainLinearAtBeat(s.state.tracks[4], middle), heard);
+});
+
+test('Restore and Take back stop at what the musician kept', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  const kept = latestVocal(s);
+  btn('Keep it').click();
+  await tell('Try another arrangement');
+  await tell('I’ll take over');
+  await tell('Restore the arrangement');
+  assert.ok(s.state.clips.some((clip) => clip.id === kept.id), 'Restore did not cross the Keep');
+  assert.equal(s.state.clips.filter((clip) => clip.trackIndex === 4 && String(clip.id).startsWith('idea-')).length, 1);
+});
+
+test('the revision cap holds on typed choices, and a new Take the decks starts a new count', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  await tell('Try another arrangement');
+  await tell('Try another arrangement');
+  await tell('More energy');
+  const revision = s.edit.revision;
+  assert.match(await tell('Try the strongest match'), /revised this 4 times/);
+  assert.equal(s.edit.revision, revision);
+  await tell('I’ll take over');
+  assert.doesNotMatch(await tell('Take the decks'), /revised this/);
+});

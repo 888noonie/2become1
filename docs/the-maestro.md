@@ -145,16 +145,48 @@ repo's `pcm-capture` worklet, divided by the −12 dB monitor gain.
 | Measure | Result |
 | --- | --- |
 | Export length | 42.95 s, against 42.45 s of clips on the lanes (+0.5 s release tail) |
-| 50 ms envelope correlation, live vs export | 0.962, at 115 ms start lag |
-| Level difference, median | −0.14 dB |
-| Level difference, 5–95% | −2.23 … +0.80 dB |
+| 50 ms envelope correlation, live vs export | 0.963, at 115 ms start lag |
+| Level difference, median | −0.12 dB |
+| Level difference, 5–95% | −2.14 … +0.80 dB |
 | Export peak | −0.30 dBFS, 0 samples ≥ 0.999 |
 | Unintended silence | 0 runs of 250 ms below −60 dBFS |
 | Same-lane overlaps after reopen | 0 |
 | Beats where both songs' vocals sound | 0 |
 
 The live and offline paths are not sample-identical. The envelope agrees and
-the median level agrees within 0.14 dB.
+the median level agrees within 0.12 dB.
+
+## Independent Codex review
+
+Codex (`codex exec -s read-only`) reviewed `24e2850..32fdceb` and found three
+blocking defects in this work. All three are reproduced by tests that fail on
+`32fdceb` and are repaired in the next commit:
+
+1. **Keep or move during a fetch was lost.** Pressing Keep, or moving the
+   vocal, while the next take was loading its passage was lost when the load
+   finished. `realise` now re-reads hand moves after the load. Every write path
+   also drops nothing the musician kept.
+2. **A typed chorus-fit choice ignored kept clips.** "Try the strongest
+   match" while the Producer held the decks went around the kept-clip rules and
+   doubled the kept vocal. The rules (`respectKept`) now run inside `realise`,
+   so every path applies them.
+3. **Restore crossed a Keep.** Restore and Take back could undo past a Keep.
+   Keep is now the restore checkpoint.
+
+Smaller findings, also fixed:
+
+- Take back while busy now says it stopped mid-take and points to Restore,
+  instead of pretending to restore.
+- The revision cap now holds on typed choices, and a new Take the decks after
+  handing back starts a new count.
+- A daemon error inside an HTTP 200, or a non-JSON answer, is now recorded as a
+  failed call.
+- The longer fade is capped at half the passage without a one-bar floor.
+- When a kept clip holds the lane, the reply says where the vocal really came
+  in, instead of claiming "sooner".
+
+Not changed: the status note repeats the loopback daemon's own error text, up
+to 160 characters. It is shown only on this machine.
 
 ## Local model runtime — measured, not assumed
 
@@ -204,9 +236,10 @@ daemon's error after a failure.
 
 ## Evidence
 
-- `node --test tests/frontend/*.js`: 343/343 pass. That includes 7 new tests;
-  the two layering tests and the transition test fail on `24e2850`.
-- `pytest -q`: 680 pass, 6 skipped. Only the two live-model tests fail, and only
+- `node --test tests/frontend/*.js`: 348/348 pass. That includes 12 new tests.
+  The two layering tests and the transition test fail on `24e2850`; the five
+  review tests fail on `32fdceb`.
+- `pytest -q`: 681 pass, 6 skipped. Only the two live-model tests fail, and only
   because `:11434` segfaults; they were also run against the CPU runner, with
   the results in the table above.
 - `node tests/browser/maestro_journey.js`: 31/31 in real Chromium, against a

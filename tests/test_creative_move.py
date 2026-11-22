@@ -92,3 +92,26 @@ def test_a_crashed_load_makes_status_say_so(monkeypatch):
     after = producer_brain.status(env=env)
     assert after["available"] is False
     assert "installed, but its last call failed" in after["note"] and "segmentation fault" in after["note"]
+
+
+def test_an_error_inside_a_200_answer_is_a_failed_call(monkeypatch):
+    import urllib.request
+
+    from twobecomeone import producer_brain
+
+    def fake_urlopen(req, timeout):
+        if req.full_url.endswith("/api/tags"):
+            return _Response(json.dumps({"models": [{"name": "qwen2.5:3b-instruct"}]}).encode())
+        return _Response(b'{"error":"runner failed"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(producer_brain, "_LAST_CALL", {})
+    env = {"TWOBECOMEONE_PRODUCER_URL": "http://127.0.0.1:11434"}
+    try:
+        classify_creative("punch it up", env=env)
+    except ProducerUnavailable:
+        pass
+    else:
+        raise AssertionError("an error answer was accepted")
+    after = producer_brain.status(env=env)
+    assert after["available"] is False and after["answered"] is False

@@ -463,6 +463,13 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       const owned = idea.fields.filter((f) => f.key.endsWith(':clip')).map((f) => f.key.slice(0, -5));
       conv.musicianClips = new Set([...(conv.musicianClips ?? []), ...owned]);
       conv.partIds = (conv.partIds ?? []).filter((id) => !conv.musicianClips.has(id));
+      // What the musician keeps is theirs: Restore and Take back stop here.
+      if (conv.decks) {
+        const now = editingSerial();
+        conv.decks.before = now;
+        conv.decks.after = now;
+        conv.decks.revision = session.edit.revision;
+      }
       idea.hearing = 'kept';
       conv.spec = null;
       say('Kept the idea. Undo returns to your version from before it.');
@@ -669,8 +676,11 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       built = buildIdea(session.state, spec, ctx);
     }
     if (session.edit !== engine) return replaced();
+    // A hand move or a Keep made while the passage loaded is read now, not at
+    // the next poll: the write below must not roll it back or drop it.
+    noteHumanMoves();
     if (stale(guard)) return stopped();
-    spec = followTempo(spec);
+    spec = respectKept(followTempo(spec));
     built = buildIdea(session.state, spec, ctx);
     if (built.refusal) return { ok: false, text: built.refusal };
     const wasHearing = idea?.hearing === 'idea';
@@ -1008,6 +1018,36 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     return `${text}${pitchNote}${alt}${tempoNote} ${heard.text || ''}`.trim();
   }
 
+  /**
+   * Every write path goes through here: a kept clip is never dropped, never
+   * doubled (buildIdea moves the new part after it) and never sits under a new
+   * lane curve. A curve on a kept lane becomes the new clip's own fade-in.
+   */
+  function respectKept(spec) {
+    if (!spec) return spec;
+    const mine = conv.musicianClips ?? new Set();
+    const kept = keptClips().map((clip) => clip.id);
+    if (!mine.size && !kept.length) return spec;
+    spec.protect = [...new Set([...(spec.protect ?? []), ...mine])];
+    spec.kept = kept;
+    if (Array.isArray(spec.drop)) spec.drop = spec.drop.filter((id) => !mine.has(id));
+    if (spec.envelopes) {
+      const bpb = session.state.transport.timeSignature[0];
+      for (const lane of Object.keys(spec.envelopes)) {
+        if (!keptOnLane(session.state, kept, Number(lane)).length) continue;
+        const points = spec.envelopes[lane];
+        delete spec.envelopes[lane];
+        if (spec.main && laneIndex(spec.main.song, spec.main.stem || 'vocals') === Number(lane)) {
+          const span = Array.isArray(points) && points.length > 1 ? points.at(-1).beat - points[0].beat : bpb;
+          const half = Math.max(1, Math.floor(((spec.main.passage?.bars || 4) * bpb) / 2));
+          spec.main.fadeIn = Math.max(spec.main.fadeIn || 0, Math.min(span, half));
+          spec.main.chorusAlign = false;
+        }
+      }
+    }
+    return spec;
+  }
+
   /** The clips the musician kept that are still on the lanes, as one sentence. */
   function keptClips() {
     const mine = conv.musicianClips ?? new Set();
@@ -1109,7 +1149,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       // A normal handoff fades in over one bar. A longer transition is honoured
       // up to half the passage, so the drums are still heard at full level.
       const fadeIn = part.longFade
-        ? Math.min(part.fadeIn, Math.max(bpb, Math.floor(((source.bars || 4) * bpb) / 2)))
+        ? Math.min(part.fadeIn, Math.max(1, Math.floor(((source.bars || 4) * bpb) / 2)))
         : Math.min(part.fadeIn, bpb);
       if (part.longFade) longFadeBeats = fadeIn;
       outcome.spec.parts.push({
@@ -1177,10 +1217,14 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       return conv.mode === 'you-play' ? 'You play is on, so I have not placed it.' : 'The decks are yours. I have stopped.';
     }
     const keptLine = keptSummary();
+    const placedClip = session.state.clips.find((clip) => clip.id === outcome.spec.main.clipId);
+    const heldBack = placedClip && placedClip.timelineStartBeat > plan.vocal.startBeat + 1e-6;
     const fadeBars = longFadeBeats != null ? Math.round((longFadeBeats / bpb) * 100) / 100 : null;
     const issue = fadeBars != null
       ? ` The ${plan.parts[0].song} ${plan.parts[0].stem} now fade in over ${fadeBars} ${fadeBars === 1 ? 'bar' : 'bars'}, half the passage at most.`
-      : plan.issues[0] ? ` ${plan.issues[0]}` : '';
+      : heldBack
+        ? ` Your kept clip holds that lane, so my ${plan.vocal.stem === 'vocals' ? 'vocal comes' : `${plan.vocal.stem} come`} in at ${fmtPos(placedClip.timelineStartBeat, bpb)} instead of ${fmtPos(plan.vocal.startBeat, bpb)}.`
+        : plan.issues[0] ? ` ${plan.issues[0]}` : '';
     const unsure = found.rank.ask ? ' The readings were close, so this is a choice, not a proof.' : '';
     const heardWord = playing ? "It's playing." : "It's on the lanes.";
     const handoff = plan.transition ? 'the handoff is a real edit' : 'this sketch has no later handoff';
@@ -1227,6 +1271,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       return commitArrangement(found, 'another');
     }
     if (request.kind === 'decks') {
+      if (conv.mode !== 'decks' && conv.decks) conv.decks.steps = 0;
       if ((conv.decks?.steps ?? 0) >= 4) return 'I have revised this four times. Take back, or tell me the one change you want.';
       if ((request.style === 'energy' || request.style === 'transition') && conv.mode === 'decks' && conv.plan) {
         const found = await rankedFit({ kind: 'fit', targetSong: 'A', sourceSong: 'B', label: 'chorus' });
@@ -1306,6 +1351,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       const names = scoredRows(found.rank).slice(0, 2).map((row) => row.label || row.id).join(' or ');
       return `${explainCandidate(found.rank.candidates[0], { targetName: found.target.name || 'the chorus', sourceTitle: found.groups[found.sourceSong]?.title || 'song B', rank: found.rank })} Say “try the strongest match” or name ${names}.`;
     }
+    if (conv.mode === 'decks' && (conv.decks?.steps ?? 0) >= DECK_REVISIONS && (request.kind === 'choose' || request.kind === 'fit')) {
+      return `I have revised this ${DECK_REVISIONS} times. Take back, or tell me the one change you want.`;
+    }
     if (request.kind === 'choose') {
       if (!conv.harmony?.rank && !found.rank) return 'Ask which part fits, and then I can try the next one.';
       const index = request.index === 'next' ? (conv.harmony?.index ?? 0) + 1 : 0;
@@ -1327,7 +1375,9 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         else if (conv.mode !== 'jam') setMode('jam');
         const reply = urgent.kind === 'you-play'
           ? 'You play. I have stopped.'
-          : 'The decks are yours. I have stopped. I will not place anything else.';
+          : urgent.kind === 'take-back'
+            ? 'The decks are yours. I have stopped mid-take. Restore previous arrangement puts back what was there before I played.'
+            : 'The decks are yours. I have stopped. I will not place anything else.';
         line('you', text.trim());
         line('producer', reply, 'is-local');
         say(reply);
