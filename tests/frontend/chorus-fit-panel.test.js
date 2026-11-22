@@ -1190,3 +1190,66 @@ test('a refused take does not leave the card claiming a finished take', async ()
   assert.equal(s.state.clips.some((clip) => String(clip.id).startsWith('idea-')), false);
   assert.doesNotMatch(prod.querySelector('.daw__producer-now').textContent, /Finished|Playing my take/);
 });
+
+// Fourth independent Codex review (6c33051) ----------------------------------
+
+test('Hear mine during a Jam load does not hide a hand trim made in the same load', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  btn('Jam together').click();
+  const bed = s.state.clips.find((clip) => clip.trackIndex === 1);
+  const gate = holdLoads(s);
+  const pending = tell('Try the next best match instead');
+  for (let i = 0; i < 150 && !gate.release; i += 1) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(gate.release);
+  const trimmed = Math.round((s.state.clips.find((clip) => clip.id === bed.id).durationBeats - 6) * 1e6) / 1e6;
+  s.apply({ name: 'trimClip', args: { clipId: bed.id, edge: 'end', deltaBeats: -6 } });
+  const mine = btn('Hear mine');
+  if (mine && !mine.disabled) mine.click();
+  gate.release();
+  const said = await pending;
+  gate.restore();
+  const hear = btn('Hear it');
+  if (hear && !hear.disabled) hear.click();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(Math.round(s.state.clips.find((clip) => clip.id === bed.id).durationBeats * 1e6) / 1e6, trimmed, said);
+});
+
+test('Ask for a clip idea refuses a clip the musician kept', async () => {
+  const { s, tell, btn, prod } = await mounted();
+  const bed = s.state.clips.find((clip) => clip.trackIndex === 4);
+  s.apply({ name: 'deleteClip', args: { clipId: bed.id } });
+  await tell('Take the decks');
+  const kept = latestVocal(s);
+  btn('Keep it').click();
+  await tell('I’ll take over');
+  const before = JSON.stringify(s.state.clips.find((clip) => clip.id === kept.id));
+  btn('Ask for a clip idea').click();
+  assert.match(prod.querySelector('.daw__producer-status').textContent, /You kept that B Vocals clip/);
+  assert.equal(JSON.stringify(s.state.clips.find((clip) => clip.id === kept.id)), before);
+});
+
+test('Hear it rebuilds a waiting preview that would play over a kept clip', async () => {
+  const { s, tell, btn } = await mounted();
+  await tell('Take the decks');
+  const kept = latestVocal(s);
+  btn('Keep it').click();
+  btn('Jam together').click();
+  await tell('Try the strongest match');
+  const outline = s.state.clips.length;
+  const preview = s.state.clips.filter((clip) => clip.trackIndex === 4).length;
+  assert.ok(outline && preview >= 1);
+  // Move the kept vocal onto where the preview will sound.
+  s.apply({ name: 'moveClip', args: { clipId: kept.id, newTrackIndex: 4, newStartBeat: kept.timelineStartBeat + kept.durationBeats } });
+  await new Promise((r) => setTimeout(r, 600));
+  btn('Hear it').click();
+  for (let i = 0; i < 60 && btn('Hear it'); i += 1) await new Promise((r) => setTimeout(r, 25));
+  assert.deepEqual(laneOverlaps(s, 4), []);
+});
+
+test('a take that leaves another clip sounding on its lane says so', async () => {
+  const { s, tell } = await mounted();
+  await tell('Take the decks');
+  const said = await tell('More energy');
+  if (laneOverlaps(s, 4).length) assert.match(said, /Another B Vocals clip also plays from bar \d/);
+});

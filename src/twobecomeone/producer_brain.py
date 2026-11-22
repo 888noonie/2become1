@@ -529,6 +529,8 @@ def classify_creative(
         _bad_answer(cfg, "the arrangement move was not JSON")
         raise ProducerUnavailable("the model's arrangement move was not JSON", "PRODUCER_BAD_ANSWER") from exc
     move = parsed.get("move") if isinstance(parsed, dict) else None
+    if not isinstance(move, str):
+        _bad_answer(cfg, "the answer named no arrangement move")
     if not isinstance(move, str) or move not in _CREATIVE_MOVES:
         move = "none"
     return {"move": move, "model": cfg["model"], "local": True}
@@ -575,7 +577,11 @@ def converse(
     except json.JSONDecodeError as exc:
         _bad_answer(cfg, "the answer was not valid JSON")
         raise ProducerUnavailable("the model's answer was not valid JSON", "PRODUCER_BAD_ANSWER") from exc
-    intent = validate_intent(raw, vocab)
+    try:
+        intent = validate_intent(raw, vocab)
+    except ProducerUnavailable:
+        _bad_answer(cfg, "the answer was not a usable intent")
+        raise
     asks = raw.get("asks")
     asks = [a for a in dict.fromkeys(asks) if a in ASKS] if isinstance(asks, list) else None
     intent = reconcile(intent, asks)

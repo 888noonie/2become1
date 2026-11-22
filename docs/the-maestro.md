@@ -237,8 +237,35 @@ Also from the third review:
 - A refused take no longer leaves the card saying *Finished*.
 - Unusable content inside a 200 answer counts as a failed model call.
 
-Still open: Take over hands the transport back at once, but the input stays
-disabled until a stalled passage load settles.
+A fourth Codex review of `6c33051` confirmed those repairs. It found four
+more blocking cases, each fixed with a test that fails on `6c33051`:
+
+1. **Hear mine during a load hid a hand trim.** It refreshed the whole
+   comparison base, which absorbed an unrelated hand trim. Now only the fields
+   the Producer actually wrote are refreshed.
+2. **Ask for a clip idea still changed a kept clip.** It writes `:position`,
+   `:slip` and `:gain` fields, which the `:clip` filter missed. Every
+   clip-scoped field of a kept clip is filtered now, and Ask for a clip idea
+   refuses a kept clip outright.
+3. **A cached Jam preview played over a kept clip.** A waiting Jam preview
+   could sound over a kept clip that was moved under it. Hear it now rebuilds
+   that preview first.
+4. **More energy layered B's original vocal without saying so.** The reply now
+   says so and suggests muting or trimming it. The Producer does **not** remove
+   the layering itself.
+
+Also from the fourth review:
+
+- A refused take no longer enables a phantom Previous vocal.
+- A model answer that names no move or intent counts as a failed call.
+
+Still open:
+
+- Take over hands the transport back at once, but the input stays disabled
+  until a stalled passage load settles.
+- The layered original vocal in point 4 is admitted, not prevented.
+- Each of four review rounds found new edge cases in this stateful card. Treat
+  the race handling as improved and tested, not proven exhaustive.
 
 ## Local model runtime — measured, not assumed
 
@@ -288,10 +315,10 @@ daemon's error after a failure.
 
 ## Evidence
 
-- `node --test tests/frontend/*.js`: 358/358 pass. That includes 22 new tests.
+- `node --test tests/frontend/*.js`: 362/362 pass. That includes 26 new tests.
   The two layering tests and the transition test fail on `24e2850`; each review
-  test fails on the commit it repairs (`32fdceb`, `355d945`, `6ddcdbb`).
-- `pytest -q` (full suite at `355d945`): 681 pass, 6 skipped. After the last `producer_brain.py` change, the targeted Producer, listening and chorus-fit tests pass (41 pass, 4 skipped). The full suite was not re-run, because each run leaves about 3 GB in the `/tmp` RAM disk. Only the two live-model tests fail, and only
+  test fails on the commit it repairs (`32fdceb`, `355d945`, `6ddcdbb`, `6c33051`).
+- `pytest -q` (full suite at `355d945`): 681 pass, 6 skipped. After the last `producer_brain.py` change, the targeted Producer, listening and chorus-fit tests pass (42 pass, 4 skipped). The full suite was not re-run, because each run leaves about 3 GB in the `/tmp` RAM disk. Only the two live-model tests fail, and only
   because `:11434` segfaults; they were also run against the CPU runner, with
   the results in the table above.
 - `node tests/browser/maestro_journey.js`: 31/31 in real Chromium, against a

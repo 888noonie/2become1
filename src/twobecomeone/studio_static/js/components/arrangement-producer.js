@@ -323,7 +323,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     const ok = commands.length ? session.apply({ name: 'batch', args: { commands } }, gestureKey).ok : true;
     // A Producer write (Hear it, Hear mine, Undo) during a load is not a hand edit.
-    if (ok && conv.loadBase) conv.loadBase = structuredClone(session.state);
+    if (ok && conv.loadBase) for (const f of wrote) conv.loadOwn.set(f.key, f.read(session.state));
     // Remember what the project now holds (the edit API may round or clamp),
     // so only a real human move counts as one.
     state = session.state;
@@ -420,7 +420,8 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
         if (!keptLanes.has(lane)) return false;
         return m[2] === 'mute' ? f.value === true : f.value < session.state.tracks[lane].volumeDb;
       };
-      const allowed = proposal.fields.filter((f) => !(f.key.endsWith(':clip') && keptIds.has(f.key.slice(0, -5))) && !silences(f));
+      // Clip fields are keyed `<clipId>:<what>` (:clip, :position, :slip, :gain …).
+      const allowed = proposal.fields.filter((f) => !keptIds.has(String(f.key).split(':')[0]) && !silences(f));
       if (allowed.length !== proposal.fields.length) {
         proposal = { ...proposal, fields: allowed, rationale: `${proposal.rationale} Your kept clips are left as they are.` };
         if (!allowed.length) { say('That idea would change a clip you kept, so I have left it alone.'); return false; }
@@ -553,6 +554,10 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const bVocals = GROUP_BASE.B + ROLES.indexOf('vocals');
     const clip = state.clips.find((c) => c.id === selectedClipId()) ?? state.clips.find((c) => c.trackIndex === bVocals) ?? state.clips[0];
     if (!clip) { say('Bring stems onto the lanes first.'); return; }
+    if (keptClips().some((item) => item.id === clip.id)) {
+      say(`You kept that ${session.state.tracks[clip.trackIndex].name} clip, so I will not change it. Select another clip.`);
+      return;
+    }
     conv.spec = null;
     offer(suggestClipIdea(state, { clipId: clip.id, startBar: 9, phrase: 2, fadeInBeats: 1, gainDb: -3 }),
       'That clip already matches the idea.');
@@ -691,6 +696,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     // What the lanes held when the request was made. A field that changed by
     // hand while the passage loaded belongs to the musician: the write is dropped.
     conv.loadBase = structuredClone(session.state);
+    conv.loadOwn = new Map();
     while (built.needsSource && loads < 6) {
       say('Fetching that passage of the stem…');
       try { await session.loadSource(built.needsSource); } catch (err) { return { ok: false, text: `I couldn't load that passage: ${err.message}` }; }
@@ -716,16 +722,20 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       return { ok: false, text: `You kept ${onKept.label(session.state)}, so I have not changed it. Ask again and I will build around it.` };
     }
     const asked = conv.loadBase;
+    const own = conv.loadOwn ?? new Map();
     conv.loadBase = null;
+    conv.loadOwn = null;
+    // The value before the load, or the value a Producer write left during it.
+    const baseOf = (f) => (own.has(f.key) ? own.get(f.key) : f.read(asked));
     let handKeys = new Set();
     if (loads && asked) {
       // A field changed by hand while the passage loaded keeps the hand value:
       // that field is left out of the write. If it is the Producer clip being
       // rewritten, the whole write is dropped, since the passage was that clip.
       const byHand = built.fields.filter((f) => typeof f.read === 'function'
-        && !same(f.read(asked), f.read(session.state)) && !same(f.read(session.state), f.value));
+        && !same(baseOf(f), f.read(session.state)) && !same(f.read(session.state), f.value));
       const rewritten = byHand.find((f) => f.key.endsWith(':clip') && String(f.key).startsWith('idea-')
-        && f.read(asked)?.exists);
+        && baseOf(f)?.exists);
       if (rewritten) {
         return { ok: false, text: `You changed ${rewritten.label(session.state)} while I was loading that passage, so I have not replaced it. Ask again and I will start from your version.` };
       }
@@ -773,6 +783,16 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     return { ok: true, wrote: wasHearing, before: beforeWrite, revision: beforeRevision, text: `${wasHearing ? 'Now playing' : 'Idea'}: ${built.rationale}.${wasHearing ? '' : ' Press Hear it to listen.'}` };
   }
 
+  /** True when a waiting preview would now sound on top of a kept clip. */
+  function previewHitsKept() {
+    if (!idea) return false;
+    const kept = keptClips();
+    return idea.fields.some((f) => f.key.endsWith(':clip') && f.value?.exists && kept.some((clip) => clip.id !== f.key.slice(0, -5)
+      && clip.trackIndex === f.value.trackIndex
+      && clip.timelineStartBeat < f.value.startBeat + f.value.durationBeats - 1e-9
+      && clip.timelineStartBeat + clip.durationBeats > f.value.startBeat + 1e-9));
+  }
+
   async function commitIdea() {
     if (conv.mode === 'you-play') { say('You play is on, so I have not placed it.'); return false; }
     if (conv.bank && bankStamp() !== conv.bank) {
@@ -784,7 +804,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     }
     if (idea && idea.hearing !== 'idea' && idea.hearing !== 'kept') {
       const next = followTempo(conv.spec);
-      if (next && next !== conv.spec) {
+      if (next && (next !== conv.spec || previewHitsKept())) {
         const heard = await realise(next);
         if (!heard.ok) { say(heard.text); return false; }
       }
@@ -1247,13 +1267,15 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const priorPlan = conv.plan;
     conv.plan = plan;
     conv.planStyle = style;
-    conv.vocalChoices = conv.vocalChoices ?? [];
-    if (conv.vocalChoices.at(-1) !== plan.vocal.sectionId) conv.vocalChoices.push(plan.vocal.sectionId);
     if (conv.cancelled || conv.mode !== 'decks') return 'The decks are yours, so I have not placed it.';
     const guard = { epoch: conv.epoch, mode: 'decks' };
     const engine = session.edit;
     const heard = await realise(outcome.spec, guard);
     if (!heard.ok) conv.plan = priorPlan;
+    else {
+      conv.vocalChoices = conv.vocalChoices ?? [];
+      if (conv.vocalChoices.at(-1) !== plan.vocal.sectionId) conv.vocalChoices.push(plan.vocal.sectionId);
+    }
     if (conv.mode === 'you-play') return heard.text || 'You play is on, so I have not placed it.';
     if (conv.cancelled || conv.mode !== 'decks') return heard.ok ? 'The decks are yours. I have stopped.' : 'The decks are yours, so I have not placed it.';
     if (!heard.ok) return heard.text;
@@ -1275,6 +1297,8 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
       return conv.mode === 'you-play' ? 'You play is on, so I have not placed it.' : 'The decks are yours. I have stopped.';
     }
     const keptLine = keptSummary();
+    const layered = /another ([A-Z] [A-Za-z]+) clip also plays from (bar [0-9]+(?: beat [0-9.]+)?)/.exec(heard.text ?? '');
+    const layerLine = layered ? ` Another ${layered[1]} clip also plays from ${layered[2]}, under mine: mute or trim it if you do not want both.` : '';
     const placedClip = session.state.clips.find((clip) => clip.id === outcome.spec.main.clipId);
     const heldBack = placedClip && placedClip.timelineStartBeat > plan.vocal.startBeat + 1e-6;
     const fadeBars = longFadeBeats != null ? Math.round((longFadeBeats / bpb) * 100) / 100 : null;
@@ -1286,7 +1310,7 @@ export function mountArrangementProducer({ container, session, onAnnounce = () =
     const unsure = found.rank.ask ? ' The readings were close, so this is a choice, not a proof.' : '';
     const heardWord = playing ? "It's playing." : "It's on the lanes.";
     const handoff = plan.transition ? 'the handoff is a real edit' : 'this sketch has no later handoff';
-    return `${plan.title}. ${reading.count} measurable checks held: both songs are in it, ${handoff}, and no pitch was applied. I did not audition the audio.${keptLine}${issue}${unsure} ${heardWord}`;
+    return `${plan.title}. ${reading.count} measurable checks held: both songs are in it, ${handoff}, and no pitch was applied. I did not audition the audio.${keptLine}${layerLine}${issue}${unsure} ${heardWord}`;
   }
 
   async function harmonyTurn(request) {

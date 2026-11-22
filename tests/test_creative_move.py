@@ -142,3 +142,20 @@ def test_unusable_content_in_a_200_answer_is_not_an_answer(monkeypatch):
         raise AssertionError("non-JSON content was accepted")
     after = producer_brain.status(env=env)
     assert after["available"] is False and after["answered"] is False
+
+
+def test_an_answer_without_a_move_is_not_an_answer(monkeypatch):
+    import urllib.request
+
+    from twobecomeone import producer_brain
+
+    def fake_urlopen(req, timeout):
+        if req.full_url.endswith("/api/tags"):
+            return _Response(json.dumps({"models": [{"name": "qwen2.5:3b-instruct"}]}).encode())
+        return _Response(b'{"message":{"content":"{}"}}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(producer_brain, "_LAST_CALL", {})
+    env = {"TWOBECOMEONE_PRODUCER_URL": "http://127.0.0.1:11434"}
+    assert classify_creative("hmm", env=env)["move"] == "none"
+    assert producer_brain.status(env=env)["answered"] is False
