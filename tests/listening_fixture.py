@@ -7,7 +7,7 @@ sum. The verses and the chorus use different chords and drums; the chorus is
 louder. The "vocals" are words spoken by the local espeak-ng synthesiser when
 it is installed (the chorus repeats the same line every time, the two verses
 use different lines), otherwise a sung-style lead with no words. ``words=False``
-always builds the wordless lead, for the instrumental case.
+always builds the wordless lead, independent of installed speech tools.
 
 Everything is synthesised here, so there is no licensing question, and the
 ground truth is exact: ``SECTIONS`` gives every section's first bar.
@@ -124,6 +124,7 @@ def build(out: Path, *, words: bool = True, injection: bool = False, seed: int =
             for k in range(8):
                 add("other", t0 + k * beat / 2, _tone(root * 8 * (1 + (k % 3) / 4), beat / 2, 0.03), 1.0)
 
+    lead_in = 0.05
     lines: list[dict] = []
     for name, start, length in SECTIONS:
         if name not in ("verse", "chorus", "bridge"):
@@ -139,11 +140,18 @@ def build(out: Path, *, words: bool = True, injection: bool = False, seed: int =
             sig = _speak(text) if spoken else None
             if sig is None:
                 melody = [330, 392, 440, 392] if name == "chorus" else [294, 330, 294, 262]
-                sig = np.concatenate([_tone(f, beat, 0.22, harmonics=(1.0, 0.4, 0.2, 0.1)) for f in melody])
+                # Fill the two-bar phrase. A full bar of silence between
+                # phrases produces vocal on/off changes inside each section.
+                notes = melody * 2
+                sig = np.concatenate([
+                    _tone(f, beat - lead_in if i == len(notes) - 1 else beat, 0.22,
+                          harmonics=(1.0, 0.4, 0.2, 0.1))
+                    for i, f in enumerate(notes)
+                ])
                 text = None
             else:
                 sig = 0.6 * sig / (np.max(np.abs(sig)) + 1e-9)
-            add("vocals", bar * BAR + 0.05, sig, 1.0 if name == "chorus" else 0.8)
+            add("vocals", bar * BAR + lead_in, sig, 1.0 if name == "chorus" else 0.8)
             lines.append({"bar": bar, "section": name, "text": text})
 
     mix = sum(stems.values())
