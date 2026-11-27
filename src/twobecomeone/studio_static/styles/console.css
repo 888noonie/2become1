@@ -45,7 +45,10 @@ summary { cursor:pointer; }
 dialog[open] { box-shadow:0 24px 100px var(--console-shadow-deep); }
 @media(max-width:1100px){.console-body { grid-template-columns:minmax(0,1fr); }.stem-desk__producer { border-left:0; border-top:1px solid var(--console-brass-edge); }.stem-desk__proposal { display:flex; }}
 @media(max-width:700px){.console-heading { padding:18px; }.stem-desk__group-controls { padding:6px 10px; gap:3px 8px; }.stem-desk__row { padding-inline:2px; }.stem-desk__group-rows { grid-template-columns:repeat(2,minmax(0,1fr)); }.stem-desk__lane-controls input { writing-mode:horizontal-tb; direction:ltr; height:44px; }.console-banks { padding:10px; }.stem-desk__producer { padding:16px; }}
-@media(max-width:360px){.stem-desk__load { grid-column:auto; }.stem-desk__group-controls { grid-template-columns:minmax(0,1fr) auto; }.stem-desk__source-title { grid-column:1/-1; }}
+@media (max-width: 850px) {
+  .stem-desk__group-controls { grid-template-columns: auto minmax(0, 1fr); }
+  .stem-desk__source-actions { grid-column: 1 / -1; }
+}
 .studio { align-items:stretch; }
 .track-card__art:not(:has(img)) { border-radius:50%; color:var(--color-action); background:radial-gradient(circle,var(--color-well) 0 28%,transparent 29%),repeating-radial-gradient(circle,var(--color-control-border) 0 1px,var(--color-surface) 2px 5px); }
 .view-heading h1 { font-size:clamp(32px,4vw,54px); }

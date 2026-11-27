@@ -2,11 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { setupDom, teardownDom } from './helpers/dom.js';
+import { StemDesk } from '../../src/twobecomeone/studio_static/js/runtime/stem-desk.js';
 import { mountStemDeskPanel } from '../../src/twobecomeone/studio_static/js/components/stem-desk-panel.js';
 
 let dom;
+let disposeAfter;
 test.beforeEach(() => { dom = setupDom(); });
-test.afterEach(() => teardownDom(dom));
+test.afterEach(() => {
+  try {
+    disposeAfter?.();
+  } finally {
+    disposeAfter = null;
+    teardownDom(dom);
+  }
+});
 
 function variant(name, overrides = {}) {
   return {
@@ -257,6 +266,8 @@ function mount({
   watchJobImpl = () => () => {},
   listStemsImpl = null,
   store = null,
+  crateSource = undefined,
+  railHost = null,
 } = {}) {
   const container = document.createElement('div');
   const desk = new FakeDesk();
@@ -272,6 +283,8 @@ function mount({
       return desk;
     },
     openPicker,
+    crateSource,
+    railHost,
     submitSeparationImpl,
     listJobsImpl,
     watchJobImpl,
@@ -518,6 +531,226 @@ test('play and stop drive the one transport and keep the accepted single-track l
   assert.equal(desk.status, 'ready');
 });
 
+function unloadButton(container, groupId) {
+  const button = container.querySelector(`button[aria-label="Unload stems from group ${groupId}"]`);
+  assert.ok(button, `bank ${groupId} exposes an Unload stems button`);
+  return button;
+}
+
+test('bank unload during playback stops both banks and preserves the other mix and library selection', async () => {
+  const { container, desk, calls, dispose } = mount({ variants: DEMUCS_QUAD });
+  document.body.append(container);
+  disposeAfter = dispose;
+  const unloadA = unloadButton(container, 'A');
+  const unloadB = unloadButton(container, 'B');
+  assert.equal(unloadA.disabled, true);
+  assert.equal(unloadB.disabled, true);
+  await loadGroup(container, 'A');
+  assert.equal(unloadA.disabled, false);
+  assert.equal(unloadB.disabled, true);
+  await loadGroup(container, 'B');
+  desk.setGain('A:vocals', -7);
+  desk.setMuted('A:drums', true);
+  desk.setSolo('A:bass', true);
+  desk.setTrackLevel('A', -3);
+  desk.setGroupEntryOffset('A', 20);
+  const keptLanes = desk.state().lanes.filter((lane) => lane.trackId === 'A');
+  const beforeCalls = calls.length;
+  const track = selectFor(container, 'B').value;
+  const play = container.querySelector('.stem-desk__transport button');
+  play.click();
+  await flush();
+  assert.equal(play.textContent, 'Restart');
+  unloadB.focus();
+  unloadB.click();
+  assert.equal(play.textContent, 'Play');
+  assert.equal(play.disabled, false);
+  assert.equal(container.querySelector('.stem-desk__transport').dataset.playing, 'false');
+  assert.equal(container.querySelector('.stem-desk__transport button:nth-child(2)').disabled, true);
+  assert.equal(container.querySelector('[aria-label="Crossfader A to B"]').disabled, true);
+  assert.deepEqual(desk.state().lanes, keptLanes);
+  assert.equal(desk.state().groups[0].levelDb, -3);
+  assert.equal(desk.state().groups[0].entryOffsetMs, 20);
+  assert.equal(container.querySelectorAll('.stem-desk__group[data-group="B"]').length, 0);
+  assert.equal(selectFor(container, 'B').value, track);
+  assert.equal(calls.length, beforeCalls, 'unload makes no library request');
+  assert.equal(unloadB.disabled, true);
+  assert.equal(document.activeElement, loadButton(container, 'B'));
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Unloaded.*B.*Playback stopped/);
+  play.click();
+  await flush();
+  assert.deepEqual(desk.calls.filter(([name]) => name === 'play'), [['play', false], ['play', true]]);
+  await loadGroup(container, 'B');
+  assert.equal(unloadB.disabled, false);
+  unloadB.click();
+  unloadA.click();
+  assert.equal(desk.state().status, 'idle');
+  assert.equal(play.disabled, true);
+});
+
+test('bank unload cancels a pending stem list before it can start decoding', async () => {
+  const held = Promise.withResolvers();
+  let signal;
+  let calls = 0;
+  const { container, desk, dispose } = mount({
+    listStemsImpl: async (_id, loadSignal) => {
+      signal = loadSignal;
+      calls += 1;
+      return calls === 1 ? held.promise : { variants: DEMUCS_QUAD };
+    },
+  });
+  disposeAfter = dispose;
+  const unloadB = unloadButton(container, 'B');
+  loadButton(container, 'B').click();
+  await flush();
+  assert.equal(unloadB.disabled, false, 'empty bank can cancel its pending load');
+  assert.equal(unloadButton(container, 'A').disabled, true);
+  unloadB.click();
+  assert.equal(signal.aborted, true);
+  assert.equal(unloadB.disabled, true);
+  const status = container.querySelector('.stem-desk__status');
+  assert.match(status.textContent, /Cancelled.*B/);
+  loadButton(container, 'B').click();
+  assert.equal(calls, 1, 'a retiring load still owns the one load slot');
+  held.resolve({ variants: DEMUCS_QUAD });
+  await flush();
+  assert.equal(desk.calls.some(([name]) => name === 'loadGroups'), false);
+  assert.match(status.textContent, /Cancelled.*B/);
+  await loadGroup(container, 'B');
+  assert.equal(desk.state().groups[0].trackId, 'B');
+  assert.match(status.textContent, /Loaded 4 stems into group B/);
+});
+
+test('bank unload during the initial library request prevents the first stem request', async () => {
+  const tracks = Promise.withResolvers();
+  const container = document.createElement('div');
+  const desk = new FakeDesk();
+  let stemRequests = 0;
+  disposeAfter = mountStemDeskPanel({
+    container,
+    audioContextFactory: () => ({}),
+    createDesk: () => desk,
+    listTracksImpl: () => tracks.promise,
+    listStemsImpl: async () => {
+      stemRequests += 1;
+      return { variants: DEMUCS_QUAD };
+    },
+  });
+  loadButton(container, 'A').click();
+  unloadButton(container, 'A').click();
+  tracks.resolve({ items: [{ id: 'track-1', name: 'night-drive.wav' }] });
+  await flush();
+  assert.equal(stemRequests, 0);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Cancelled.*A/);
+  await loadGroup(container, 'A');
+  assert.equal(stemRequests, 1);
+  assert.equal(desk.state().groups[0].trackId, 'A');
+});
+
+test('bank unload during a real desk decode drops the old result and permits a fresh load', async () => {
+  const held = Promise.withResolvers();
+  let holdDecode = false;
+  let enteredDecode = false;
+  const buffer = {
+    duration: 8, length: 8000, numberOfChannels: 1,
+    getChannelData: () => Float32Array.of(0.1),
+  };
+  const ctx = {
+    state: 'running', currentTime: 5, destination: {},
+    createGain: () => ({ gain: { value: 1 }, connect() {}, disconnect() {} }),
+    decodeAudioData: async () => {
+      if (!holdDecode) return buffer;
+      enteredDecode = true;
+      return held.promise;
+    },
+  };
+  const container = document.createElement('div');
+  let desk;
+  const dispose = mountStemDeskPanel({
+    container,
+    audioContextFactory: () => ctx,
+    createDesk: (options) => {
+      desk = new StemDesk({
+        ...options,
+        fetchImpl: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) }),
+      });
+      return desk;
+    },
+    listTracksImpl: async () => ({ items: [{ id: 'track-1', name: 'night-drive.wav' }] }),
+    listStemsImpl: async () => ({ variants: DEMUCS_QUAD }),
+  });
+  disposeAfter = dispose;
+  await loadGroup(container, 'A');
+  await loadGroup(container, 'B');
+  const a = desk._groups.find((group) => group.trackId === 'A');
+  const bytes = desk._decodedBytes;
+  const unloadB = unloadButton(container, 'B');
+  holdDecode = true;
+  loadButton(container, 'B').click();
+  await flush();
+  assert.equal(enteredDecode, true);
+  assert.equal(unloadB.disabled, false);
+  unloadB.click();
+  assert.equal(desk._decodedBytes, bytes / 2);
+  assert.equal(unloadB.disabled, true);
+  loadButton(container, 'B').click();
+  assert.equal(loadButton(container, 'B').disabled, true);
+  holdDecode = false;
+  held.resolve(buffer);
+  await flush();
+  assert.deepEqual(desk._groups, [a]);
+  assert.equal(desk._decodedBytes, bytes / 2);
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Unloaded.*B/);
+  await loadGroup(container, 'B');
+  assert.equal(desk._decodedBytes, bytes);
+  assert.equal(desk._groups.find((group) => group.trackId === 'A'), a);
+});
+
+test('bank unload leaves the other bank’s pending load in place', async () => {
+  const held = Promise.withResolvers();
+  let holdLoad = false;
+  let pendingSignal;
+  const { container, desk, dispose } = mount({
+    listStemsImpl: async (_id, signal) => {
+      if (!holdLoad) return { variants: DEMUCS_QUAD };
+      pendingSignal = signal;
+      return held.promise;
+    },
+  });
+  disposeAfter = dispose;
+  await loadGroup(container, 'A');
+  holdLoad = true;
+  loadButton(container, 'B').click();
+  assert.ok(pendingSignal);
+  unloadButton(container, 'A').click();
+  assert.equal(pendingSignal.aborted, false);
+  assert.equal(unloadButton(container, 'A').disabled, true);
+  assert.equal(unloadButton(container, 'B').disabled, false);
+  held.resolve({ variants: DEMUCS_QUAD });
+  await flush();
+  assert.deepEqual(desk.state().groups.map((group) => group.trackId), ['B']);
+});
+
+test('bank unload retires a Play still waiting for audio resume', async () => {
+  const { container, desk, dispose } = mount({ variants: DEMUCS_QUAD });
+  disposeAfter = dispose;
+  await loadGroup(container, 'A');
+  await loadGroup(container, 'B');
+  const held = Promise.withResolvers();
+  desk.resume = () => held.promise;
+  const play = container.querySelector('.stem-desk__transport button');
+  play.click();
+  unloadButton(container, 'B').click();
+  held.resolve(desk.state());
+  await flush();
+  assert.equal(desk.calls.some(([name]) => name === 'play'), false);
+  assert.equal(play.textContent, 'Play');
+  assert.match(container.querySelector('.stem-desk__status').textContent, /Unloaded.*B/);
+  play.click();
+  await flush();
+  assert.deepEqual(desk.calls.find(([name]) => name === 'play'), ['play', true]);
+});
+
 test('the crossfader is disabled for one track and writes equal-power gains for two', async () => {
   const { container, desk } = mount({
     tracks: [
@@ -609,8 +842,6 @@ test('a browser-suspended audio context is reported instead of claimed as playin
 });
 
 test('the real StemDesk runtime renders four lanes through the panel', async () => {
-  const { StemDesk } = await import('../../src/twobecomeone/studio_static/js/runtime/stem-desk.js');
-
   class Gains { constructor() { this.gain = { value: 1 }; } connect() {} disconnect() {} }
   class Sources { constructor() { this.started = null; } connect() {} start(when, offset) { this.started = { when, offset }; } stop() {} disconnect() {} }
   const ctx = {
@@ -1821,4 +2052,411 @@ test('renaming a library track updates the desk heading without loading again', 
   assert.equal(container.querySelectorAll('script').length, 0);
   assert.equal(selectFor(container, 'A').selectedOptions[0].textContent, 'Café — 夜 <script>');
   assert.equal(desk.calls.filter(([name]) => name === 'loadGroups').length, loads);
+});
+
+// ---- The Crate (record-crate) --------------------------------------------
+
+const CRATE_ITEMS = [
+  { track_id: 'track-1', name: 'night-drive.wav', duration: 180, bpm: 96.8, key: { tonic: 'F', mode: 'major' }, source: { kind: 'upload' }, stems: { status: 'quad', quad: true, method: 'demucs', roles: ['vocals', 'drums', 'bass', 'other'] }, actions: ['choose_A', 'choose_B'], separation: null },
+  { track_id: 'track-2', name: 'slow-burn.wav', duration: 171, bpm: 84.3, key: null, source: { kind: 'upload' }, stems: { status: 'quad', quad: true, method: 'demucs', roles: ['vocals', 'drums', 'bass', 'other'] }, actions: ['choose_A', 'choose_B'], separation: null },
+  { track_id: 'track-3', actions: ['separate'], name: 'raw-demo.wav', duration: 90, bpm: null, key: null, source: { kind: 'youtube' }, stems: { status: 'none', quad: false, method: null, roles: [] }, separation: null },
+  { track_id: 'track-4', actions: ['choose_A', 'separate'], duplicates: {
+    exact_content: ['duplicate'], same_source: ['source'], possible_versions: [{ track_id: 'live', name: 'Live Pad' }],
+  }, name: 'wide-pad.wav', duration: 60, bpm: null, key: null, source: { kind: 'local' }, stems: { status: 'center_sides', quad: false, method: 'ffmpeg', roles: ['center', 'sides'] }, separation: null },
+  { track_id: 'track-5', name: 'half-done.wav', duration: 60, bpm: null, key: null, source: { kind: 'upload' }, stems: { status: 'none', quad: false, method: null, roles: [] }, separation: { job_id: 'job-5', status: 'running', progress: 40, error: null } },
+  { track_id: 'track-6', actions: ['separate'], name: 'broken.wav', duration: 60, bpm: null, key: null, source: { kind: 'upload' }, stems: { status: 'none', quad: false, method: null, roles: [] }, separation: { job_id: 'job-6', status: 'failed', progress: null, error: 'Demucs ran out of memory' } },
+];
+
+async function crateDesk(options = {}) {
+  const { createCrateSource } = await import('../../src/twobecomeone/studio_static/js/record-crate.js');
+  const searches = [];
+  const stemReads = [];
+  const crateSource = createCrateSource({
+    fetchJson: async (url) => {
+      // Opening a row reads that recording's stems (OPEN THE RECORD
+      // SLEEVES); that is not a search.
+      if (url.startsWith('/api/tracks/')) { stemReads.push(url); return { variants: [] }; }
+      searches.push(url);
+      return { items: CRATE_ITEMS, total: CRATE_ITEMS.length, limit: 20, offset: 0 };
+    },
+  });
+  const ctx = mount({
+    tracks: CRATE_ITEMS.map((entry) => ({ id: entry.track_id, name: entry.name })),
+    variantsByTrack: {
+      'track-1': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-aaa' })),
+      'track-2': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-bbb' })),
+    },
+    crateSource,
+    ...options,
+  });
+  document.body.appendChild(ctx.container);
+  disposeAfter = ctx.dispose;
+  const tab = (name) => ctx.container.querySelector(`[role="tab"][data-tab="${name}"]`);
+  const row = (id) => ctx.container.querySelector(`.record-crate__row[data-track-id="${id}"]`);
+  const open = (id) => {
+    const toggle = row(id).querySelector('.record-crate__item');
+    if (toggle.getAttribute('aria-expanded') !== 'true') toggle.click();
+    return row(id);
+  };
+  const crateButton = (id, cls) => open(id).querySelector(cls);
+  return { ...ctx, searches, stemReads, tab, row, open, crateButton };
+}
+
+const badges = (row) => [...row.querySelectorAll('.record-crate__badge')].map((el) => el.textContent);
+
+test('Crate: the Producer tab is the default, and the Crate fetches nothing until it is opened', async () => {
+  const t = await crateDesk();
+  await flush();
+  assert.equal(t.tab('producer').getAttribute('aria-selected'), 'true');
+  assert.equal(t.container.querySelector('.stem-desk__producer').hidden, false);
+  assert.equal(t.container.querySelector('.desk-rail__crate').hidden, true);
+  assert.equal(t.searches.length, 0, 'mounting the desk does not search');
+  t.tab('crate').click();
+  await flush();
+  assert.equal(t.container.querySelector('.stem-desk__producer').hidden, true, 'the Producer stays in the DOM, hidden');
+  assert.equal(t.searches.length, 1);
+  t.tab('producer').click();
+  t.tab('crate').click();
+  await flush();
+  assert.equal(t.searches.length, 1, 'switching tabs does not search again');
+  // Arrow keys move between the two tabs and focus follows.
+  t.tab('crate').focus();
+  t.tab('crate').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+  assert.equal(t.tab('producer').getAttribute('aria-selected'), 'true');
+  assert.equal(document.activeElement, t.tab('producer'));
+  assert.equal(t.tab('producer').tabIndex, 0);
+  assert.equal(t.tab('crate').tabIndex, -1);
+});
+
+test('Crate: every stem state has its own badge; center/sides is never called stems', async () => {
+  let updateJob;
+  const t = await crateDesk({
+    watchJobImpl(id, onUpdate) {
+      if (id === 'job-5') updateJob = onUpdate;
+      return () => {};
+    },
+  });
+  t.tab('crate').click();
+  await flush();
+  assert.deepEqual(badges(t.row('track-1')), ['Stems ready · Demucs 4']);
+  assert.deepEqual(badges(t.row('track-3')), ['No stems yet']);
+  assert.deepEqual(badges(t.row('track-4')), ['Center/sides only']);
+  assert.deepEqual(badges(t.row('track-5')), ['Separating']);
+  assert.deepEqual(badges(t.row('track-6')), ['Separation failed']);
+  assert.match(t.open('track-6').textContent, /Demucs ran out of memory/);
+  assert.match(t.open('track-1').textContent, /Artist\s*Not in Library data/);
+  assert.match(t.open('track-4').textContent, /not vocal or instrument stems/);
+  assert.match(t.open('track-4').textContent, /Exact-content matches1Same source1Possible versionsLive Pad/);
+  assert.equal(t.crateButton('track-4', '.record-crate__choose--a').disabled, false);
+  assert.equal(t.crateButton('track-4', '.record-crate__choose--b').disabled, true);
+  assert.equal(t.crateButton('track-4', '.record-crate__load--b').disabled, true);
+  updateJob({ id: 'job-5', status: 'running', progress_detail: { percent: 40 } });
+  assert.deepEqual(badges(t.row('track-5')), ['Separating 40%']);
+});
+
+test('Crate: Choose sets the bank selector without an AudioContext, a load or a stop', async () => {
+  const t = await crateDesk();
+  t.tab('crate').click();
+  await flush();
+  t.crateButton('track-2', '.record-crate__choose--b').click();
+  await flush();
+  assert.equal(selectFor(t.container, 'B').value, 'track-2');
+  assert.equal(t.calls.some(([name]) => name === 'createDesk'), false, 'no desk or AudioContext was created');
+  assert.equal(t.desk.calls.length, 0, 'nothing was loaded, played or stopped');
+  assert.ok(badges(t.row('track-2')).includes('Selected for B'));
+  // Focus moves to the next step, Load B for that track.
+  assert.equal(document.activeElement, t.row('track-2').querySelector('.record-crate__load--b'));
+});
+
+test('Crate: Choose during playback does not stop the desk', async () => {
+  const t = await crateDesk();
+  selectFor(t.container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  selectFor(t.container, 'A').value = 'track-1';
+  await loadGroup(t.container, 'A');
+  t.container.querySelector('.stem-desk__transport .button--primary').click();
+  await flush();
+  assert.equal(t.desk.status, 'playing');
+  const before = t.desk.calls.length;
+  t.tab('crate').click();
+  await flush();
+  const search = t.container.querySelector('.record-crate__search');
+  search.value = 'slow';
+  search.dispatchEvent(new window.Event('input'));
+  t.crateButton('track-2', '.record-crate__choose--b').click();
+  await flush();
+  assert.equal(t.desk.status, 'playing', 'search and Choose leave playback running');
+  assert.deepEqual(t.desk.calls.slice(before), [], 'no stop, load or gain call');
+  assert.ok(badges(t.row('track-1')).includes('On A'));
+});
+
+test('Crate: Load presses the bank’s own Load and the row then reads On B', async () => {
+  const t = await crateDesk();
+  t.tab('crate').click();
+  await flush();
+  const load = t.crateButton('track-2', '.record-crate__load--b');
+  assert.equal(load.disabled, true, 'Load waits for Choose');
+  assert.match(t.row('track-2').textContent, /Choose it for B first/);
+  t.crateButton('track-2', '.record-crate__choose--b').click();
+  await flush();
+  const ready = t.row('track-2').querySelector('.record-crate__load--b');
+  assert.equal(ready.disabled, false);
+  ready.focus();
+  ready.click();
+  await flush();
+  await flush();
+  assert.deepEqual(t.desk.calls.filter(([name]) => name === 'loadGroups'), [['loadGroups', 'B', ['vocals', 'drums', 'bass', 'other']]]);
+  assert.match(t.container.querySelector('.stem-desk__status').textContent, /Loaded 4 stems into group B/);
+  assert.ok(badges(t.row('track-2')).includes('On B'));
+  assert.equal(document.activeElement, t.row('track-2').querySelector('.record-crate__load--b'), 'focus returns to the Load that was pressed');
+});
+
+test('Crate: a track with no stems offers Separate, not Load, and a running job is not submitted twice', async () => {
+  const submitted = [];
+  const t = await crateDesk({
+    submitSeparationImpl: async (trackId, method) => {
+      submitted.push([trackId, method]);
+      return { id: 'job-new', status: 'queued' };
+    },
+    listJobsImpl: async () => ({ items: [{ id: 'job-5', kind: 'separate', status: 'running', request: { track_id: 'track-5' } }] }),
+  });
+  t.tab('crate').click();
+  await flush();
+  assert.equal(t.crateButton('track-3', '.record-crate__choose--a').disabled, true);
+  assert.equal(selectFor(t.container, 'A').value, '');
+  assert.equal(t.row('track-3').querySelector('.record-crate__load--a').disabled, true);
+  assert.match(t.row('track-3').textContent, /No stems yet\. Separate stems first/);
+  t.crateButton('track-3', '.record-crate__separate').click();
+  await flush();
+  assert.deepEqual(submitted, [['track-3', 'demucs']]);
+  assert.deepEqual(badges(t.row('track-3')).slice(-1), ['Separation queued']);
+  assert.equal(t.row('track-3').querySelector('.record-crate__separate').disabled, true);
+  assert.equal(t.crateButton('track-5', '.record-crate__separate').disabled, true, 'already separating');
+  assert.equal(t.calls.some(([name]) => name === 'createDesk'), false);
+});
+
+test('Crate: a Producer audition and its Undo stay put when the Crate tab is shown', async () => {
+  const t = await twoTrackDesk();
+  document.body.appendChild(t.container);
+  disposeAfter = t.dispose;
+  handMix(t);
+  t.ask.click();
+  t.hear.click();
+  suggestionHeard(t);
+  const crateTab = t.container.querySelector('[role="tab"][data-tab="crate"]');
+  const producerTab = t.container.querySelector('[role="tab"][data-tab="producer"]');
+  const strip = t.container.querySelector('.desk-rail__idea');
+  crateTab.click();
+  await flush();
+  suggestionHeard(t);
+  assert.equal(strip.hidden, false);
+  assert.match(strip.textContent, /Hearing the Producer’s suggestion/);
+  assert.equal(producerTab.dataset.pending, 'true');
+  assert.match(producerTab.textContent, /idea pending/);
+  strip.querySelector('button').click();
+  assert.equal(producerTab.getAttribute('aria-selected'), 'true');
+  assert.equal(t.hear.textContent, 'Hear mine', 'the audition is exactly where it was');
+  t.approve.click();
+  assert.equal(t.approve.textContent, 'Undo');
+  crateTab.click();
+  assert.match(strip.textContent, /Undo is in the Producer tab/);
+  producerTab.click();
+  t.approve.click();
+  mineHeard(t);
+  assert.equal(strip.hidden, true);
+  noPlay(t);
+});
+
+test('Crate: Expand is a non-modal overlay that Escape closes, returning focus', async () => {
+  const t = await crateDesk();
+  t.tab('crate').click();
+  await flush();
+  const expand = t.container.querySelector('.record-crate__expand');
+  const rail = t.container.querySelector('.desk-rail');
+  expand.click();
+  assert.equal(rail.classList.contains('desk-rail--expanded'), true);
+  assert.equal(expand.getAttribute('aria-expanded'), 'true');
+  assert.equal(document.activeElement, t.container.querySelector('.record-crate__search'));
+  document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(rail.classList.contains('desk-rail--expanded'), false);
+  assert.equal(document.activeElement, expand);
+  expand.click();
+  t.tab('producer').click();
+  assert.equal(rail.classList.contains('desk-rail--expanded'), false, 'showing the Producer closes the overlay');
+});
+
+test('Crate: the narrow-screen sheet holds the same Crate and returns focus to its button', async () => {
+  const t = await crateDesk();
+  const opener = t.container.querySelector('.stem-desk__crate-open');
+  assert.equal(t.container.querySelector('dialog'), null, 'no dialog exists until the sheet opens');
+  opener.focus();
+  opener.click();
+  await flush();
+  const sheet = t.container.querySelector('dialog.record-crate-sheet');
+  assert.equal(sheet.hasAttribute('open'), true);
+  assert.ok(sheet.querySelector('.record-crate'), 'the Crate moved into the sheet');
+  assert.equal(document.activeElement, sheet.querySelector('.record-crate__search'));
+  assert.equal(t.searches.length, 1);
+  sheet.querySelector('.record-crate-sheet__head button').click();
+  assert.equal(sheet.hasAttribute('open'), false);
+  assert.equal(sheet.isConnected, false, 'the closed sheet leaves the page');
+  assert.ok(t.container.querySelector('.desk-rail__crate .record-crate'), 'the Crate is back in its tab');
+  assert.equal(document.activeElement, opener);
+});
+
+// ---------------------------------------------------------------------------
+// OPERATION NEVER LOSE THE MIX: the shell sidebar hosts the desk's one rail.
+
+async function shellSidebar({ store = null, narrow = false } = {}) {
+  const { mountWorkspaceSidebar } = await import('../../src/twobecomeone/studio_static/js/components/workspace-sidebar.js');
+  window.matchMedia = () => ({ matches: narrow, addEventListener() {}, removeEventListener() {} });
+  const aside = document.createElement('aside');
+  const openButton = document.createElement('button');
+  openButton.id = 'sidebar-open';
+  openButton.hidden = true;
+  document.body.append(openButton, aside);
+  const memory = new Map();
+  const storage = { getItem: (k) => memory.get(k) ?? null, setItem: (k, v) => memory.set(k, String(v)) };
+  const sidebar = mountWorkspaceSidebar({ aside, openButton, store, storage });
+  return { sidebar, aside, openButton, memory };
+}
+
+test('Shell: the desk hands its one rail to the sidebar, and Hide/reopen keep the Crate as it was', async () => {
+  const shell = await shellSidebar();
+  const t = await crateDesk({ railHost: shell.sidebar });
+  await flush();
+  assert.equal(t.container.querySelector('.desk-rail'), null, 'nothing left in the desk column');
+  assert.ok(t.container.querySelector('.console-body--solo'));
+  assert.equal(document.querySelectorAll('.desk-rail').length, 1, 'one rail, one Producer, one Crate');
+  const rail = shell.aside.querySelector('.desk-rail');
+  assert.ok(rail);
+  assert.equal(shell.aside.hidden, false);
+  assert.equal(shell.openButton.hidden, false);
+  const tab = (name) => shell.aside.querySelector(`[role="tab"][data-tab="${name}"]`);
+  tab('crate').click();
+  await flush();
+  assert.equal(t.searches.length, 1);
+  const search = shell.aside.querySelector('input[type="search"]');
+  search.value = 'lant';
+  const row = shell.aside.querySelector('.record-crate__row .record-crate__item');
+  row.click();
+  const hide = shell.aside.querySelector('.workspace-sidebar__hide');
+  hide.click();
+  assert.equal(shell.aside.dataset.collapsed, 'true');
+  assert.equal(shell.aside.querySelector('.workspace-sidebar__body').hidden, true);
+  const reopen = shell.aside.querySelector('.workspace-sidebar__reopen');
+  assert.equal(reopen.hidden, false);
+  assert.equal(document.activeElement, reopen, 'focus moves to the reopen tab');
+  assert.equal(shell.memory.get('twobecomeone.sidebar.collapsed'), 'true');
+  reopen.click();
+  assert.equal(shell.aside.querySelector('.desk-rail'), rail, 'the same rail node');
+  assert.equal(search.value, 'lant');
+  assert.equal(row.getAttribute('aria-expanded'), 'true');
+  assert.equal(tab('crate').getAttribute('aria-selected'), 'true');
+  assert.equal(document.activeElement, tab('crate'));
+  assert.equal(t.searches.length, 1, 'hiding and reopening does not search again');
+  t.dispose();
+  disposeAfter = null;
+  assert.equal(document.querySelectorAll('.desk-rail').length, 0);
+  assert.equal(shell.aside.hidden, true);
+});
+
+test('Shell: an idea heard in Studio is kept from Library; the sidebar says where the Producer acts', async () => {
+  const { StateStore, registerReducers } = await import('../../src/twobecomeone/studio_static/js/state.js');
+  const store = registerReducers(new StateStore());
+  const shell = await shellSidebar({ store });
+  const ctx = mount({
+    tracks: [{ id: 'track-1', name: 'night-drive.wav' }, { id: 'track-2', name: 'slow-burn.wav' }],
+    variantsByTrack: {
+      'track-1': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-aaa' })),
+      'track-2': DEMUCS_QUAD.map((entry) => ({ ...entry, stem_set_id: 'set-bbb' })),
+    },
+    railHost: shell.sidebar,
+    store,
+  });
+  document.body.appendChild(ctx.container);
+  disposeAfter = ctx.dispose;
+  await flush();
+  selectFor(ctx.container, 'A').dispatchEvent(new window.Event('focus'));
+  await flush();
+  selectFor(ctx.container, 'A').value = 'track-1';
+  selectFor(ctx.container, 'B').value = 'track-2';
+  await loadGroup(ctx.container, 'A');
+  await loadGroup(ctx.container, 'B');
+  ctx.desk.setCrossfader(30);
+  const [ask, , hear, keep] = [...shell.aside.querySelectorAll('.stem-desk__proposal button')];
+  ask.click();
+  hear.click();
+  assert.equal(ctx.desk.crossfaderPosition, 50, 'the suggestion is heard');
+  store.dispatch({ type: 'route/set', route: 'library' });
+  const context = shell.aside.querySelector('.workspace-sidebar__context');
+  assert.equal(context.hidden, false);
+  assert.match(context.textContent, /act on the Performance desk/);
+  shell.aside.querySelector('.workspace-sidebar__hide').click();
+  await flush();
+  const reopen = shell.aside.querySelector('.workspace-sidebar__reopen');
+  assert.equal(reopen.dataset.pending, 'true', 'the collapsed tab shows a pending idea');
+  assert.match(reopen.textContent, /idea pending/);
+  reopen.click();
+  assert.equal(keep.textContent, 'Keep it');
+  keep.click();
+  assert.equal(keep.textContent, 'Undo');
+  store.dispatch({ type: 'route/set', route: 'studio' });
+  assert.equal(context.hidden, true);
+  keep.click();
+  assert.equal(ctx.desk.crossfaderPosition, 30, 'Undo returns the mix from before the idea');
+  assert.equal(ctx.desk.calls.some(([name]) => name === 'play'), false, 'nothing plays by itself');
+  // On the Arrangement surface the page has its own Producer; the desk's steps aside.
+  window.dispatchEvent(new window.CustomEvent('twobecomeone:studio-surface', { detail: { surface: 'arrangement' } }));
+  const producer = shell.aside.querySelector('.stem-desk__producer');
+  assert.equal(producer.dataset.away, 'true');
+  assert.match(producer.querySelector('.stem-desk__producer-away').textContent, /Arrangement has its own Producer/);
+  window.dispatchEvent(new window.CustomEvent('twobecomeone:studio-surface', { detail: { surface: 'performance' } }));
+  assert.equal(producer.dataset.away, 'false');
+  assert.equal(producer.querySelector('.stem-desk__producer-away').hidden, true);
+});
+
+test('Shell: the sheet takes the same rail and gives it back, with focus returned', async () => {
+  const shell = await shellSidebar();
+  const t = await crateDesk({ railHost: shell.sidebar });
+  await flush();
+  const rail = shell.aside.querySelector('.desk-rail');
+  shell.openButton.hidden = false;
+  shell.openButton.focus();
+  shell.openButton.click();
+  const sheet = document.querySelector('dialog.workspace-sheet');
+  assert.ok(sheet);
+  assert.equal(sheet.querySelector('.desk-rail'), rail, 'the same rail moved into the sheet');
+  assert.equal(shell.aside.querySelector('.desk-rail'), null);
+  [...sheet.querySelectorAll('button')].find((b) => b.textContent === 'Done').click();
+  assert.equal(document.querySelector('dialog.workspace-sheet'), null, 'the sheet exists only while open');
+  assert.equal(shell.aside.querySelector('.desk-rail'), rail);
+  assert.equal(document.activeElement, shell.openButton);
+  // The desk heading's Crate button opens the same sheet on the Crate tab.
+  t.container.querySelector('.stem-desk__crate-open').click();
+  await flush();
+  const again = document.querySelector('dialog.workspace-sheet');
+  assert.equal(again.querySelector('.desk-rail').dataset.tab, 'crate');
+  assert.equal(document.activeElement, again.querySelector('input[type="search"]'));
+  assert.equal(t.searches.length, 1);
+  shell.sidebar.closeSheet();
+  assert.equal(document.activeElement, t.container.querySelector('.stem-desk__crate-open'));
+});
+
+test('Shell: narrow screens keep the rail under the desk while the desk is on screen', async () => {
+  const { StateStore, registerReducers } = await import('../../src/twobecomeone/studio_static/js/state.js');
+  const store = registerReducers(new StateStore());
+  const shell = await shellSidebar({ store, narrow: true });
+  const t = await crateDesk({ railHost: shell.sidebar, store });
+  await flush();
+  const rail = document.querySelector('.desk-rail');
+  assert.equal(rail.parentElement, t.container.querySelector('.desk-rail-slot'));
+  store.dispatch({ type: 'route/set', route: 'engine' });
+  assert.equal(rail.parentElement, shell.aside.querySelector('.workspace-sidebar__body'));
+  store.dispatch({ type: 'route/set', route: 'studio' });
+  assert.equal(rail.parentElement, t.container.querySelector('.desk-rail-slot'));
+  window.dispatchEvent(new window.CustomEvent('twobecomeone:studio-surface', { detail: { surface: 'arrangement' } }));
+  assert.equal(rail.parentElement, shell.aside.querySelector('.workspace-sidebar__body'));
+  window.dispatchEvent(new window.CustomEvent('twobecomeone:studio-surface', { detail: { surface: 'performance' } }));
+  assert.equal(rail.parentElement, t.container.querySelector('.desk-rail-slot'));
 });

@@ -40,11 +40,15 @@ MIN_SIGNAL_DB = -60.0  # below this is considered silence
 # Decode
 # ---------------------------------------------------------------------------
 
-def decode_mono(path: str | Path, sr: int = 22050) -> np.ndarray:
+def decode_mono(
+    path: str | Path, sr: int = 22050, *, input_format: str | None = None
+) -> np.ndarray:
     """Decode any ffmpeg-readable audio to mono float64 at `sr`."""
     _require_ffmpeg()
     cmd = [
-        "ffmpeg", "-v", "error", "-i", str(path),
+        "ffmpeg", "-v", "error",
+        *(["-f", input_format] if input_format else []),
+        "-i", str(path),
         "-t", str(MAX_DECODE_SECONDS + 1),
         "-ac", "1", "-ar", str(sr), "-f", "f32le", "-",
     ]

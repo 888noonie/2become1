@@ -44,6 +44,14 @@ from .contracts import TERMINAL_JOB_STATES, JobKind
 # content hash, or the track id. Longer text is rejected rather than cut,
 # so a saved name is the name that was submitted.
 _TRACK_DISPLAY_NAME_LIMIT = 200
+# A stem name is a label on an existing role, never a replacement for the
+# role token used by paths_json and the audio route. Same limit and character
+# rules as a track label; oversized text is rejected rather than cut.
+_STEM_DISPLAY_NAME_LIMIT = 200
+_STEM_NAME_ROLES = frozenset(projects.DEMUCS_VARIANTS) | frozenset(
+    projects.CENTER_SIDE_VARIANTS
+)
+_STEM_ROLE_ORDER = ("vocals", "drums", "bass", "other", "center", "sides")
 # The Stem Desk plays through one 48 kHz context. A window is estimated at
 # the higher of the file rate and that context rate, so a section is refused
 # before ffmpeg runs when the decoded float buffer would not fit.
@@ -139,6 +147,25 @@ def clean_track_display_name(value: object) -> str:
     if len(cleaned) > _TRACK_DISPLAY_NAME_LIMIT:
         raise UserError(
             f"track name must be {_TRACK_DISPLAY_NAME_LIMIT} characters or fewer"
+        )
+    return cleaned
+
+
+def clean_stem_display_name(value: object) -> str:
+    """Return an owner-chosen stem label, or reject a blank or over-long one.
+
+    A stem label supplements the role (``vocals`` stays the role and the audio
+    path key). It never becomes a filename, and it is not sliced: text that is
+    still too long after sanitizing is an error.
+    """
+    if not isinstance(value, str):
+        raise UserError("stem name cannot be empty")
+    cleaned = media.sanitize_text(value, 10_000)
+    if not cleaned:
+        raise UserError("stem name cannot be empty")
+    if len(cleaned) > _STEM_DISPLAY_NAME_LIMIT:
+        raise UserError(
+            f"stem name must be {_STEM_DISPLAY_NAME_LIMIT} characters or fewer"
         )
     return cleaned
 from .jobs import CancellationToken, JobEngine, JobStore
@@ -772,6 +799,106 @@ class StudioService:
         """Backward-compatible list of active tracks (most recent first)."""
         return self.list_tracks_page(limit=limit)["items"]
 
+    @staticmethod
+    def _library_filters(status: str, source: str | None) -> tuple[list[str], list[Any]]:
+        """The Library's status/source predicate, shared by track and stem search."""
+        where: list[str] = []
+        params: list[Any] = []
+        if status == "active":
+            where.append("deleted_at IS NULL")
+        elif status == "trash":
+            where.append("deleted_at IS NOT NULL")
+        if source is not None:
+            where.append("source_kind = ?")
+            params.append(source)
+        return where, params
+
+    @staticmethod
+    def _id_batches(ids: list[str], size: int = 400):
+        for start in range(0, len(ids), size):
+            yield ids[start:start + size]
+
+    def _stem_search_matches(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        *,
+        status: str,
+        source: str | None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Return validated stem assets whose label, role or source name matches.
+
+        The result is grouped by the *original* track id. An entry is created
+        only when ``(stem_set_id, role)`` resolves to a real file beneath
+        ``stems/``. A malformed ``paths_json`` yields no entries, and a label
+        whose media vanished is not advertised. Custom labels and role tokens
+        are matched case-insensitively; the source track's display name is also
+        a match reason so a recording search can show its stems.
+
+        One track may contribute several entries (roles or sets); the caller
+        counts the track once, never the entries.
+        """
+        needle = query.casefold()
+        where = ["s.status = 'complete'"]
+        params: list[Any] = []
+        if status == "active":
+            where.append("t.deleted_at IS NULL")
+        elif status == "trash":
+            where.append("t.deleted_at IS NOT NULL")
+        if source is not None:
+            where.append("t.source_kind = ?")
+            params.append(source)
+        rows = conn.execute(
+            "SELECT s.id, s.track_id, s.method, s.paths_json, s.names_json,"
+            " t.display_name, t.original_name"
+            " FROM stem_sets s JOIN tracks t ON t.id = s.track_id"
+            f" WHERE {' AND '.join(where)}",
+            params,
+        ).fetchall()
+        matches: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            paths = self._read_stem_paths(row)
+            if not paths:
+                continue
+            names = self._stem_display_names(row)
+            track_name = row["display_name"] or row["original_name"]
+            name_hit = needle in str(track_name).casefold()
+            for role in _STEM_ROLE_ORDER:
+                rel = paths.get(role)
+                if not isinstance(rel, str):
+                    continue
+                label = names.get(role)
+                reasons: list[str] = []
+                if label and needle in label.casefold():
+                    reasons.append("label")
+                if needle in role.casefold():
+                    reasons.append("role")
+                if name_hit:
+                    reasons.append("track")
+                if not reasons:
+                    continue
+                if self._validated_stem_path(rel, role) is None:
+                    continue
+                matches.setdefault(row["track_id"], []).append({
+                    "stem_set_id": row["id"],
+                    "role": role,
+                    "display_name": label or role,
+                    "custom_name": role in names,
+                    "available": True,
+                    "method": row["method"],
+                    "audio_url": f"/api/stems/{row['id']}/audio?name={role}",
+                    "matched": reasons,
+                    "track_id": row["track_id"],
+                    "track_name": track_name,
+                })
+        for entries in matches.values():
+            entries.sort(key=lambda m: (
+                _STEM_ROLE_ORDER.index(m["role"]),
+                0 if m["method"] == "imported" else 1,
+                m["stem_set_id"],
+            ))
+        return matches
+
     def list_tracks_page(
         self,
         *,
@@ -788,6 +915,18 @@ class StudioService:
         ``active``, ``trash``, or ``all``. ``sort`` is allowlisted to name,
         created, bpm, or duration. ``source`` optionally filters by
         ``source_kind`` (upload/local/youtube).
+
+        When a query matches at least one validated stem, every item in that
+        response also carries ``match``:
+
+        ``{"track": bool, "stems": [stem match, ...]}``
+
+        ``match.track`` is the existing track-name/metadata match.
+        ``match.stems`` lists validated ``(stem_set_id, role)`` assets whose
+        custom label, role token or source track name contains the query.
+        ``total`` and pagination count **tracks**, so a track with several
+        matching stems is one result and cannot inflate the count. A query
+        with no stem matches keeps the original response shape exactly.
         """
         limit = max(1, min(100, limit))
         offset = max(0, offset)
@@ -798,38 +937,589 @@ class StudioService:
         if source is not None and source not in {"upload", "local", "youtube"}:
             raise UserError(f"unknown source: {source}")
 
-        where: list[str] = []
-        params: list[Any] = []
-        if status == "active":
-            where.append("deleted_at IS NULL")
-        elif status == "trash":
-            where.append("deleted_at IS NOT NULL")
-        if source is not None:
-            where.append("source_kind = ?")
-            params.append(source)
+        where, params = self._library_filters(status, source)
+        order_col = self._SORT_COLUMNS[sort]
+
+        stem_matches: dict[str, list[dict[str, Any]]] = {}
+        if query and query.strip():
+            with self._connect() as conn:
+                stem_matches = self._stem_search_matches(
+                    conn, query, status=status, source=source,
+                )
+
+        if not stem_matches:
+            # No validated stem matches: keep the original one-query path.
+            track_where = list(where)
+            track_params = list(params)
+            if query:
+                track_where.append(
+                    "(COALESCE(display_name, original_name) LIKE ? OR metadata_json LIKE ?)"
+                )
+                like = f"%{query}%"
+                track_params.extend([like, like])
+            clause = f"WHERE {' AND '.join(track_where)}" if track_where else ""
+            with self._connect() as conn:
+                total = conn.execute(
+                    f"SELECT COUNT(*) FROM tracks {clause}", track_params
+                ).fetchone()[0]
+                rows = conn.execute(
+                    f"SELECT * FROM tracks {clause}"
+                    f" ORDER BY {order_col} DESC LIMIT ? OFFSET ?",
+                    track_params + [limit, offset],
+                ).fetchall()
+            return {
+                "items": [self._track_dict(row) for row in rows],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+
+        # Stem-only matches can add tracks to the page, so the union of track
+        # matches and stem-match owners is ordered and paginated once, by track.
+        track_where = list(where)
+        track_params = list(params)
         if query:
-            where.append(
+            track_where.append(
                 "(COALESCE(display_name, original_name) LIKE ? OR metadata_json LIKE ?)"
             )
             like = f"%{query}%"
-            params.extend([like, like])
-
-        clause = f"WHERE {' AND '.join(where)}" if where else ""
-        order_col = self._SORT_COLUMNS[sort]
-
+            track_params.extend([like, like])
+        clause = f"WHERE {' AND '.join(track_where)}" if track_where else ""
         with self._connect() as conn:
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM tracks {clause}", params
-            ).fetchone()[0]
-            rows = conn.execute(
-                f"SELECT * FROM tracks {clause} ORDER BY {order_col} DESC LIMIT ? OFFSET ?",
-                params + [limit, offset],
-            ).fetchall()
+            track_ids = {
+                row["id"]
+                for row in conn.execute(f"SELECT id FROM tracks {clause}", track_params)
+            }
+            all_ids = list(track_ids | set(stem_matches))
+            sort_values: dict[str, Any] = {}
+            for batch in self._id_batches(all_ids):
+                placeholders = ", ".join("?" for _ in batch)
+                sort_values.update({
+                    row["id"]: row["sort_value"]
+                    for row in conn.execute(
+                        f"SELECT id, {order_col} AS sort_value FROM tracks"
+                        f" WHERE id IN ({placeholders})",
+                        batch,
+                    )
+                })
+            ordered = sorted(
+                (tid for tid in all_ids if tid in sort_values),
+                key=lambda tid: (sort_values[tid], tid),
+                reverse=True,
+            )
+            total = len(ordered)
+            page_ids = ordered[offset:offset + limit]
+            rows_by_id: dict[str, sqlite3.Row] = {}
+            if page_ids:
+                placeholders = ", ".join("?" for _ in page_ids)
+                rows_by_id = {
+                    row["id"]: row
+                    for row in conn.execute(
+                        f"SELECT * FROM tracks WHERE id IN ({placeholders})",
+                        page_ids,
+                    )
+                }
+        items = []
+        for tid in page_ids:
+            row = rows_by_id.get(tid)
+            if row is None:
+                continue
+            item = self._track_dict(row)
+            stems = stem_matches.get(tid, [])
+            item["match"] = {
+                # A source-name stem reason is also a track-name match. This
+                # keeps the flag truthful for a Unicode query where Python's
+                # casefold matches but SQLite's LIKE did not.
+                "track": tid in track_ids or any(
+                    "track" in stem["matched"] for stem in stems
+                ),
+                "stems": stems,
+            }
+            items.append(item)
         return {
-            "items": [self._track_dict(row) for row in rows],
+            "items": items,
             "total": total,
             "limit": limit,
             "offset": offset,
+        }
+
+    # ------------------------------------------------------------------
+    # Crate catalogue: a read-only projection of the existing Library.
+    #
+    # The route reuses ``list_tracks_page`` for search, filters, sorting and
+    # pagination. Readiness is re-derived from validated stem files on every
+    # request; separation jobs are reporting facts, never the readiness
+    # authority. No audio, filesystem path, raw metadata blob or credential is
+    # returned.
+    # ------------------------------------------------------------------
+
+    _CRATE_QUAD_ROLES = projects.DEMUCS_VARIANTS
+    _CRATE_CHANNEL_ROLES = projects.CENTER_SIDE_VARIANTS
+    _CRATE_ROLE_ORDER = projects.DEMUCS_VARIANTS + projects.CENTER_SIDE_VARIANTS
+    _CRATE_ACTIVE_SEPARATION = frozenset({"queued", "running"})
+    _CRATE_ACTION_ORDER = (
+        "open", "preview", "choose_A", "choose_B", "separate",
+        "add_arrangement", "restore",
+    )
+    _CRATE_MAX_POSSIBLE_VERSIONS = 5
+
+    @staticmethod
+    def _sql_placeholders(values: list[Any] | tuple[Any, ...]) -> str:
+        return ", ".join("?" for _ in values)
+
+    @staticmethod
+    def _crate_match_text(value: Any) -> str:
+        """Normalize a title/artist for the advisory possible-version match.
+
+        This is deliberately deterministic: no model, no fuzzy scoring. It
+        removes bracketed qualifiers and a trailing ``- Topic`` so an official
+        upload and a re-upload can be *suggested* as the same recording. It
+        never merges anything.
+        """
+        text = media.sanitize_text(str(value or ""), 300).casefold()
+        text = re.sub(r"[\(\[\{][^\)\]\}]*[\)\]\}]", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"\s*-\s*topic$", "", text)
+        return text
+
+    def _crate_youtube_id(self, fact: dict[str, Any]) -> str | None:
+        """Return the canonical 11-character YouTube id for a stored track.
+
+        Prefers the sanitized ``metadata.video_id`` (now normalized from
+        yt-dlp's ``id``), then ``metadata.webpage_url``, then the canonical
+        ``source_ref``. A row stored by the CLI with a raw URL still resolves
+        because the URL is canonicalized here, never trusted verbatim.
+        """
+        if fact.get("source_kind") != "youtube":
+            return None
+        metadata = fact.get("metadata") or {}
+        candidate = metadata.get("video_id")
+        if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_-]{11}", candidate):
+            return candidate
+        for value in (metadata.get("webpage_url"), fact.get("source_ref")):
+            if not isinstance(value, str) or not value.strip():
+                continue
+            try:
+                canonical = sources.canonicalize_youtube_url(value)
+            except UserError:
+                continue
+            return canonical.rsplit("=", 1)[-1]
+        return None
+
+    def _crate_external(self, fact: dict[str, Any], fallback_kind: str) -> dict[str, Any]:
+        video_id = self._crate_youtube_id(fact)
+        return {
+            "kind": fact.get("source_kind") or fallback_kind,
+            "external_id": f"youtube:{video_id}" if video_id else None,
+            "video_id": video_id,
+        }
+
+    def _crate_track_facts(
+        self, conn: sqlite3.Connection, track_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT id, content_sha256, metadata_json, source_ref, source_kind "
+            f"FROM tracks WHERE id IN ({self._sql_placeholders(track_ids)})",
+            track_ids,
+        ).fetchall()
+        facts: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            metadata: dict[str, Any] = {}
+            if row["metadata_json"]:
+                try:
+                    parsed = json.loads(row["metadata_json"])
+                except (TypeError, ValueError):
+                    parsed = {}
+                if isinstance(parsed, dict):
+                    metadata = parsed
+            facts[row["id"]] = {
+                "content_sha256": row["content_sha256"] or "",
+                "metadata": metadata,
+                "source_ref": row["source_ref"] or "",
+                "source_kind": row["source_kind"] or "",
+            }
+        return facts
+
+    def _crate_stem_summary(
+        self, entries: list[tuple[sqlite3.Row, dict[str, str]]]
+    ) -> dict[str, Any]:
+        """Classify the validated variants of one track.
+
+        ``entries`` are this track's complete sets, already ordered
+        imported-first then newest-first (the same preference as
+        ``list_stems``). A set only counts when every advertised file resolves
+        beneath the managed ``stems/`` root.
+        """
+        roles = [
+            name for name in self._CRATE_ROLE_ORDER
+            if any(name in valid for _, valid in entries)
+        ]
+        quad_entry = next(
+            (entry for entry in entries
+             if all(role in entry[1] for role in self._CRATE_QUAD_ROLES)),
+            None,
+        )
+        channel_entry = next(
+            (entry for entry in entries
+             if all(role in entry[1] for role in self._CRATE_CHANNEL_ROLES)),
+            None,
+        )
+        if quad_entry is not None:
+            status = "quad"
+        elif all(role in roles for role in self._CRATE_CHANNEL_ROLES):
+            status = "center_sides"
+        elif roles:
+            status = "partial"
+        else:
+            status = "none"
+        # Describe the one set that supplies the reported type. A partial
+        # track assembled from different sets has no single set id, so the
+        # identifiers are null rather than a guess.
+        primary = quad_entry or channel_entry
+        if primary is None and len(entries) == 1:
+            primary = entries[0]
+        return {
+            "status": status,
+            "available": bool(roles),
+            "quad": quad_entry is not None,
+            "roles": roles,
+            "method": primary[0]["method"] if primary else None,
+            "model_name": primary[0]["model_name"] if primary else None,
+            "stem_set_id": primary[0]["id"] if primary else None,
+        }
+
+    def _crate_stem_summaries(
+        self, conn: sqlite3.Connection, facts: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        hashes = sorted({
+            fact["content_sha256"] for fact in facts.values() if fact["content_sha256"]
+        })
+        if not hashes:
+            return {}
+        rows = conn.execute(
+            "SELECT * FROM stem_sets WHERE status = 'complete' "
+            f"AND track_sha256 IN ({self._sql_placeholders(hashes)}) "
+            "ORDER BY CASE method WHEN 'imported' THEN 0 ELSE 1 END, "
+            "created_at DESC, id DESC",
+            hashes,
+        ).fetchall()
+        grouped: dict[str, list[tuple[sqlite3.Row, dict[str, str]]]] = {}
+        for row in rows:
+            try:
+                paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+            except (TypeError, ValueError):
+                paths = {}
+            if not isinstance(paths, dict):
+                continue
+            valid = {
+                name: rel for name, rel in paths.items()
+                if name != projects.FULL_VARIANT
+                and self._validated_stem_path(rel, name) is not None
+            }
+            if valid:
+                grouped.setdefault(row["track_sha256"], []).append((row, valid))
+        return {
+            track_id: self._crate_stem_summary(grouped.get(fact["content_sha256"], []))
+            for track_id, fact in facts.items()
+        }
+
+    def _crate_separation_jobs(
+        self, conn: sqlite3.Connection, track_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        sql = (
+            "SELECT id, status, error, request_json, created_at FROM jobs "
+            "WHERE kind = 'separate' "
+            f"AND json_extract(request_json, '$.track_id') IN "
+            f"({self._sql_placeholders(track_ids)}) "
+            "ORDER BY created_at DESC, id DESC"
+        )
+        try:
+            rows = conn.execute(sql, track_ids).fetchall()
+        except sqlite3.OperationalError:
+            # JSON1 is present in the supported Python builds; keep a bounded
+            # fallback so an unusual SQLite build still answers truthfully.
+            rows = conn.execute(
+                "SELECT id, status, error, request_json, created_at FROM jobs "
+                "WHERE kind = 'separate' ORDER BY created_at DESC, id DESC LIMIT 500"
+            ).fetchall()
+        wanted = set(track_ids)
+        latest: dict[str, sqlite3.Row] = {}
+        for row in rows:
+            try:
+                request = json.loads(row["request_json"]) if row["request_json"] else {}
+            except (TypeError, ValueError):
+                request = {}
+            track_id = request.get("track_id") if isinstance(request, dict) else None
+            if track_id in wanted and track_id not in latest:
+                latest[track_id] = row
+        result: dict[str, dict[str, Any]] = {}
+        for track_id in track_ids:
+            row = latest.get(track_id)
+            if row is None:
+                result[track_id] = {
+                    "status": "none", "job_id": None, "active": False, "error": None,
+                }
+                continue
+            error = row["error"]
+            if error:
+                error = media.sanitize_text(str(error), 200) or None
+                if error:
+                    # The Crate never returns a filesystem path, even when a
+                    # job's stored error text happens to contain one.
+                    error = error.replace(str(self.data_dir), "managed data")
+                    error = error.replace(str(self.data_dir.resolve()), "managed data")
+            result[track_id] = {
+                "status": row["status"],
+                "job_id": row["id"],
+                "active": row["status"] in self._CRATE_ACTIVE_SEPARATION,
+                "error": error,
+            }
+        return result
+
+    def _crate_duplicate_candidates(
+        self,
+        conn: sqlite3.Connection,
+        tracks: list[dict[str, Any]],
+        facts: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Classify duplicates in one bounded batch query.
+
+        - ``exact_content``: same ``content_sha256``. The unique index means
+          this is normally empty; it still reports a legacy/corrupt pair.
+        - ``same_source``: same canonical YouTube id (verified same video,
+          possibly different encoded bytes).
+        - ``possible_versions``: same normalized title *and* artist, different
+          hash/source. Advisory only; never merged.
+        """
+        hashes = sorted({
+            fact["content_sha256"] for fact in facts.values() if fact["content_sha256"]
+        })
+        refs = {
+            fact["source_ref"] for fact in facts.values() if fact["source_ref"]
+        }
+        # A web import stores the canonical watch URL; the CLI stores the
+        # caller's string. Add the common stored forms for each page video id
+        # so one bounded query still finds the same source written differently.
+        for fact in facts.values():
+            video_id = self._crate_youtube_id(fact)
+            if video_id:
+                refs.update({
+                    f"https://www.youtube.com/watch?v={video_id}",
+                    f"https://youtu.be/{video_id}",
+                    f"https://www.youtube.com/shorts/{video_id}",
+                })
+        refs = sorted(refs)
+        names = sorted({track["name"] for track in tracks if track.get("name")})
+        clauses: list[str] = []
+        params: list[Any] = []
+        if hashes:
+            clauses.append(f"content_sha256 IN ({self._sql_placeholders(hashes)})")
+            params.extend(hashes)
+        if refs:
+            clauses.append(f"source_ref IN ({self._sql_placeholders(refs)})")
+            params.extend(refs)
+        if names:
+            clauses.append(
+                "LOWER(COALESCE(display_name, original_name)) IN "
+                f"({self._sql_placeholders(names)})"
+            )
+            params.extend(name.casefold() for name in names)
+        if not clauses:
+            return {}
+        rows = conn.execute(
+            "SELECT id, display_name, original_name, metadata_json, "
+            "content_sha256, source_ref, source_kind FROM tracks "
+            "WHERE deleted_at IS NULL AND (" + " OR ".join(clauses) + ")",
+            params,
+        ).fetchall()
+        candidates: list[dict[str, Any]] = []
+        for row in rows:
+            metadata: dict[str, Any] = {}
+            if row["metadata_json"]:
+                try:
+                    parsed = json.loads(row["metadata_json"])
+                except (TypeError, ValueError):
+                    parsed = {}
+                if isinstance(parsed, dict):
+                    metadata = parsed
+            candidates.append({
+                "id": row["id"],
+                "name": row["display_name"] or row["original_name"],
+                "content_sha256": row["content_sha256"] or "",
+                "metadata": metadata,
+                "source_ref": row["source_ref"] or "",
+                "source_kind": row["source_kind"] or "",
+            })
+        result: dict[str, dict[str, Any]] = {}
+        for track in tracks:
+            track_id = track["id"]
+            fact = facts.get(track_id, {})
+            video_id = self._crate_youtube_id(fact)
+            title, artist = self._crate_title_artist(fact, track["name"])
+            exact: list[str] = []
+            same: list[str] = []
+            possible: list[dict[str, Any]] = []
+            for candidate in candidates:
+                if candidate["id"] == track_id:
+                    continue
+                if (
+                    fact.get("content_sha256")
+                    and candidate["content_sha256"] == fact["content_sha256"]
+                ):
+                    exact.append(candidate["id"])
+                    continue
+                if video_id and self._crate_youtube_id(candidate) == video_id:
+                    same.append(candidate["id"])
+                    continue
+                if not artist:
+                    continue
+                candidate_title, candidate_artist = self._crate_title_artist(
+                    candidate, candidate["name"]
+                )
+                if title and title == candidate_title and artist == candidate_artist:
+                    possible.append({
+                        "track_id": candidate["id"],
+                        "name": candidate["name"],
+                        "reason": "same_title_and_artist",
+                    })
+            possible.sort(key=lambda entry: entry["track_id"])
+            result[track_id] = {
+                "exact_content": sorted(set(exact)),
+                "same_source": sorted(set(same)),
+                "possible_versions": possible[: self._CRATE_MAX_POSSIBLE_VERSIONS],
+            }
+        return result
+
+    @staticmethod
+    def _crate_title_artist(fact: dict[str, Any], name: str) -> tuple[str, str]:
+        metadata = fact.get("metadata") or {}
+        title = metadata.get("title") or name
+        artist = metadata.get("uploader") or metadata.get("channel")
+        return (
+            StudioService._crate_match_text(title),
+            StudioService._crate_match_text(artist),
+        )
+
+    def _crate_item(
+        self,
+        track: dict[str, Any],
+        fact: dict[str, Any],
+        stems: dict[str, Any] | None,
+        separation: dict[str, Any] | None,
+        duplicates: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        trashed = track.get("deleted_at") is not None
+        stems = stems or {
+            "status": "none", "available": False, "quad": False, "roles": [],
+            "method": None, "model_name": None, "stem_set_id": None,
+        }
+        separation = separation or {
+            "status": "none", "job_id": None, "active": False, "error": None,
+        }
+        duplicates = duplicates or {
+            "exact_content": [], "same_source": [], "possible_versions": [],
+        }
+        actions = ["open"]
+        if trashed:
+            actions.append("restore")
+        else:
+            actions.append("preview")
+            if stems["available"]:
+                actions.extend(["choose_A", "choose_B"])
+            if stems["quad"]:
+                actions.append("add_arrangement")
+            if not stems["quad"] and not separation["active"]:
+                actions.append("separate")
+        actions.sort(key=self._CRATE_ACTION_ORDER.index)
+        item = {
+            "track_id": track["id"],
+            "name": track["name"],
+            "artwork_url": track["artwork_url"],
+            "duration": track["duration"],
+            "bpm": track["bpm"],
+            "key": {
+                "tonic": track["key"]["tonic"],
+                "mode": track["key"]["mode"],
+                "confidence": track["key"]["confidence"],
+            },
+            "source": self._crate_external(fact, track["source"]["kind"]),
+            "stems": stems,
+            "separation": separation,
+            "content_sha256": fact.get("content_sha256") or None,
+            "duplicates": duplicates,
+            "actions": actions,
+        }
+        # `match` is present only for a search. It is the same object the
+        # Library item carries: the track-level flag plus validated stem
+        # assets, never the readiness summary above.
+        if "match" in track:
+            item["match"] = track["match"]
+        return item
+
+    def list_crate_page(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        query: str | None = None,
+        status: str = "active",
+        sort: str = "created",
+        source: str | None = None,
+    ) -> dict:
+        """Return one bounded Crate page over the existing Library.
+
+        Search, filters, sorting and pagination are delegated unchanged to
+        ``list_tracks_page``. Each item has exactly these keys:
+
+        ``track_id``, ``name``, ``artwork_url``, ``duration``, ``bpm``,
+        ``key`` (``tonic``/``mode``/``confidence``), ``source``
+        (``kind``/``external_id``/``video_id``), ``stems``
+        (``status``/``available``/``quad``/``roles``/``method``/
+        ``model_name``/``stem_set_id``), ``separation``
+        (``status``/``job_id``/``active``/``error``), ``content_sha256``,
+        ``duplicates`` (``exact_content``/``same_source``/
+        ``possible_versions``) and ``actions``. When a query matches at least
+        one validated stem, the item also carries ``match`` (the Library
+        object: a track flag and validated stem assets). The readiness
+        ``stems`` object above is unchanged and is not the search match.
+
+        ``stems.status`` is one of ``quad``, ``center_sides``, ``partial`` or
+        ``none``. It is derived from files that resolve beneath ``stems/`` at
+        request time, not from a completed job. ``separation.status`` is
+        ``none`` when no separation job exists.
+
+        Four batch queries follow the Library page: track facts, stem sets,
+        separation jobs and duplicate candidates. Their count does not grow
+        with the page size.
+        """
+        page = self.list_tracks_page(
+            limit=limit, offset=offset, query=query, status=status,
+            sort=sort, source=source,
+        )
+        tracks = page["items"]
+        if not tracks:
+            return {"items": [], "total": page["total"],
+                    "limit": page["limit"], "offset": page["offset"]}
+        track_ids = [track["id"] for track in tracks]
+        with self._connect() as conn:
+            facts = self._crate_track_facts(conn, track_ids)
+            stems = self._crate_stem_summaries(conn, facts)
+            separations = self._crate_separation_jobs(conn, track_ids)
+            duplicates = self._crate_duplicate_candidates(conn, tracks, facts)
+        return {
+            "items": [
+                self._crate_item(
+                    track,
+                    facts.get(track["id"], {}),
+                    stems.get(track["id"]),
+                    separations.get(track["id"]),
+                    duplicates.get(track["id"]),
+                )
+                for track in tracks
+            ],
+            "total": page["total"],
+            "limit": page["limit"],
+            "offset": page["offset"],
         }
 
     def update_track(self, track_id: str, **fields: Any) -> dict:
@@ -2417,6 +3107,15 @@ class StudioService:
                 return (row["id"], row["method"], row["model_name"], row["device"])
         return None
 
+    @staticmethod
+    def _read_stem_paths(row: sqlite3.Row) -> dict:
+        """Treat malformed legacy path maps as having no addressable stems."""
+        try:
+            paths = json.loads(row["paths_json"])
+        except (TypeError, ValueError):
+            return {}
+        return paths if isinstance(paths, dict) else {}
+
     def list_stems(self, track_id: str) -> dict:
         """List truthful available stems for a track.
 
@@ -2438,6 +3137,8 @@ class StudioService:
         variants: list[dict] = [
             {
                 "name": "full",
+                "display_name": "full",
+                "custom_name": False,
                 "stem_set_id": None,
                 "method": None,
                 "model_name": None,
@@ -2458,7 +3159,7 @@ class StudioService:
         best: tuple[int, sqlite3.Row, dict[str, str]] | None = None
         best_score = -1
         for row in rows:
-            paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+            paths = self._read_stem_paths(row)
             valid = {
                 name: rel for name, rel in paths.items()
                 if self._validated_stem_path(rel, name) is not None
@@ -2473,13 +3174,14 @@ class StudioService:
                 break
         if best is not None:
             _, row, valid = best
+            chosen_names = self._stem_display_names(row)
             # Quad lanes come from the chosen set only. Non-quad variants
             # (center/sides) may live in a different set and are still offered:
             # the desk ignores them when a quad exists, and the existing Stem
             # dialog needs them visible.
             extra: dict[str, sqlite3.Row] = {}
             for other in rows:
-                other_paths = json.loads(other["paths_json"]) if other["paths_json"] else {}
+                other_paths = self._read_stem_paths(other)
                 for name, rel in other_paths.items():
                     if name in valid or name in extra:
                         continue
@@ -2494,6 +3196,8 @@ class StudioService:
                 order.append(name)
                 variant = {
                     "name": name,
+                    "display_name": chosen_names.get(name) or name,
+                    "custom_name": name in chosen_names,
                     "stem_set_id": row["id"],
                     "method": row["method"],
                     "model_name": row["model_name"],
@@ -2514,10 +3218,13 @@ class StudioService:
                 variants.append(variant)
             for name in sorted(extra):
                 other = extra[name]
+                other_names = self._stem_display_names(other)
                 available[name] = True
                 order.append(name)
                 variants.append({
                     "name": name,
+                    "display_name": other_names.get(name) or name,
+                    "custom_name": name in other_names,
                     "stem_set_id": other["id"],
                     "method": other["method"],
                     "model_name": other["model_name"],
@@ -2528,6 +3235,148 @@ class StudioService:
         stems = sorted({"full", *available.keys()})
         variants.sort(key=lambda v: stems.index(v["name"]))
         return {"track_id": track_id, "stems": stems, "variants": variants}
+
+    @staticmethod
+    def _stem_display_names(row: sqlite3.Row) -> dict[str, str]:
+        """Read the owner-chosen labels for one stem set, defensively.
+
+        ``names_json`` is optional (older rows and every set that has never
+        been named). A corrupt or non-object value is treated as no names, so
+        a bad stored blob can never hide the role itself.
+        """
+        if "names_json" not in row.keys() or not row["names_json"]:
+            return {}
+        try:
+            raw = json.loads(row["names_json"])
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        names: dict[str, str] = {}
+        for role, value in raw.items():
+            if role not in _STEM_NAME_ROLES or not isinstance(value, str):
+                continue
+            cleaned = media.sanitize_text(value, _STEM_DISPLAY_NAME_LIMIT)
+            if cleaned:
+                names[role] = cleaned
+        return names
+
+    def stem_set_info(self, stem_set_id: str) -> dict:
+        """Describe one existing stem set without touching its media.
+
+        This is the reusable identity card for a separated stem: the original
+        track, the role token, the set id, the method/model and the owner's
+        label. ``name`` is always the role used by ``paths_json`` and the audio
+        route; ``display_name`` is the label a UI may show. Roles whose file no
+        longer validates are omitted, exactly as ``list_stems`` omits them.
+        """
+        row = self._stem_set_row(stem_set_id)
+        paths = self._read_stem_paths(row)
+        names = self._stem_display_names(row)
+        with self._connect() as conn:
+            track = conn.execute(
+                "SELECT display_name, original_name, source_kind, bpm, bpm_override"
+                " FROM tracks WHERE id = ?",
+                (row["track_id"],),
+            ).fetchone()
+        stems = []
+        for role in _STEM_ROLE_ORDER:
+            rel = paths.get(role)
+            if not isinstance(rel, str):
+                continue
+            if self._validated_stem_path(rel, role) is None:
+                continue
+            stems.append({
+                "name": role,
+                "display_name": names.get(role) or role,
+                "custom_name": role in names,
+                "audio_url": f"/api/stems/{stem_set_id}/audio?name={role}",
+            })
+        return {
+            "stem_set_id": row["id"],
+            "track_id": row["track_id"],
+            "track_name": (
+                (track["display_name"] or track["original_name"])
+                if track is not None else None
+            ),
+            "source_kind": track["source_kind"] if track is not None else None,
+            # Source tempo for an Arrangement asset's nativeBpm. It is the
+            # track's effective tempo, said to be entered only when the owner
+            # supplied an override. A stem does not get a second tempo here;
+            # target tempo and rate belong to the clip.
+            "bpm": (
+                None if track is None else (
+                    track["bpm_override"]
+                    if track["bpm_override"] is not None else track["bpm"]
+                )
+            ),
+            "bpm_source": (
+                None if track is None else (
+                    "entered" if track["bpm_override"] is not None else "measured"
+                )
+            ),
+            "method": row["method"],
+            "model_name": row["model_name"],
+            "device": row["device"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "stems": stems,
+        }
+
+    def set_stem_names(self, stem_set_id: str, changes: dict[str, str | None]) -> dict:
+        """Set or clear owner-chosen labels on an existing stem set.
+
+        The identity key is ``(stem_set_id, role)``. The role token, every
+        relative path, the media bytes, the source track and the separation
+        provenance are unchanged; only ``names_json`` is written. Passing
+        ``None`` for a role clears its label so the role shows again.
+
+        Every key and value is validated before the one write, so a request
+        naming an absent role makes no partial change.
+        """
+        if not isinstance(changes, dict) or not changes:
+            raise UserError("name at least one stem")
+        # One write lock covers the read, the validation and the single JSON
+        # write, so two simultaneous renames cannot overwrite each other's
+        # roles. Validation happens before any UPDATE, so a refusal writes
+        # nothing.
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM stem_sets WHERE id = ?", (stem_set_id,)
+                ).fetchone()
+                if row is None:
+                    raise UserError(f"unknown stem set: {stem_set_id}")
+                paths = self._read_stem_paths(row)
+                cleaned_changes: dict[str, str | None] = {}
+                for role, value in changes.items():
+                    if role not in _STEM_NAME_ROLES:
+                        raise UserError(f"unknown stem role: {role}")
+                    if role not in paths:
+                        raise UserError(
+                            f"stem '{role}' not found in stem set {stem_set_id}"
+                        )
+                    if value is not None and self._validated_stem_path(paths[role], role) is None:
+                        raise UserError(f"stem media is unavailable or corrupt: {role}")
+                    cleaned_changes[role] = (
+                        None if value is None else clean_stem_display_name(value)
+                    )
+                names = self._stem_display_names(row)
+                for role, value in cleaned_changes.items():
+                    if value is None:
+                        names.pop(role, None)
+                    else:
+                        names[role] = value
+                conn.execute(
+                    "UPDATE stem_sets SET names_json = ? WHERE id = ?",
+                    (json.dumps(names) if names else None, stem_set_id),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self.stem_set_info(stem_set_id)
 
     def stem_audio_path(self, stem_set_id: str, name: str) -> Path:
         """Resolve a stem's audio path via strict stem-set/name lookup.
@@ -2541,7 +3390,7 @@ class StudioService:
             ).fetchone()
         if row is None:
             raise UserError(f"unknown stem set: {stem_set_id}")
-        paths = json.loads(row["paths_json"]) if row["paths_json"] else {}
+        paths = self._read_stem_paths(row)
         rel = paths.get(name)
         if rel is None:
             raise UserError(f"stem '{name}' not found in stem set {stem_set_id}")
@@ -2549,6 +3398,60 @@ class StudioService:
         if resolved is None:
             raise UserError(f"stem media is unavailable or corrupt: {name}")
         return resolved
+
+    def stem_waveform(self, stem_set_id: str, name: str) -> dict:
+        """Read peaks of one stored WAV, cached by set, role and file identity."""
+        source = self.stem_audio_path(stem_set_id, name)
+        try:
+            stat = source.stat()
+        except OSError as exc:
+            raise UserError("stem media is unavailable") from exc
+        stamp = [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+        cache_dir = self.waveform_dir / "stems"
+        cache = cache_dir / f"{stem_set_id}.{name}.json"
+        try:
+            if not cache.is_symlink():
+                with cache.open(encoding="utf-8") as stored:
+                    cached = json.loads(stored.read(65_537))
+                if (
+                    isinstance(cached, dict)
+                    and cached.get("source") == stamp
+                    and cached.get("version") == media.WAVEFORM_VERSION
+                    and isinstance(cached.get("peaks"), list)
+                    and len(cached["peaks"]) == media.WAVEFORM_BINS
+                ):
+                    return cached
+        except (OSError, ValueError):
+            pass
+        try:
+            # Stored stems are WAV. Disallow probing other formats (including playlists).
+            payload = media.generate_waveform(source, input_format="wav")
+            layout = self._probe_audio_layout(source, input_format="wav")
+            payload.update({
+                "duration_sec": float(layout["duration"]),
+                "stem_set_id": stem_set_id,
+                "role": name,
+                "source": stamp,
+            })
+            encoded = json.dumps(payload, allow_nan=False)
+        except (UserError, OSError, ValueError) as exc:
+            raise UserError("stem waveform could not be read") from exc
+
+        tmp = None
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=cache_dir, mode="w", encoding="utf-8", delete=False) as handle:
+                tmp = Path(handle.name)
+                handle.write(encoded)
+            tmp.replace(cache)
+        except OSError:
+            # A cache write failure should not prevent auditioning a valid stem.
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        return payload
 
     def stem_audio_window(self, stem_set_id: str, name: str, *, start: float, duration: int) -> bytes:
         """Cut one stem to a shared musical section before the browser sees it.
@@ -2642,12 +3545,13 @@ class StudioService:
             raise UserError("the section is larger than the desk can fetch")
         return section
 
-    def _probe_audio_layout(self, path: Path) -> dict:
+    def _probe_audio_layout(self, path: Path, *, input_format: str | None = None) -> dict:
         """Read sample rate and channel count without decoding the whole file."""
         try:
             proc = subprocess.run(
                 [
                     "ffprobe", "-v", "error",
+                    *(["-f", input_format] if input_format else []),
                     "-select_streams", "a:0",
                     "-show_entries",
                     "stream=sample_rate,channels,sample_fmt,bits_per_raw_sample,"

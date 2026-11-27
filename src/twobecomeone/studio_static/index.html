@@ -14,7 +14,10 @@
   <link rel="stylesheet" href="/assets/styles/responsive.css">
   <link rel="stylesheet" href="/assets/styles/mashup-queue.css">
   <link rel="stylesheet" href="/assets/styles/console.css">
+  <link rel="stylesheet" href="/assets/styles/record-crate.css">
+  <link rel="stylesheet" href="/assets/styles/workspace.css">
   <link rel="stylesheet" href="/assets/styles/arrangement.css">
+  <link rel="stylesheet" href="/assets/styles/stem-focus.css">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -35,9 +38,13 @@
         </a>
         <a class="nav__link" href="#/engine" data-route="engine">Engine</a>
       </nav>
+      <button type="button" class="button button--sm sidebar-open" id="sidebar-open" aria-haspopup="dialog" hidden>Producer &amp; Crate<span class="sidebar-open__dot" aria-hidden="true"></span></button>
     </header>
 
-    <main id="main" class="view" tabindex="-1"></main>
+    <div class="workspace">
+      <main id="main" class="view" tabindex="-1"></main>
+      <aside id="workspace-sidebar" class="workspace-sidebar" aria-label="Producer and Crate" hidden></aside>
+    </div>
 
     <footer class="statusbar">
       <div class="now-playing" id="now-playing" hidden>

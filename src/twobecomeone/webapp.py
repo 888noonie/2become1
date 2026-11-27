@@ -186,6 +186,19 @@ class SeparationBody(BaseModel):
     method: Literal["auto", "demucs", "ffmpeg"] = "auto"
 
 
+class StemNamesPatchBody(BaseModel):
+    """Rename or clear labels for roles in one existing stem set.
+
+    Keys are validated against the set's own roles by the service, so an
+    unknown role is a 400 rather than a silently created label. ``null``
+    clears a label; the role token remains the fallback.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    names: dict[str, str | None] = Field(min_length=1, max_length=8)
+
+
 class StemCrateCreateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -423,6 +436,21 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
             raise UserError("waveform is unavailable for this track")
         return FileResponse(path, media_type="application/json")
 
+    @app.get("/api/crate")
+    def list_crate(
+        limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        q: str | None = Query(default=None),
+        status: Literal["active", "trash", "all"] = "active",
+        sort: Literal["name", "created", "bpm", "duration"] = "created",
+        source: Literal["upload", "local", "youtube"] | None = Query(default=None),
+    ):
+        """Read-only Library projection for the Crate; no audio or paths."""
+        return service.list_crate_page(
+            limit=limit, offset=offset, query=q, status=status, sort=sort,
+            source=source,
+        )
+
     # ------------------------------------------------------------------
     # Imports
     # ------------------------------------------------------------------
@@ -491,6 +519,16 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
     def list_stems(track_id: str):
         return service.list_stems(track_id)
 
+    @app.get("/api/stem-sets/{stem_set_id}")
+    def get_stem_set(stem_set_id: str):
+        """One stem set's identity card: track, roles and owner labels."""
+        return service.stem_set_info(stem_set_id)
+
+    @app.patch("/api/stem-sets/{stem_set_id}/names")
+    def patch_stem_names(stem_set_id: str, body: StemNamesPatchBody):
+        """Set or clear display names without renaming media or paths."""
+        return service.set_stem_names(stem_set_id, body.names)
+
     @app.post("/api/stems/stage", status_code=201)
     def stage_stem_file(file: UploadFile = File(...)):
         """Stage one supplied stem file and return an opaque key.
@@ -531,6 +569,11 @@ def create_app(data_dir: str | Path | None = None, *, bind_host: str | None = No
                 except Exception:
                     pass
             raise
+
+    @app.get("/api/stems/{stem_set_id}/waveform")
+    def stem_waveform(stem_set_id: str, name: str = Query(...)):
+        """Peaks of one stored stem (Stem-Focus). Reads the file, never writes it."""
+        return service.stem_waveform(stem_set_id, name)
 
     @app.get("/api/stems/{stem_set_id}/audio")
     def stem_audio(

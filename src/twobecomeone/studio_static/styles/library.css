@@ -277,3 +277,72 @@
   .track-list--list .track-card { grid-template-columns: auto minmax(0, 1fr) auto; }
   .track-list--list .track-card__actions { grid-column: auto; }
 }
+
+/* OPERATION OPEN THE RECORD SLEEVES: a recording's stems, beneath it. */
+.track-card__stems { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px solid var(--color-border); }
+.track-card__stems[hidden] { display: none; }
+.track-card__stems-head { margin: 0; font-size: var(--text-xs); color: var(--color-muted); }
+.stem-sleeve { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.stem-sleeve__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.stem-sleeve__row { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); min-width: 0; }
+.stem-sleeve__row.is-unavailable { opacity: 0.7; }
+.stem-sleeve__name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; }
+.stem-sleeve__label { overflow-wrap: anywhere; }
+.stem-sleeve__role, .stem-sleeve__facts, .stem-sleeve__from, .stem-sleeve__why { margin: 0; font-size: var(--text-xs); color: var(--color-muted); overflow-wrap: anywhere; }
+.stem-sleeve__actions, .stem-sleeve__form { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.stem-sleeve__actions .button, .stem-sleeve__form .button { min-height: 44px; }
+.stem-sleeve__input { flex: 1 1 12em; min-width: 0; min-height: 44px; }
+.stem-sleeve__status { margin: 0; font-size: var(--text-xs); }
+.stem-sleeve__status:empty, .stem-sleeve__empty:empty { display: none; }
+.stem-sleeve__empty { font-size: var(--text-xs); color: var(--color-muted); }
+.record-crate__stem-match, .record-crate__stems { display: flex; flex-direction: column; gap: 4px; padding: 0 8px 8px; }
+.record-crate__stem-head, .record-crate__stems-title { margin: 0; font-size: var(--text-xs); color: var(--color-muted); font-weight: 600; }
+
+/* Library cards: a header (disc, title, play), then one quiet row of actions.
+ * The card keeps its own height: a neighbour opening its stems never stretches it. */
+.track-list--grid { align-items: start; }
+.track-list .track-card {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-content: start;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-color: var(--color-border);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+.track-list .track-card:hover { border-color: var(--color-control-border); }
+.track-list .track-card.is-playing { border-color: var(--color-action); box-shadow: 0 0 0 1px var(--color-action) inset; }
+.track-list .track-card__art { width: 64px; }
+.track-list .track-card.is-playing .track-card__art { animation: track-card-spin 6s linear infinite; }
+@keyframes track-card-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .track-list .track-card.is-playing .track-card__art { animation: none; }
+}
+.track-list .track-card__identity { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.track-list .track-card__identity > * { max-width: 100%; }
+.track-list .track-card__title { font-size: var(--text-lg); line-height: 1.25; }
+.track-list .track-card__meta { gap: 0; }
+.track-list .track-card__meta > span + span::before { content: '·'; margin-inline: 6px; opacity: 0.6; }
+.track-card__badge {
+  margin-top: 4px; padding: 1px 8px; border-radius: 999px; font-size: var(--text-xs); font-weight: 700;
+  color: var(--color-background);
+}
+.track-card__badge--anchor { background: var(--color-anchor); }
+.track-card__badge--lead { background: var(--color-lead); }
+.track-list .track-card > .button--icon {
+  width: 48px; height: 48px; border-radius: 50%; border-color: var(--color-action); color: var(--color-action);
+}
+.track-list .track-card.is-playing > .button--icon { background: var(--color-action); color: var(--color-background); }
+.track-list .track-card__actions {
+  grid-column: 1 / -1;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+  align-items: center;
+}
+.track-card__actions [data-action="trash"], .track-card__actions [data-action="restore"] { margin-inline-start: auto; }
+.track-card__actions [aria-pressed="true"] {
+  background: var(--color-action); border-color: var(--color-action); color: var(--color-background);
+}
+.track-list .track-card.is-open { border-color: var(--color-control-border); }
+.track-list .track-card__stems { padding-top: var(--space-3); }

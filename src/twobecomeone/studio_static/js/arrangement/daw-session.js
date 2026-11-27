@@ -172,6 +172,117 @@ export class DawSession {
 
   endGesture() { this.edit.endGesture(); }
 
+  /**
+   * Paste a clipboard (edit-api clipboardFromClips / clipboardFromRegion) as
+   * ONE undoable pasteClipboard edit. A piece whose source is not decoded in
+   * this session (copied before Open) is decoded first under the usual
+   * limits; if the project changed while it decoded, nothing is pasted.
+   */
+  async pasteClipboard(clipboard, startBeat, trackIndex) {
+    const edit = this.edit;
+    const pieces = Array.isArray(clipboard?.pieces) ? clipboard.pieces : [];
+    const missing = [...new Map(pieces.filter((p) => p?.asset?.bufferReference && !this.buffers[p.asset.bufferReference])
+      .map((p) => [p.asset.bufferReference, p.asset])).values()];
+    for (const asset of missing) {
+      try {
+        await this.#decode(asset.bufferReference, asset.source?.section === 'full' ? DECODE_LIMITS.full : DECODE_LIMITS.section);
+      } catch (err) {
+        this.say('refused', 'PASTE_SOURCE_UNAVAILABLE', `the copied audio could not be loaded: ${errorText(err)}`);
+        this.#emit('refused');
+        return { ok: false, error: err };
+      }
+      if (this.edit !== edit || this._disposed) {
+        this.say('refused', 'PASTE_STALE', 'the arrangement changed while the copied audio loaded; nothing was pasted');
+        this.#emit('refused');
+        return { ok: false, error: new Error('stale paste') };
+      }
+    }
+    return this.apply({ name: 'pasteClipboard', args: { clipboard, startBeat, trackIndex } });
+  }
+
+  /**
+   * OPERATION OPEN THE RECORD SLEEVES: place ONE Library stem on the lane and
+   * beat the musician chose, as one undoable loadStemToTrack. It decodes the
+   * stem's own route (a section of it, or full length) under the usual
+   * limits, plays at its own speed, and never trims, moves or replaces a clip:
+   * a span that would overlap a clip on that lane is refused. It does not
+   * start playback. The asset keeps (stemSetId, role) and the original
+   * recording as provenance; the owner's label is looked up live, never
+   * stored.
+   *
+   * @param {{stemSetId, role, audioUrl, trackId, trackName, method?, modelName?}} stem
+   * @param {{trackIndex, startBeat, section: {startSec, seconds}|'full', url,
+   *          bpm?: number|null, bpmSource?: 'measured'|'entered'|null,
+   *          lengthSec?: number}} place  lengthSec (Stem-Focus selection) places
+   *          only that many source seconds from the section's start, in the
+   *          same single loadStemToTrack.
+   */
+  async placeStem(stem, place, { signal } = {}) {
+    const edit = this.edit;
+    const { trackIndex, startBeat, section, url } = place;
+    const refuse = (code, message) => {
+      this.say('refused', code, message);
+      this.#emit('refused');
+      return { ok: false, error: Object.assign(new Error(message), { code }) };
+    };
+    if (!Number.isInteger(trackIndex) || trackIndex < 0 || trackIndex >= this.state.tracks.length) {
+      return refuse('PLACE_LANE_REQUIRED', 'choose the lane the stem goes on');
+    }
+    if (!Number.isFinite(startBeat) || startBeat < 0) return refuse('PLACE_POSITION_REQUIRED', 'choose the bar the stem starts at');
+    const base = `/api/stems/${stem?.stemSetId}/audio?name=${stem?.role}`;
+    if (!stem || stem.audioUrl !== base || typeof url !== 'string' || !(url === base || url.startsWith(`${base}&`))) {
+      return refuse('PLACE_SOURCE_INVALID', 'that stem has no Studio audio route');
+    }
+    let record;
+    try {
+      record = await this.#decode(url, section === 'full' ? DECODE_LIMITS.full : DECODE_LIMITS.section, signal);
+    } catch (err) {
+      return refuse('PLACE_SOURCE_UNAVAILABLE', `the stem could not be loaded: ${errorText(err)}`);
+    }
+    if (this.edit !== edit || this._disposed) {
+      return refuse('PLACE_STALE', 'the arrangement changed while the stem loaded; nothing was placed');
+    }
+    // Natural speed: the clip's length in beats is its seconds at the project tempo.
+    const wanted = Number.isFinite(place.lengthSec) && place.lengthSec > 0 ? Math.min(place.lengthSec, record.durationSec) : null;
+    const lengthBeats = (wanted ?? record.durationSec) * (this.state.transport.masterBpm / 60);
+    const end = startBeat + lengthBeats;
+    const lane = this.state.tracks[trackIndex];
+    const blocking = this.state.clips.filter((c) => c.trackIndex === trackIndex
+      && c.timelineStartBeat < end - 1e-9 && c.timelineStartBeat + c.durationBeats > startBeat + 1e-9);
+    if (blocking.length) {
+      const bpb = this.state.transport.timeSignature[0];
+      const bars = blocking.map((c) => `bar ${Math.floor(c.timelineStartBeat / bpb) + 1}`).join(', ');
+      return refuse('PLACE_OCCUPIED', `${lane.name} already has ${blocking.length === 1 ? 'a clip' : `${blocking.length} clips`} in that span (${bars}). Nothing was moved or replaced; choose a free bar or another lane`);
+    }
+    const bpm = Number.isFinite(place.bpm) && place.bpm > 0 ? place.bpm : null;
+    const roleText = ROLE_LABEL[stem.role] ?? stem.role;
+    return this.apply({
+      name: 'loadStemToTrack',
+      args: {
+        trackIndex,
+        startBeat,
+        naturalSpeed: true,
+        reuseAsset: true,
+        ...(wanted !== null ? { sourceOffsetSec: 0, durationBeats: lengthBeats } : {}),
+        audioFile: {
+          // A stable name from the recording and the role token; the owner's
+          // label is shown live from the stem set, so a rename never edits
+          // a saved arrangement.
+          name: `${stem.trackName || stem.trackId || 'Library'} — ${roleText}`,
+          durationSec: record.durationSec,
+          bufferReference: url,
+          nativeBpm: bpm,
+          nativeBpmSource: bpm ? (place.bpmSource === 'entered' ? 'owner' : 'analysis') : undefined,
+          source: {
+            trackId: stem.trackId ?? null, title: stem.trackName ?? null, role: stem.role,
+            method: stem.method ?? null, modelName: stem.modelName ?? null, stemSetId: stem.stemSetId,
+            section, origin: 'library-stem',
+          },
+        },
+      },
+    });
+  }
+
   undo() {
     if (!this.edit.undo()) return false;
     this.#afterEdit();

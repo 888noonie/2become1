@@ -12,9 +12,11 @@
 
 import { createElement, replaceChildren } from '../dom.js';
 import {
-  discardStagedStems, importStemSet, listJobs, listStems, listTracks,
+  discardStagedStems, get, importStemSet, listJobs, listStems, listTracks, patch,
   stageStemFile, submitSeparation, watchJob,
 } from '../api.js';
+import { createCrateSource } from '../record-crate.js';
+import { mountRecordCrate } from './record-crate-panel.js';
 import { StemDesk, STEM_DESK_FULL_LIMITS, STEM_DESK_LIMITS } from '../runtime/stem-desk.js';
 import {
   applyStemDeskMix,
@@ -27,6 +29,7 @@ import {
 
 /** Fired by whichever Studio instrument starts playing; the others stop. */
 export const EXCLUSIVE_PLAY_EVENT = 'twobecomeone:exclusive-play';
+let deskInstance = 0;
 const STEM_ORDER = ['vocals', 'drums', 'bass', 'other', 'center', 'sides'];
 const QUAD_NAMES = ['vocals', 'drums', 'bass', 'other'];
 const GROUP_IDS = ['A', 'B'];
@@ -196,6 +199,13 @@ export function mountStemDeskPanel({
   // accepted, so the panel reports that audio is unavailable instead.
   audioContextFactory = () => new AudioContext({ sampleRate: 48000 }),
   onAnnounce = null,
+  // The Crate shares the Producer's column and reads Library facts from /api/crate.
+  crateSource = null,
+  mountCrate = mountRecordCrate,
+  // OPERATION NEVER LOSE THE MIX: the application shell may host the
+  // Producer/Crate rail in its own sidebar ({ attach(rail, api), openSheet }).
+  // Without one the rail stays in the desk's right column, as before.
+  railHost = null,
 } = {}) {
   if (!container) throw new Error('mountStemDeskPanel requires a container');
 
@@ -212,6 +222,7 @@ export function mountStemDeskPanel({
   const groupControls = createElement('div', { class: 'stem-desk__groups' });
   const groupSelects = {};
   const groupButtons = {};
+  const groupUnloadButtons = {};
   const groupChoose = {};
   const groupImport = {};
   const groupProcess = {};
@@ -235,11 +246,19 @@ export function mountStemDeskPanel({
       'aria-label': `Add / Process Track for group ${groupId}`,
     });
     const loadButton = createElement('button', {
-      class: 'button button--primary stem-desk__load',
+      class: 'button button--primary',
       type: 'button',
       text: `Load ${groupId}`,
       'aria-label': `Load stems ${groupId}`,
       dataset: { group: groupId },
+    });
+    const unloadButton = createElement('button', {
+      class: 'button button--sm',
+      type: 'button',
+      text: 'Unload stems',
+      'aria-label': `Unload stems from group ${groupId}`,
+      'aria-describedby': 'stem-desk-unload-hint',
+      disabled: 'true',
     });
     const importStemsButton = createElement('button', {
       class: 'button button--sm',
@@ -272,7 +291,7 @@ export function mountStemDeskPanel({
     }, [
       createElement('h3', { class: 'stem-desk__source-title', text: `Group ${groupId}` }),
       select,
-      loadButton,
+      createElement('div', { class: 'stem-desk__actions stem-desk__source-actions' }, [loadButton, unloadButton]),
       createElement('details', { class: 'source-options' }, [
         createElement('summary', { text: 'Sources & section' }),
         createElement('div', { class: 'stem-desk__actions' }, [chooseLibrary, addOrProcess, importStemsButton]),
@@ -284,6 +303,7 @@ export function mountStemDeskPanel({
     ]);
     groupSelects[groupId] = select;
     groupButtons[groupId] = loadButton;
+    groupUnloadButtons[groupId] = unloadButton;
     groupChoose[groupId] = chooseLibrary;
     groupProcess[groupId] = addOrProcess;
     groupImport[groupId] = importStemsButton;
@@ -363,13 +383,72 @@ export function mountStemDeskPanel({
     proposalStatus,
     proposalDetails,
   ]);
+  // Shown instead of the desk Producer's controls while another Producer is
+  // in charge of the page (the Arrangement surface has its own).
+  const producerAway = createElement('p', { class: 'stem-desk__producer-away', hidden: 'true' });
+  producer.appendChild(producerAway);
+
+  // The right column holds two tabs: Producer and Crate. They take turns in
+  // the same width, so the eight strips never get narrower. While the
+  // Producer has an idea pending, a strip above the Crate says so.
+  deskInstance += 1;
+  const railId = `stem-desk-${deskInstance}`;
+  const producerTab = createElement('button', {
+    type: 'button', role: 'tab', id: `${railId}-tab-producer`, class: 'desk-rail__tab',
+    'aria-selected': 'true', 'aria-controls': `${railId}-producer`, dataset: { tab: 'producer' },
+  }, [
+    createElement('span', { text: 'Producer' }),
+    createElement('span', { class: 'desk-rail__pending-dot', 'aria-hidden': 'true' }),
+    createElement('span', { class: 'sr-only desk-rail__pending-text' }),
+  ]);
+  const crateTab = createElement('button', {
+    type: 'button', role: 'tab', id: `${railId}-tab-crate`, class: 'desk-rail__tab',
+    'aria-selected': 'false', 'aria-controls': `${railId}-crate`, tabindex: '-1', dataset: { tab: 'crate' },
+  }, [createElement('span', { text: 'Crate' })]);
+  const railTabs = createElement('div', {
+    class: 'desk-rail__tabs', role: 'tablist', 'aria-label': 'Producer and Crate',
+  }, [producerTab, crateTab]);
+  producer.id = `${railId}-producer`;
+  producer.setAttribute('role', 'tabpanel');
+  producer.setAttribute('aria-labelledby', producerTab.id);
+  const ideaStripText = createElement('span', { class: 'desk-rail__idea-text' });
+  const ideaStripButton = createElement('button', {
+    type: 'button', class: 'button button--sm desk-rail__idea-show', text: 'Show Producer',
+  });
+  const ideaStrip = createElement('div', {
+    class: 'desk-rail__idea', hidden: 'true',
+  }, [ideaStripText, ideaStripButton]);
+  const crateExpand = createElement('button', {
+    type: 'button', class: 'button button--sm record-crate__expand', text: 'Expand',
+    'aria-expanded': 'false', 'aria-controls': `${railId}-crate`,
+  });
+  const crateHost = createElement('div', { class: 'record-crate-host' });
+  const cratePanel = createElement('section', {
+    id: `${railId}-crate`, class: 'desk-rail__crate', role: 'tabpanel',
+    'aria-labelledby': crateTab.id, hidden: 'true',
+  }, [ideaStrip, crateHost]);
+  const rail = createElement('div', { class: 'desk-rail', dataset: { tab: 'producer' } }, [railTabs, producer, cratePanel]);
+  // With a shell host the rail lives in the sidebar; narrow screens put it
+  // back here, under the desk, while the desk is on screen.
+  const railSlot = createElement('div', { class: 'desk-rail-slot' });
+  // Below 1100 px the column sits under the desk, so the desk heading gets
+  // a Crate button that opens the Crate as a sheet.
+  const crateOpen = createElement('button', {
+    type: 'button', class: 'button button--sm stem-desk__crate-open', text: 'Crate',
+    'aria-haspopup': 'dialog',
+  });
 
   container.replaceChildren(root);
   replaceChildren(root, [
-    createElement('header', { class: 'console-heading' }, [title]),
+    createElement('header', { class: 'console-heading' }, [title, crateOpen]),
     createElement('div', { class: 'console-body' }, [
       createElement('div', { class: 'console-banks' }, [
         groupControls,
+        createElement('p', {
+          id: 'stem-desk-unload-hint',
+          class: 'stem-desk__meta',
+          text: 'Unloading during playback stops both banks. The other bank stays loaded.',
+        }),
         createElement('div', { class: 'stem-desk__master' }, [transport, crossfader]),
         lanesMount,
         createElement('div', { class: 'standby-banks' }, GROUP_IDS.map(id =>
@@ -380,19 +459,20 @@ export function mountStemDeskPanel({
         )),
         status, note, policy, memory,
       ]),
-      producer,
+      railHost ? railSlot : rail,
     ]),
   ]);
+  if (railHost) root.querySelector('.console-body')?.classList.add('console-body--solo');
 
   let desk = null;
-  const aborts = new Map();
+  let activeLoad = null;
   const separationWatches = new Map();
   const readinessTokens = { A: 0, B: 0 };
   let positionTimer = null;
   let disposed = false;
   let tracksLoaded = false;
   let tracksPending = null;
-  let loadingCount = 0;
+  let playRequest = 0;
   let pendingProposal = null;
   let proposalPreviewed = false;
   // One idea at a time, from Hear it (or Approve) until it is set aside or
@@ -403,10 +483,67 @@ export function mountStemDeskPanel({
   const auditioning = () => idea !== null && idea.hearing !== 'kept';
   const rowViews = new Map();
   const groupViews = new Map();
+  // Which Library track each bank actually holds. Set only when a load
+  // commits; a refused reload keeps the previous track, and unload clears it.
+  const loadedTrackIds = { A: null, B: null };
+  let lastMessage = '';
+  const sessionListeners = new Set();
+  let sessionQueued = false;
+
+  function producerPendingText() {
+    if (idea?.hearing === 'idea') return 'Hearing the Producer’s suggestion.';
+    if (idea?.hearing === 'mine') return 'Hearing your mix. The suggestion is still waiting.';
+    if (idea?.hearing === 'kept') return 'Suggestion kept. Undo is in the Producer tab.';
+    if (pendingProposal) return 'A Producer proposal is waiting.';
+    return '';
+  }
+
+  /** What the Crate may read: selection, loaded tracks, loading and transport. */
+  function deskSession() {
+    const state = desk?.state();
+    const live = new Set((state?.groups || []).map((group) => group.trackId));
+    const loading = activeLoad && !activeLoad.controller.signal.aborted ? activeLoad.groupId : null;
+    const banks = {};
+    for (const id of GROUP_IDS) {
+      banks[id] = {
+        selectedTrackId: groupSelects[id].value || null,
+        loadedTrackId: live.has(id) ? loadedTrackIds[id] : null,
+        loading: loading === id,
+      };
+    }
+    return {
+      banks,
+      loading,
+      playing: Boolean(state?.playing),
+      message: lastMessage,
+      producer: producerPendingText() || null,
+    };
+  }
+
+  function emitSession() {
+    if (sessionQueued || disposed) return;
+    sessionQueued = true;
+    queueMicrotask(() => {
+      sessionQueued = false;
+      if (disposed) return;
+      const snapshot = deskSession();
+      for (const listener of sessionListeners) {
+        try { listener(snapshot); } catch { /* a viewer must not break the desk */ }
+      }
+    });
+  }
+
+  function syncRailIdea() {
+    const text = producerPendingText();
+    ideaStrip.hidden = !text;
+    ideaStripText.textContent = text;
+    producerTab.dataset.pending = text ? 'true' : 'false';
+    producerTab.querySelector('.desk-rail__pending-text').textContent = text ? ' (idea pending)' : '';
+  }
 
   function syncProposalButtons() {
     const groups = desk?.state()?.groups?.length || 0;
-    askButton.disabled = loadingCount > 0 || groups < 1 ? 'true' : undefined;
+    askButton.disabled = activeLoad || groups < 1 ? 'true' : undefined;
     previewButton.disabled = pendingProposal && !auditioning() ? undefined : 'true';
     hearButton.disabled = pendingProposal ? undefined : 'true';
     hearButton.textContent = idea?.hearing === 'idea' ? 'Hear mine' : 'Hear it';
@@ -422,13 +559,17 @@ export function mountStemDeskPanel({
       approveButton.disabled = pendingProposal && proposalPreviewed ? undefined : 'true';
     }
     rejectButton.disabled = pendingProposal ? undefined : 'true';
+    syncRailIdea();
+    emitSession();
   }
 
   function syncLoadButtons() {
+    const groups = desk?.state()?.groups || [];
     for (const id of GROUP_IDS) {
-      const button = groupButtons[id];
-      if (!button) continue;
-      button.disabled = loadingCount > 0 ? 'true' : undefined;
+      const loaded = groups.some((group) => group.trackId === id);
+      const loading = activeLoad?.groupId === id && !activeLoad.controller.signal.aborted;
+      groupButtons[id].disabled = Boolean(activeLoad);
+      groupUnloadButtons[id].disabled = !loaded && !loading;
     }
     syncProposalButtons();
   }
@@ -497,6 +638,8 @@ export function mountStemDeskPanel({
 
   function say(message) {
     status.textContent = message;
+    lastMessage = message;
+    emitSession();
     try {
       onAnnounce?.(message);
     } catch {
@@ -852,9 +995,16 @@ export function mountStemDeskPanel({
   }
 
   let unsubscribeNames = () => {};
+  // The Crate follows Library changes made anywhere (rename, import, delete)
+  // with one debounced re-read, once it has been opened.
+  let crateRefreshTimer = null;
+  let crateRefresh = () => {};
   if (store && typeof store.subscribeSlice === 'function') {
     unsubscribeNames = store.subscribeSlice('library', () => {
-      if (!disposed) refreshDisplayedNames();
+      if (disposed) return;
+      refreshDisplayedNames();
+      clearTimeout(crateRefreshTimer);
+      crateRefreshTimer = setTimeout(() => { if (!disposed) crateRefresh(); }, 400);
     });
   }
 
@@ -951,6 +1101,8 @@ export function mountStemDeskPanel({
       : 'Solo applies across both tracks. The crossfader and track levels can still silence a soloed lane.' + ONE_TRACK_POLICY;
 
     const liveGroupIds = new Set(groups.map((group) => group.trackId));
+    for (const id of GROUP_IDS) if (!liveGroupIds.has(id)) loadedTrackIds[id] = null;
+    emitSession();
     for (const [groupId, view] of groupViews) {
       if (!liveGroupIds.has(groupId)) {
         view.section.remove();
@@ -989,7 +1141,9 @@ export function mountStemDeskPanel({
         }, [heading, rows, level.row, timing.row]);
         view = { section, heading, rows, level, timing };
         groupViews.set(group.trackId, view);
-        lanesMount.appendChild(section);
+        // Insert a new A before a surviving B without remounting B's controls.
+        const nextBank = group.trackId === 'A' ? groupViews.get('B')?.section : null;
+        lanesMount.insertBefore(section, nextBank ?? null);
       }
       view.heading.textContent = `Group ${group.trackId} · ${group.title}`;
       view.level.input.value = String(group.levelDb ?? 0);
@@ -1041,20 +1195,24 @@ export function mountStemDeskPanel({
     if (state) updateCrossfader(state);
   }
 
-  function startPositionTimer() {
+  function clearPositionTimer() {
     window.clearInterval(positionTimer);
+    positionTimer = null;
+  }
+
+  function startPositionTimer() {
+    clearPositionTimer();
     positionTimer = window.setInterval(() => {
       if (!desk) return;
       const state = desk.state();
       if (state.status !== 'playing') {
-        window.clearInterval(positionTimer);
-        positionTimer = null;
+        clearPositionTimer();
         positionLabel.textContent = '0.0 s';
         refreshTransport(state);
         renderLanes(state);
         // A load in flight stops the transport by design; that is not the
         // programme reaching its end and must not be announced as such.
-        if (state.status === 'ready' && loadingCount === 0) say('The stem desk reached the end.');
+        if (state.status === 'ready' && !activeLoad) say('The stem desk reached the end.');
         return;
       }
       positionLabel.textContent = `${state.positionSeconds.toFixed(1)} s`;
@@ -1062,8 +1220,11 @@ export function mountStemDeskPanel({
   }
 
   playButton.addEventListener('click', async () => {
+    const request = ++playRequest;
+    const current = () => !disposed && request === playRequest;
     try {
       const before = await desk.resume();
+      if (!current()) return;
       // The accepted single-track desk loops, so preserve that exactly.
       // Two tracks are a performance mix: play once, stop at the longest lane,
       // because looping unequal-length tracks would wrap them out of phase.
@@ -1071,6 +1232,7 @@ export function mountStemDeskPanel({
       const loop = groups.length <= 1;
       // One instrument sounds at a time: the arrangement stops when the desk plays.
       window.dispatchEvent(new CustomEvent(EXCLUSIVE_PLAY_EVENT, { detail: { owner: 'desk' } }));
+      if (!current()) return;
       const state = desk.play({ loop });
       renderLanes(state);
       refreshTransport(state);
@@ -1090,20 +1252,21 @@ export function mountStemDeskPanel({
         );
       }
     } catch (err) {
-      say(err?.message || 'The stem desk could not start.');
+      if (current()) say(err?.message || 'The stem desk could not start.');
     }
   });
 
   const onExclusivePlay = (event) => {
-    if (event?.detail?.owner === 'desk' || !desk || desk.state().status !== 'playing') return;
-    stopButton.click();
+    if (event?.detail?.owner === 'desk' || !desk) return;
+    if (desk.state().status === 'playing') stopButton.click();
+    else playRequest += 1;
   };
   window.addEventListener(EXCLUSIVE_PLAY_EVENT, onExclusivePlay);
 
   stopButton.addEventListener('click', () => {
     if (!desk) return;
-    window.clearInterval(positionTimer);
-    positionTimer = null;
+    playRequest += 1;
+    clearPositionTimer();
     const state = desk.stop();
     renderLanes(state);
     positionLabel.textContent = '0.0 s';
@@ -1112,7 +1275,7 @@ export function mountStemDeskPanel({
   });
 
   askButton.addEventListener('click', () => {
-    if (!desk || loadingCount > 0) return;
+    if (!desk || activeLoad) return;
     if (idea) dropPendingProposal();
     const groups = desk.state().groups || [];
     if (groups.length < 2) {
@@ -1283,6 +1446,7 @@ export function mountStemDeskPanel({
     tracksPending = (async () => {
       try {
         const page = await listTracksImpl({ limit: 50 });
+        if (disposed) return false;
         const tracks = Array.isArray(page?.items)
           ? page.items
           : Array.isArray(page?.tracks)
@@ -1303,12 +1467,16 @@ export function mountStemDeskPanel({
           else if (options.length) select.value = options[0].value;
         }
         tracksLoaded = options.length > 0;
-        say(options.length
-          ? 'Choose separated tracks for A and B, then load each group.'
-          : 'No tracks are available.');
+        if (!activeLoad?.controller.signal.aborted) {
+          say(options.length
+            ? 'Choose separated tracks for A and B, then load each group.'
+            : 'No tracks are available.');
+        }
         return options.length > 0;
       } catch (err) {
-        say(`Could not list tracks: ${err?.message || 'request failed'}`);
+        if (!disposed && !activeLoad?.controller.signal.aborted) {
+          say(`Could not list tracks: ${err?.message || 'request failed'}`);
+        }
         return false;
       } finally {
         tracksPending = null;
@@ -1459,6 +1627,7 @@ export function mountStemDeskPanel({
     select.addEventListener('focus', () => { void ensureTracks(); });
     select.addEventListener('pointerdown', () => { void ensureTracks(); });
     select.addEventListener('change', () => {
+      emitSession();
       stopSeparationWatch(groupId);
       dropPendingProposal();
       void reportReadiness(groupId);
@@ -1467,29 +1636,69 @@ export function mountStemDeskPanel({
     groupImport[groupId].addEventListener('click', () => { openImportDialog(groupId); });
     groupProcess[groupId].addEventListener('click', () => { void onAdd(groupId); });
 
-    groupButtons[groupId].addEventListener('click', async () => {
-      // Reserve the single load slot BEFORE any await: two clicks while the
-      // library is still being fetched used to start two concurrent loads.
-      if (loadingCount > 0) return;
-      dropPendingProposal();
-      loadingCount += 1;
+    const unloadButton = groupUnloadButtons[groupId];
+    unloadButton.addEventListener('click', () => {
+      const before = desk?.state();
+      const loaded = before?.groups?.some((group) => group.trackId === groupId);
+      const load = activeLoad?.groupId === groupId ? activeLoad : null;
+      const loading = load && !load.controller.signal.aborted;
+      if (!loaded && !loading) return;
+
+      const restoreFocus = document.activeElement === unloadButton;
+      playRequest += 1;
+      readinessTokens[groupId] += 1;
+      if (loading) load.controller.abort();
+      if (loaded) {
+        clearPositionTimer();
+        dropPendingProposal();
+        const state = desk.unloadGroup(groupId);
+        renderLanes(state);
+        refreshTransport(state);
+        say(`Unloaded stems from group ${groupId}.${before.playing ? ' Playback stopped.' : ''}`);
+      } else {
+        say(`Cancelled the stem load for group ${groupId}.`);
+      }
       syncLoadButtons();
-      // Everything after the reservation lives inside this try/finally, so no
-      // early return (no track chosen, empty library, a throwing listener) can
-      // leave both buttons disabled for the life of the panel.
-      let controller = null;
+      if (restoreFocus) {
+        const next = groupButtons[groupId].disabled ? select : groupButtons[groupId];
+        if (!next.disabled) next.focus();
+      }
+    });
+
+    const loadButton = groupButtons[groupId];
+    loadButton.addEventListener('click', async (event) => {
+      // Keep the one load slot until a cancelled decode settles so rapid
+      // reloads cannot queue extra decoded buffers.
+      if (activeLoad) return;
+      const controller = new AbortController();
+      const { signal } = controller;
+      const load = { groupId, controller };
+      activeLoad = load;
+      // A native keyboard click has no click count. Disabling the button can
+      // drop focus to the body while the request is pending.
+      let restoreFocus = event.detail === 0 && document.activeElement === loadButton;
+      const relinquishFocus = () => {
+        restoreFocus = false;
+        document.removeEventListener('focusin', relinquishFocus, true);
+        document.removeEventListener('pointerdown', relinquishFocus, true);
+        window.removeEventListener('blur', relinquishFocus);
+      };
+      if (restoreFocus) {
+        document.addEventListener('focusin', relinquishFocus, true);
+        document.addEventListener('pointerdown', relinquishFocus, true);
+        window.addEventListener('blur', relinquishFocus);
+        signal.addEventListener('abort', relinquishFocus, { once: true });
+      }
       try {
+        dropPendingProposal();
+        syncLoadButtons();
         if (!tracksLoaded) await ensureTracks();
-        if (disposed) return;
+        if (disposed || signal.aborted) return;
         const trackId = select.value;
         if (!trackId) {
           say(`Choose a track for group ${groupId} first.`);
           return;
         }
-        aborts.get(groupId)?.abort();
-        controller = typeof AbortController === 'function' ? new AbortController() : null;
-        if (controller) aborts.set(groupId, controller);
-
         const sectionChoice = groupSection[groupId].value;
         const fullLength = sectionChoice === 'full';
         const startSeconds = Number(groupStart[groupId].value);
@@ -1499,8 +1708,8 @@ export function mountStemDeskPanel({
           return;
         }
         say(`Loading separated stems for group ${groupId}...`);
-        const stems = await listStemsImpl(trackId, controller?.signal);
-        if (disposed) return;
+        const stems = await listStemsImpl(trackId, signal);
+        if (disposed || signal.aborted) return;
 
         const variants = Array.isArray(stems?.variants) ? stems.variants : [];
         const lanes = selectLanes(variants);
@@ -1527,10 +1736,11 @@ export function mountStemDeskPanel({
             stemSetId: variant.stem_set_id,
           })),
         }], {
-          signal: controller?.signal,
+          signal,
           limits: fullLength ? STEM_DESK_FULL_LIMITS : STEM_DESK_LIMITS,
         });
-        if (disposed) return;
+        if (disposed || signal.aborted) return;
+        if (!state.playing) clearPositionTimer();
         renderLanes(state);
         refreshTransport(state);
         const groupLanes = state.lanes.filter((entry) => entry.trackId === groupId);
@@ -1557,11 +1767,13 @@ export function mountStemDeskPanel({
             `${detail?.code || 'Unavailable'} — ${detail?.message || detail?.name || 'no playable media'}. ${sectionNote}`,
           );
         } else if (detail) {
+          loadedTrackIds[groupId] = trackId;
           say(
             `Loaded ${groupLanes.length} stems into group ${groupId}. ` +
             `${detail.code || 'Unavailable'} — ${detail.message || detail.name}. ${sectionNote}`,
           );
         } else {
+          loadedTrackIds[groupId] = trackId;
           const silent = groupLanes
             .filter((entry) => entry.silent)
             .map((entry) => stemLabel(entry.name));
@@ -1573,25 +1785,205 @@ export function mountStemDeskPanel({
           );
         }
       } catch (err) {
-        say(`Could not load group ${groupId}: ${err?.message || 'request failed'}`);
+        if (!disposed && !signal.aborted) {
+          say(`Could not load group ${groupId}: ${err?.message || 'request failed'}`);
+        }
       } finally {
-        if (!controller || aborts.get(groupId) === controller) aborts.delete(groupId);
-        loadingCount = Math.max(0, loadingCount - 1);
-        syncLoadButtons();
+        const target = document.activeElement;
+        const shouldRestore = restoreFocus && !signal.aborted
+          && (target === document.body || target === loadButton);
+        relinquishFocus();
+        signal.removeEventListener('abort', relinquishFocus);
+        if (activeLoad === load) {
+          activeLoad = null;
+          if (!disposed) {
+            syncLoadButtons();
+            if (shouldRestore && loadButton.isConnected) loadButton.focus();
+          }
+        }
       }
     });
   }
 
+  // ---- The Crate ---------------------------------------------------------
+  // The bridge is the Crate's only way into the desk. Choose sets the bank's
+  // own selector and fires its change handler; Load presses the bank's own
+  // Load button; Separate uses the same job lookup and request as
+  // Add / Process Track. None of them creates an AudioContext.
+  async function separateForCrate(track) {
+    const active = await findActiveSeparation(track.id);
+    if (disposed) return null;
+    let job = active;
+    if (!job) {
+      job = await submitSeparationImpl(track.id, 'demucs');
+      if (disposed) return null;
+      if (job && store) {
+        try { store.dispatch({ type: 'jobs/upsert', job }); } catch { /* the Crate follows the job itself */ }
+      }
+    }
+    // A bank already holding this track reports the job in its status line.
+    for (const id of GROUP_IDS) {
+      if (job && groupSelects[id].value === track.id) watchSeparation(id, track.id, job);
+    }
+    return job;
+  }
+
+  const crateBridge = {
+    session: deskSession,
+    subscribe(listener) {
+      sessionListeners.add(listener);
+      return () => sessionListeners.delete(listener);
+    },
+    async choose(groupId, track) {
+      if (!GROUP_IDS.includes(groupId) || !track?.id) throw new Error('unknown bank or track');
+      if (activeLoad?.groupId === groupId && !activeLoad.controller.signal.aborted) {
+        throw new Error(`bank ${groupId} is loading`);
+      }
+      // Fill the selectors first so a later list fetch cannot replace the choice.
+      await ensureTracks();
+      if (disposed) return;
+      const select = groupSelects[groupId];
+      if (select.value === track.id) return;
+      rememberTrack(track, groupId);
+      select.dispatchEvent(new select.ownerDocument.defaultView.Event('change'));
+    },
+    load(groupId) {
+      if (!GROUP_IDS.includes(groupId)) return;
+      groupButtons[groupId].click();
+    },
+    separate: separateForCrate,
+    watchJob: (jobId, onUpdate) => watchJobImpl(jobId, onUpdate),
+  };
+  const crate = mountCrate({
+    container: crateHost,
+    source: crateSource || createCrateSource({ fetchJson: get, patchJson: patch }),
+    bridge: crateBridge,
+    onAnnounce,
+  });
+  crate.toolbar?.appendChild(crateExpand);
+  crateRefresh = () => crate.refresh();
+
+  function setExpanded(open, { returnFocus = false } = {}) {
+    rail.classList.toggle('desk-rail--expanded', open);
+    crateExpand.setAttribute('aria-expanded', String(open));
+    crateExpand.textContent = open ? 'Collapse' : 'Expand';
+    if (returnFocus) crateExpand.focus();
+  }
+
+  function selectTab(name, { focus = false } = {}) {
+    const showCrate = name === 'crate';
+    rail.dataset.tab = showCrate ? 'crate' : 'producer';
+    producerTab.setAttribute('aria-selected', String(!showCrate));
+    crateTab.setAttribute('aria-selected', String(showCrate));
+    producerTab.tabIndex = showCrate ? -1 : 0;
+    crateTab.tabIndex = showCrate ? 0 : -1;
+    producer.hidden = showCrate;
+    cratePanel.hidden = !showCrate;
+    if (!showCrate) setExpanded(false);
+    if (showCrate) crate.activate();
+    if (focus) (showCrate ? crateTab : producerTab).focus();
+  }
+
+  producerTab.addEventListener('click', () => selectTab('producer'));
+  crateTab.addEventListener('click', () => selectTab('crate'));
+  railTabs.addEventListener('keydown', (event) => {
+    const keys = { ArrowLeft: 'producer', ArrowRight: 'crate', Home: 'producer', End: 'crate' };
+    if (!(event.key in keys)) return;
+    event.preventDefault();
+    const onCrate = rail.dataset.tab === 'crate';
+    const next = event.key === 'ArrowLeft' || event.key === 'ArrowRight'
+      ? (onCrate ? 'producer' : 'crate')
+      : keys[event.key];
+    selectTab(next, { focus: true });
+  });
+  ideaStripButton.addEventListener('click', () => selectTab('producer', { focus: true }));
+  crateExpand.addEventListener('click', () => {
+    const open = crateExpand.getAttribute('aria-expanded') !== 'true';
+    setExpanded(open);
+    if (open) crate.focusSearch();
+  });
+  cratePanel.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !rail.classList.contains('desk-rail--expanded')) return;
+    event.preventDefault();
+    setExpanded(false, { returnFocus: true });
+  });
+
+  // Below 1100 px: the Crate opens as a modal sheet. The same Crate moves into
+  // it and back, so a search or an open row survives.
+  const sheetTitleId = `${railId}-sheet-title`;
+  const sheetDone = createElement('button', { type: 'button', class: 'button button--sm', text: 'Done' });
+  const sheetBody = createElement('div', { class: 'record-crate-sheet__body' });
+  const sheet = createElement('dialog', {
+    class: 'record-crate-sheet', 'aria-labelledby': sheetTitleId,
+  }, [
+    createElement('div', { class: 'record-crate-sheet__head' }, [
+      createElement('h2', { id: sheetTitleId, class: 'record-crate-sheet__title', text: 'Crate' }),
+      sheetDone,
+    ]),
+    sheetBody,
+  ]);
+  // The sheet exists only while open, so other dialogs stay unambiguous.
+  function closeSheet() {
+    if (sheet.open && typeof sheet.close === 'function') sheet.close();
+    else if (sheet.hasAttribute('open')) {
+      sheet.removeAttribute('open');
+      sheet.dispatchEvent(new Event('close'));
+    }
+  }
+  crateOpen.addEventListener('click', () => {
+    setExpanded(false);
+    if (railHost?.openSheet) {
+      railHost.openSheet({ tab: 'crate', trigger: crateOpen });
+      return;
+    }
+    if (!sheet.isConnected) root.appendChild(sheet);
+    sheetBody.appendChild(crateHost);
+    crate.setMirrorDeskMessages(true);
+    if (typeof sheet.showModal === 'function') sheet.showModal();
+    else sheet.setAttribute('open', '');
+    crate.activate();
+    crate.focusSearch();
+  });
+  sheetDone.addEventListener('click', closeSheet);
+  sheet.addEventListener('close', () => {
+    cratePanel.appendChild(crateHost);
+    sheet.remove();
+    crate.setMirrorDeskMessages(false);
+    if (!disposed && crateOpen.isConnected) crateOpen.focus();
+  });
+
+  const railApi = {
+    rail,
+    inlineSlot: railSlot,
+    crate,
+    selectTab,
+    setExpanded,
+    isExpanded: () => rail.classList.contains('desk-rail--expanded'),
+    tab: () => rail.dataset.tab,
+    /** Hide the desk Producer's controls (not its idea) behind a note. */
+    setProducerAway(text) {
+      const away = Boolean(text);
+      producer.dataset.away = away ? 'true' : 'false';
+      producerAway.hidden = !away;
+      producerAway.textContent = away ? text : '';
+    },
+  };
+  const detachRail = railHost?.attach?.(rail, railApi) || null;
+
   return function dispose() {
     if (disposed) return;
     disposed = true;
+    clearTimeout(crateRefreshTimer);
+    try { detachRail?.(); } catch { /* the shell may already be gone */ }
+    if (railHost) rail.remove();
+    sessionListeners.clear();
+    crate.dispose();
+    closeSheet();
     window.removeEventListener(EXCLUSIVE_PLAY_EVENT, onExclusivePlay);
     unsubscribeNames();
     for (const groupId of GROUP_IDS) stopSeparationWatch(groupId);
-    for (const controller of aborts.values()) controller.abort();
-    aborts.clear();
-    window.clearInterval(positionTimer);
-    positionTimer = null;
+    activeLoad?.controller.abort();
+    clearPositionTimer();
     desk?.dispose();
     desk = null;
     container.replaceChildren();

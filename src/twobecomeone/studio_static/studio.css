@@ -52,6 +52,15 @@
   --color-danger-bg: rgb(255 160 165 / 12%);
   --color-deck-void: var(--color-well);
   --color-ghost-bg: rgb(196 177 243 / 12%);
+  /* OPERATION STUDIO SURGEON: one patchbay identity per stem role (Library,
+   * Crate, Arrangement clips, Stem-Focus). Always paired with a glyph and the
+   * written role, never colour alone. Center/sides and unknown are neutral. */
+  --color-role-drums: #e5984b;
+  --color-role-bass: #5c7cfa;
+  --color-role-vocals: #eb5e7c;
+  --color-role-other: #38b2a6;
+  --color-role-split: #a9b8b5;
+  --color-role-unknown: #8fa09d;
   --font-mono: ui-monospace, "Cascadia Mono", monospace;
 
   /* ---- Spacing scale ---- */

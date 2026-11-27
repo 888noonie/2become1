@@ -5,23 +5,34 @@
 
 import { Router } from './router.js';
 import { audioController } from './audio.js';
+import { useFocusAudio } from './stem-focus.js';
 import { closeAllMonitors, getHealth, listJobs, listTracks } from './api.js';
 import { jobCoordinator, store, projectManager, ghostController, liveMixer } from './app-context.js';
 import { mountStudio } from './views/studio.js';
 import { mountLibrary } from './views/library.js';
 import { mountActivity } from './views/activity.js';
 import { mountEngine } from './views/engine.js';
+import { mountWorkspaceSidebar } from './components/workspace-sidebar.js';
 
 const container = document.getElementById('main');
 
+// OPERATION NEVER LOSE THE MIX: one Producer/Crate sidebar in the shell,
+// fed by the one Performance desk. The Studio view is kept alive by the
+// router, so the desk (and this sidebar's contents) outlive navigation.
+const workspaceSidebar = mountWorkspaceSidebar({
+  aside: document.getElementById('workspace-sidebar'),
+  openButton: document.getElementById('sidebar-open'),
+  store,
+});
+
 const views = {
-  studio: mountStudio,
+  studio: (ctx) => mountStudio({ ...ctx, railHost: workspaceSidebar }),
   library: mountLibrary,
   activity: mountActivity,
   engine: mountEngine,
 };
 
-const router = new Router({ store, container, views });
+const router = new Router({ store, container, views, keepAlive: ['studio'] });
 jobCoordinator.start();
 
 // ---- Active-job badge ----
@@ -95,6 +106,22 @@ audioController.on((type, payload) => {
   }
 });
 
+// Stem-Focus auditions through the same one preview element.
+useFocusAudio(audioController);
+
+// ---- One audible source at a time ----
+// The Studio keeps playing while you browse. A Library or Activity preview
+// joins the existing exclusive-play handshake: starting a preview stops the
+// desk or the Arrangement, and starting either of those stops the preview.
+audioController.on((type) => {
+  if (type === 'play') {
+    window.dispatchEvent(new CustomEvent('twobecomeone:exclusive-play', { detail: { owner: 'preview' } }));
+  }
+});
+window.addEventListener('twobecomeone:exclusive-play', (event) => {
+  if (event?.detail?.owner !== 'preview' && audioController.playing) audioController.pause();
+});
+
 // ---- LiveMixer deck events -> decks/mixer slices + Ghost Lead ownership ----
 const GHOST_DECK_EVENTS = new Set(['play', 'pause', 'stop', 'ended', 'seek']);
 liveMixer.on((event) => {
@@ -159,6 +186,7 @@ boot();
 
 function teardown() {
   router.stop();
+  workspaceSidebar.dispose();
   jobCoordinator.dispose();
   closeAllMonitors();
   audioController.stop();

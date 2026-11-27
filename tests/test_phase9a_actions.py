@@ -420,8 +420,8 @@ class TestMigrationIntegrity:
         finally:
             revived.close()
 
-    def test_latest_version_is_13(self):
-        assert latest_version() == 13
+    def test_latest_version_is_14(self):
+        assert latest_version() == 14
 
 
 class TestActionStateShape:

@@ -605,6 +605,58 @@ const COMMANDS = {
     return { results };
   },
 
+  // --- OPERATION THE CUTTING ROOM: region delete and clipboard paste. Both are
+  // built from the commands above on the same draft, so the arithmetic for a
+  // cut edge is exactly the arithmetic for a split.
+
+  /**
+   * Remove the timeline range [startBeat, endBeat) from the given lanes. A clip
+   * wholly inside goes; a clip crossing an edge is split there (its source
+   * in-point advancing at the clip's own rate) and only the inside piece goes.
+   * Nothing moves to close the gap, and no asset is removed.
+   */
+  deleteRegion(draft, args, h) {
+    const pieces = splitRegion(draft, args, h);
+    for (const id of pieces.inside) COMMANDS.deleteClip(draft, { clipId: id });
+    if (!pieces.inside.length) {
+      throw new InvalidEditError('no clip audio in that range on those lanes', 'REGION_EMPTY');
+    }
+    return { removed: pieces.inside.length, kept: pieces.kept };
+  },
+
+  /**
+   * Place a clipboard (from clipboardFromClips / clipboardFromRegion) with its
+   * earliest piece at `startBeat`. A clipboard from one lane lands on
+   * `trackIndex`; one from several lanes keeps each piece on its own lane.
+   * Every piece is a new clip over the same source asset with its in-point,
+   * length, rate, pitch, gain and fades unchanged. Pasting never removes or
+   * trims a clip already there (overlaps are summed, as everywhere).
+   */
+  pasteClipboard(draft, args, h) {
+    const { clipboard, startBeat } = args;
+    readClipboard(clipboard);
+    requireFinite(startBeat, 'startBeat');
+    if (startBeat < -EPSILON) throw new InvalidEditError('startBeat must be >= 0', 'OUT_OF_RANGE');
+    const singleLane = clipboard.lanes.length === 1;
+    if (singleLane) requireTrackIndex(args.trackIndex);
+    const clipIds = [];
+    for (const piece of clipboard.pieces) {
+      const assetId = pasteAsset(draft, piece.asset, h);
+      const id = h.nextId('clip', 'clips');
+      const clip = makeClip({
+        ...piece.clip,
+        id,
+        assetId,
+        trackIndex: singleLane ? args.trackIndex : piece.clip.trackIndex,
+        timelineStartBeat: roundTime(Math.max(0, startBeat + piece.offsetBeats)),
+      });
+      requireSourceBounds(draft, clip, draft.assets[assetId], clip.sourceOffsetSec, clip.durationBeats);
+      draft.clips.push(clip);
+      clipIds.push(id);
+    }
+    return { clipIds };
+  },
+
   setLoopRange(draft, args) {
     const { startBeat, endBeat } = args;
     if (startBeat === null && endBeat === null) {
@@ -624,6 +676,160 @@ const COMMANDS = {
 /** Optional explicit id for the second half of a split (tests use it). */
 function requireNewId(args) {
   return typeof args?.newClipId === 'string' && args.newClipId.length ? args.newClipId : undefined;
+}
+
+// --- Clipboard (OPERATION THE CUTTING ROOM) ---
+//
+// A clipboard is plain data: clip fields relative to an origin beat plus the
+// asset record each piece plays. It is never ProjectState and never enters
+// history; Cut is a delete command, Paste is a pasteClipboard command.
+
+export const CLIPBOARD_KIND = 'arrangement-clipboard/v1';
+const MAX_CLIPBOARD_PIECES = 64;
+const CLIP_FIELDS = [
+  'trackIndex', 'timelineStartBeat', 'durationBeats', 'sourceOffsetSec', 'stretchMode', 'customStretchRatio',
+  'pitchSemitones', 'preserveFormants', 'clipGainDb', 'fadeInBeats', 'fadeOutBeats',
+];
+
+function readRegion(args) {
+  const { startBeat, endBeat, trackIndices } = args ?? {};
+  requireFinite(startBeat, 'startBeat');
+  requireFinite(endBeat, 'endBeat');
+  if (startBeat < -EPSILON || endBeat - startBeat < MIN_CLIP_DURATION_BEATS - EPSILON) {
+    throw new InvalidEditError('a region needs endBeat > startBeat >= 0', 'OUT_OF_RANGE');
+  }
+  if (!Array.isArray(trackIndices) || !trackIndices.length || trackIndices.length > 8) {
+    throw new InvalidEditError('a region names 1..8 lanes', 'INVALID_ARGUMENT');
+  }
+  for (const t of trackIndices) requireTrackIndex(t);
+  return { start: Math.max(0, startBeat), end: endBeat, lanes: new Set(trackIndices) };
+}
+
+/**
+ * Split every clip on the region's lanes at the region edges. Returns the ids
+ * of the pieces inside the region and of the pieces kept outside it. A sliver
+ * shorter than a split can leave (1/64 beat) is counted as inside.
+ */
+function splitRegion(draft, args, h) {
+  const { start, end, lanes } = readRegion(args);
+  const inside = [];
+  const kept = [];
+  const hit = draft.clips.filter((c) => lanes.has(c.trackIndex)
+    && start < c.timelineStartBeat + c.durationBeats - EPSILON && end > c.timelineStartBeat + EPSILON);
+  for (const original of hit) {
+    let id = original.id;
+    const clip = () => requireClip(draft, id);
+    if (start - clip().timelineStartBeat >= MIN_CLIP_DURATION_BEATS - EPSILON) {
+      const { rightId } = COMMANDS.splitClipAtBeat(draft, { clipId: id, splitBeat: start }, h);
+      kept.push(id);
+      id = rightId;
+    }
+    const c = clip();
+    if (c.timelineStartBeat + c.durationBeats - end >= MIN_CLIP_DURATION_BEATS - EPSILON) {
+      const { rightId } = COMMANDS.splitClipAtBeat(draft, { clipId: id, splitBeat: end }, h);
+      kept.push(rightId);
+    }
+    inside.push(id);
+  }
+  return { inside, kept };
+}
+
+function clipboardOf(state, clips, originBeat, source) {
+  if (!clips.length) throw new InvalidEditError('nothing to copy', 'CLIPBOARD_EMPTY');
+  if (clips.length > MAX_CLIPBOARD_PIECES) {
+    throw new InvalidEditError(`at most ${MAX_CLIPBOARD_PIECES} clips can be copied at once`, 'CLIPBOARD_TOO_LARGE');
+  }
+  const ordered = [...clips].sort((a, b) => a.timelineStartBeat - b.timelineStartBeat || a.trackIndex - b.trackIndex);
+  const origin = originBeat ?? Math.min(...ordered.map((c) => c.timelineStartBeat));
+  return {
+    kind: CLIPBOARD_KIND,
+    source,
+    masterBpm: state.transport.masterBpm,
+    originBeat: origin,
+    lengthBeats: roundTime(Math.max(...ordered.map((c) => c.timelineStartBeat + c.durationBeats)) - origin),
+    lanes: [...new Set(ordered.map((c) => c.trackIndex))].sort((a, b) => a - b),
+    pieces: ordered.map((c) => {
+      const asset = state.assets[c.assetId];
+      if (!asset) throw new InvalidEditError(`clip ${c.id} references missing asset ${c.assetId}`, 'NOT_FOUND');
+      const clip = {};
+      for (const k of CLIP_FIELDS) clip[k] = c[k];
+      return {
+        offsetBeats: roundTime(Math.max(0, c.timelineStartBeat - origin)),
+        fromClipId: c.id,
+        clip,
+        asset: structuredClone(asset),
+      };
+    }),
+  };
+}
+
+/** Copy whole clips. The earliest one is the clipboard's origin. */
+export function clipboardFromClips(state, clipIds) {
+  const clips = clipIds.map((id) => {
+    const c = state.clips.find((x) => x.id === id);
+    if (!c) throw new InvalidEditError(`no clip ${id}`, 'NOT_FOUND');
+    return c;
+  });
+  return clipboardOf(state, clips, null, 'clips');
+}
+
+/**
+ * Copy a time range of some lanes, cut at the region edges exactly as a
+ * deleteRegion would cut them. Pure: the state passed in is not touched. The
+ * region start is the origin, so a gap before the first piece is kept.
+ */
+export function clipboardFromRegion(state, region) {
+  const scratch = cloneState(state);
+  let seq = 0;
+  const taken = (id) => scratch.clips.some((c) => c.id === id);
+  const h = {
+    nextId: (prefix) => {
+      let id;
+      do { seq += 1; id = `${prefix}-region-${seq}`; } while (taken(id));
+      return id;
+    },
+  };
+  const { inside } = splitRegion(scratch, region, h);
+  const clips = inside.map((id) => scratch.clips.find((c) => c.id === id));
+  if (!clips.length) throw new InvalidEditError('no clip audio in that range on those lanes', 'REGION_EMPTY');
+  const board = clipboardOf(scratch, clips, Math.max(0, region.startBeat), 'region');
+  board.lengthBeats = roundTime(region.endBeat - Math.max(0, region.startBeat));
+  for (const p of board.pieces) if (p.fromClipId.includes('-region-')) p.fromClipId = null;
+  return board;
+}
+
+function readClipboard(board) {
+  if (!board || typeof board !== 'object' || board.kind !== CLIPBOARD_KIND) {
+    throw new InvalidEditError('the clipboard is empty or not an arrangement clipboard', 'CLIPBOARD_INVALID');
+  }
+  const { pieces, lanes } = board;
+  if (!Array.isArray(pieces) || !pieces.length || pieces.length > MAX_CLIPBOARD_PIECES) {
+    throw new InvalidEditError(`a clipboard holds 1..${MAX_CLIPBOARD_PIECES} pieces`, 'CLIPBOARD_INVALID');
+  }
+  if (!Array.isArray(lanes) || !lanes.length) throw new InvalidEditError('clipboard lanes missing', 'CLIPBOARD_INVALID');
+  for (const p of pieces) {
+    requireFinite(p?.offsetBeats, 'piece.offsetBeats');
+    if (p.offsetBeats < -EPSILON) throw new InvalidEditError('piece.offsetBeats must be >= 0', 'CLIPBOARD_INVALID');
+    if (!p.clip || typeof p.clip !== 'object') throw new InvalidEditError('piece.clip missing', 'CLIPBOARD_INVALID');
+    const a = p.asset;
+    if (!a || typeof a.id !== 'string' || typeof a.bufferReference !== 'string' || !a.bufferReference.length
+      || !(a.durationSec > 0)) {
+      throw new InvalidEditError('piece.asset must name its source', 'CLIPBOARD_INVALID');
+    }
+  }
+}
+
+/** The asset a pasted piece plays: the same record when the project has it. */
+function pasteAsset(draft, asset, h) {
+  const same = (a) => a && a.bufferReference === asset.bufferReference
+    && Math.abs(a.durationSec - asset.durationSec) < 1e-9
+    && (a.nativeBpm ?? null) === (asset.nativeBpm ?? null);
+  if (same(draft.assets[asset.id])) return asset.id;
+  const match = Object.values(draft.assets).find(same);
+  if (match) return match.id;
+  const id = draft.assets[asset.id] ? h.nextId('asset', 'assets') : asset.id;
+  draft.assets[id] = { ...structuredClone(asset), id };
+  return id;
 }
 
 export class EditEngine {

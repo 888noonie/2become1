@@ -27,7 +27,7 @@ import { mountArrangementPanel } from '../components/arrangement-panel.js';
 import { mountArrangementProducer } from '../components/arrangement-producer.js';
 import { RealtimeEngine } from '../realtime-engine.js';
 import { renderOffline } from '../arrangement/offline-render.js';
-import { listStems, listTracks } from '../api.js';
+import { get, listStems, listTracks } from '../api.js';
 import { startMashupSession } from '../mashup/session.js';
 import {
   checkGhostPreconditions,
@@ -156,7 +156,7 @@ async function openSwitcher() {
   });
 }
 
-export function mountStudio({ container }) {
+export function mountStudio({ container, railHost = null }) {
   const disposers = [];
   let anchorDisposer = null;
   let leadDisposer = null;
@@ -229,12 +229,14 @@ export function mountStudio({ container }) {
     arrangementView.hidden = surface !== 'arrangement';
     for (const [k, b] of Object.entries(surfaceButtons)) b.setAttribute('aria-pressed', String(k === surface));
     studioRoot.dataset.surface = surface;
+    window.dispatchEvent(new CustomEvent('twobecomeone:studio-surface', { detail: { surface } }));
     if (surface === 'arrangement' && !arrangementApi) {
       arrangementApi = mountArrangementPanel({
         container: arrangementView,
         onAnnounce,
         listTracks,
         listStems,
+        fetchJson: (url) => get(url),
         producer: mountArrangementProducer,
         sessionDeps: {
           fetchImpl: (url, init) => window.fetch(url, init),
@@ -394,6 +396,7 @@ export function mountStudio({ container }) {
     onAnnounce,
     store,
     openPicker: openSourcePicker,
+    railHost,
   });
   planDisposer = mountPlan({ container: planContainer, store, projectManager });
   renderActionsDisposer = mountRenderActions({
@@ -454,7 +457,24 @@ export function mountStudio({ container }) {
   const unsubProject = store.subscribeSlice('currentProject', updateHeader);
   disposers.push(unsubSave, unsubProject);
 
-  return function dispose() {
+  // OPERATION NEVER LOSE THE MIX: the router keeps this view mounted. Leaving
+  // Studio hides it; nothing here is disposed, stopped or saved by navigation
+  // except the legacy project autosave, which is flushed exactly as before.
+  // Playback is left as it is (see docs/never-lose-the-mix.md).
+  function surfaceFromHash(hash) {
+    const part = String(hash || '').replace(/^#\/?/, '').split('/')[1] || '';
+    return part === 'arrangement' || part === 'performance' ? part : null;
+  }
+  function show({ hash = window.location.hash } = {}) {
+    const fromHash = surfaceFromHash(hash);
+    if (fromHash && fromHash !== studioRoot.dataset.surface) showSurface(fromHash);
+    else if (studioRoot.dataset.surface === 'arrangement') arrangementApi?.render();
+  }
+  function hide() {
+    projectManager.flushNow();
+  }
+
+  function dispose() {
     for (const d of disposers) d();
     if (anchorDisposer) anchorDisposer();
     if (leadDisposer) leadDisposer();
@@ -471,5 +491,8 @@ export function mountStudio({ container }) {
     if (arrangementApi) { arrangementApi.dispose(); if (window.__arrangement === arrangementApi) delete window.__arrangement; }
     if (mashupSession) mashupSession.stop();
     projectManager.flushNow();
-  };
+  }
+  dispose.show = show;
+  dispose.hide = hide;
+  return dispose;
 }

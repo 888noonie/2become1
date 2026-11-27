@@ -51,6 +51,9 @@ MAX_EXTRACTOR_LEN = 64
 # Control characters (including NUL) and bidi-control characters to strip.
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069]")
 _WHITESPACE_RE = re.compile(r"\s+")
+# yt-dlp's info.json names the video id ``id``; the product stores it as
+# ``video_id``. Only the documented YouTube id shape is accepted.
+_YT_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
 def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
@@ -84,6 +87,11 @@ def sanitize_metadata(raw: dict) -> dict:
     Only fields in ``ALLOWED_METADATA_FIELDS`` are kept. Text fields are
     sanitized; ``duration`` is coerced to a finite non-negative float or None.
     No descriptions, comments, cookies, or arbitrary nested objects survive.
+
+    yt-dlp writes the video identifier as ``id`` while the product's field is
+    ``video_id``. A valid 11-character ``id`` is normalized to ``video_id`` so
+    the stored metadata keeps the canonical external identifier. An explicit
+    ``video_id`` wins; an invalid ``id`` is dropped.
     """
     clean: dict = {}
     for field in ALLOWED_METADATA_FIELDS:
@@ -110,6 +118,10 @@ def sanitize_metadata(raw: dict) -> dict:
             if duration is not None and (not math.isfinite(duration) or duration < 0):
                 duration = None
             clean[field] = duration
+    if "video_id" not in clean:
+        candidate = raw.get("id")
+        if isinstance(candidate, str) and _YT_VIDEO_ID_RE.fullmatch(candidate):
+            clean["video_id"] = candidate
     return clean
 
 
@@ -118,12 +130,14 @@ def metadata_json(raw: dict) -> str:
     return json.dumps(sanitize_metadata(raw), ensure_ascii=False)
 
 
-def generate_waveform(path: str | Path, bins: int = WAVEFORM_BINS) -> dict:
+def generate_waveform(
+    path: str | Path, bins: int = WAVEFORM_BINS, *, input_format: str | None = None
+) -> dict:
     """Generate normalized min/max waveform peaks for an audio file.
 
     Returns a versioned payload: ``{"version": 1, "bins": N, "peaks": [[min,max],...]}``.
     """
-    audio = analyzer.decode_mono(path)
+    audio = analyzer.decode_mono(path, input_format=input_format)
     if len(audio) == 0:
         raise UserError("cannot generate waveform from empty audio")
     n = len(audio)

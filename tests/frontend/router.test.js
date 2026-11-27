@@ -92,3 +92,73 @@ test('aria-current is set on the active nav link', async () => {
 
   router.stop();
 });
+
+// OPERATION NEVER LOSE THE MIX: a kept-alive view is mounted once and hidden.
+function keptViews(log) {
+  const view = (name) => () => {
+    log.push(`mount ${name}`);
+    return () => log.push(`dispose ${name}`);
+  };
+  const studio = () => {
+    log.push('mount studio');
+    const dispose = () => log.push('dispose studio');
+    dispose.show = ({ hash }) => log.push(`show studio ${hash}`);
+    dispose.hide = () => log.push('hide studio');
+    return dispose;
+  };
+  return { studio, library: view('library'), activity: view('activity'), engine: view('engine') };
+}
+
+test('keepAlive: the Studio is mounted once, hidden on leave and shown on return; others still dispose', async () => {
+  const { Router } = await import('../../src/twobecomeone/studio_static/js/router.js');
+  const { StateStore, registerReducers } = await import('../../src/twobecomeone/studio_static/js/state.js');
+  const store = registerReducers(new StateStore());
+  const container = document.getElementById('main');
+  const log = [];
+  window.location.hash = '#/studio';
+  const router = new Router({ store, container, views: keptViews(log), keepAlive: ['studio'] });
+  router.start();
+  const pane = container.querySelector('.view-pane[data-pane="studio"]');
+  assert.equal(pane.hidden, false);
+  for (const route of ['library', 'activity', 'engine']) {
+    window.location.hash = `#/${route}`;
+    window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+    assert.equal(pane.hidden, true);
+  }
+  window.location.hash = '#/studio';
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  assert.equal(pane.hidden, false);
+  assert.equal(container.querySelector('.view-pane[data-pane="studio"]'), pane, 'the same pane');
+  assert.deepEqual(log, [
+    'mount studio', 'show studio #/studio',
+    'hide studio', 'mount library',
+    'dispose library', 'mount activity',
+    'dispose activity', 'mount engine',
+    'dispose engine', 'show studio #/studio',
+  ]);
+  assert.equal(log.filter((entry) => entry === 'mount studio').length, 1);
+  // A Studio sub-hash is the same section: shown again, not hidden or remounted.
+  window.location.hash = '#/studio/arrangement';
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  assert.equal(log.at(-1), 'show studio #/studio/arrangement');
+  router.stop();
+  assert.equal(log.at(-1), 'dispose studio', 'only stop() disposes a kept view');
+});
+
+test('keepAlive: landing on another section still mounts the Studio once, hidden', async () => {
+  const { Router } = await import('../../src/twobecomeone/studio_static/js/router.js');
+  const { StateStore, registerReducers } = await import('../../src/twobecomeone/studio_static/js/state.js');
+  const store = registerReducers(new StateStore());
+  const container = document.getElementById('main');
+  const log = [];
+  window.location.hash = '#/library';
+  const router = new Router({ store, container, views: keptViews(log), keepAlive: ['studio'] });
+  router.start();
+  assert.deepEqual(log, ['mount studio', 'mount library']);
+  assert.equal(container.querySelector('.view-pane[data-pane="studio"]').hidden, true);
+  assert.equal(container.querySelector('.view-pane[data-pane="transient"]').hidden, false);
+  window.location.hash = '#/studio';
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  assert.deepEqual(log.slice(2), ['dispose library', 'show studio #/studio']);
+  router.stop();
+});

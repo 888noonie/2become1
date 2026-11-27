@@ -86,6 +86,23 @@ class AudioController {
     this._emit('play', { ...descriptor });
   }
 
+  /**
+   * Continue the current source from where it paused (Stem-Focus). The same
+   * element and URL: nothing reloads. Emits 'play' so the one-sound-at-a-time
+   * handshake runs exactly as for a fresh play. Returns false with no source.
+   */
+  resume() {
+    if (!this._current) return false;
+    this._audio.play().catch((err) => {
+      if (err && err.name !== 'AbortError') {
+        console.error('audio play error', err);
+        this._emit('error', { message: 'Audio is unavailable' });
+      }
+    });
+    this._emit('play', { ...this._current });
+    return true;
+  }
+
   pause() {
     this._audio.pause();
     this._emit('pause', { trackId: this._current?.trackId ?? null });

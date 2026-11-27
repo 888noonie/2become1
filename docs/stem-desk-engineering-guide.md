@@ -59,6 +59,53 @@ effectiveGain = audible ? laneGain * groupGain : 0
 - Re-read the transport at commit time, not at load entry: Play can be pressed
   while a fetch is still pending.
 
+### Unload stems
+
+Each bank has an **Unload stems** button beside **Load**. A bank with loaded
+stems or an active load can be unloaded. The idle, empty bank's button is
+disabled. Unload leaves the source selected and all Library media available.
+After a keyboard unload, focus moves to that bank's Load button, or to its
+source picker while Load is busy.
+
+Unloading a loaded bank stops the shared transport, releases the selected
+bank's decoded buffers, and resets the position to zero. The other bank keeps
+its stems, mute, solo, gain, level and entry offset. The crossfader is disabled
+with one bank left. Press Play to resume with the remaining bank, or load the
+cleared bank again. Unload ends a pending proposal or audition using the same
+mix restoration as Load. An earlier Play awaiting browser audio permission
+cannot start after Unload.
+
+Unload aborts a pending load for its own bank. Cancelling a first load in an
+empty bank leaves playback in the other bank running. A load for the other
+bank is allowed to finish. A browser decode already underway can finish
+internally, but its result is discarded. Both Load buttons become available
+as soon as the retiring request settles.
+
+The [panel tests](../tests/frontend/stem-desk-panel.test.js) hold library,
+stem-list, decode and resume promises open across Unload. The original panel
+fails all six unload cases. With the new control present, separately removing
+the stem-list cancellation check, decoder signal or Play invalidation fails
+the corresponding race case. The
+[two-track browser journey](../tests/browser/stem_desk_two_track_ux.js)
+exercises keyboard and touch, including focus, mixer settings and loading the
+same bank again. Run it at `1280x800` and `390x844`. A muted Chromium run
+with Demucs stems and the real section routes observed eight source starts and
+eight immediate source stops on Unload at both sizes. It kept four lanes,
+preserved the Library track IDs, and returned to eight lanes on reload.
+The automated checks leave speaker listening to the PM.
+
+This change adds **1,621 uncompressed bytes** over the 1,453,757-byte
+`06bdae9` baseline. The total is **1,455,378 bytes across 97 files**. The
+growth comes from the bank controls, cancellation handling and compact layout.
+
+| Largest static files | Bytes |
+| --- | ---: |
+| `vendor/signalsmith-stretch/SignalsmithStretch.mjs` | 113,867 |
+| `js/components/arrangement-producer.js` | 92,021 |
+| `js/components/arrangement-panel.js` | 85,657 |
+| `js/realtime-engine.js` | 69,356 |
+| `js/components/stem-desk-panel.js` | 67,678 |
+
 ## 2. Honesty rules
 
 - **One clock is not beat matching.** Write "started on one clock", never

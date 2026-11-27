@@ -300,6 +300,16 @@ MIGRATIONS: list[tuple[int, str, MigrationAction]] = [
             "ALTER TABLE stem_sets ADD COLUMN provenance_json TEXT",
         ],
     ),
+    (
+        14,
+        "stem_sets display names",
+        [
+            # Owner-chosen labels per role, keyed by the stem's own role name.
+            # The stored `name` and every audio path stay untouched, so a name
+            # is additive identity rather than a rename of the media.
+            "ALTER TABLE stem_sets ADD COLUMN names_json TEXT",
+        ],
+    ),
 ]
 
 

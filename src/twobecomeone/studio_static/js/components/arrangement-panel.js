@@ -22,9 +22,15 @@ import {
   MAX_AUTOMATION_POINTS,
 } from '../arrangement/project-state.js';
 import { dbToLinear } from '../arrangement/render-plan.js';
+import { clipboardFromClips, clipboardFromRegion } from '../arrangement/edit-api.js';
 import {
   MIN_CLIP_DURATION_BEATS, beatsToSourceSeconds, slipLimitsSec, sourceAdvanceRate,
 } from '../arrangement/time-math.js';
+import {
+  clearStemOffer, liveStemLabel, loadStemCard, methodLabel, onStemCard, onStemOffer, roleLabel, stemOffer,
+} from '../stem-sleeve.js';
+import { fmtTime, openStemFocus, sectionForWindow } from '../stem-focus.js';
+import { roleGlyph, roleToken } from '../stem-roles.js';
 
 export const ZOOM_LEVELS = Object.freeze([6, 10, 16, 24, 36, 54, 80, 120]); // px per beat
 export const SNAP_CHOICES = Object.freeze([
@@ -140,12 +146,18 @@ export function mountArrangementPanel(opts) {
     rafId: null,
     tracks: [],
     disposed: false,
+    clipboard: null, // OPERATION THE CUTTING ROOM: plain data, never ProjectState
+    regionScope: 'all', // a ruler range edits all eight lanes, or only the selected lane
+    menu: null,
   };
 
   let session = opts.session ?? null;
+  const focusListeners = new Set(); // OPERATION STUDIO SURGEON: an open clip Focus panel
+  const tellFocus = (kind) => { for (const fn of [...focusListeners]) { try { fn(kind); } catch (err) { console.error(err); } } };
   const onChange = (kind) => {
     if (ui.disposed) return;
-    if (kind === 'transport') { renderTransport(); startPlayheadLoop(); return; }
+    if (kind === 'transport') { renderTransport(); startPlayheadLoop(); tellFocus(kind); return; }
+    tellFocus(kind);
     if (ui.envDrag) {
       paintLiveEnvelope(ui.envDrag.trackIndex);
       renderInspector();
@@ -266,6 +278,36 @@ export function mountArrangementPanel(opts) {
     ]));
   }
 
+  // OPERATION OPEN THE RECORD SLEEVES: one Library stem the musician chose
+  // (Library or Crate → Use in Arrangement), placed where THEY say. Nothing
+  // decodes or plays until Place, and Place never moves or replaces a clip.
+  const placeBox = h('details', { class: 'daw__place', hidden: 'true', 'data-testid': 'place-stem' }, [
+    h('summary', { text: 'Place a Library stem' }),
+  ]);
+  const placeWhat = h('p', { class: 'daw__place-what', 'data-field': 'place-what' });
+  const placeFrom = h('p', { class: 'daw__note', 'data-field': 'place-from' });
+  const placeLane = h('select', { 'aria-label': 'Lane for the stem' });
+  const placeBar = h('input', { type: 'number', min: '1', max: '999', step: '1', 'aria-label': 'Bar the stem starts at', placeholder: 'bar' });
+  const placeAtPlayhead = h('button', { type: 'button', class: 'button button--small', text: 'Playhead bar' });
+  const placeLength = h('select', { 'aria-label': 'Length of the stem to place' }, SECTION_CHOICES.map(([v, t]) => h('option', { value: v, text: t })));
+  placeLength.value = '60';
+  const placeStart = h('input', { type: 'number', min: '0', max: '3600', step: '1', value: '0', 'aria-label': 'Start inside the stem (seconds)' });
+  const placeGo = h('button', { type: 'button', class: 'button button--primary daw__place-go', text: 'Place on lane' });
+  const placeDismiss = h('button', { type: 'button', class: 'button button--ghost', text: 'Not now' });
+  placeBox.append(
+    placeWhat, placeFrom,
+    h('div', { class: 'daw__import-row' }, [
+      h('label', { class: 'daw__field' }, ['Lane', placeLane]),
+      h('label', { class: 'daw__field' }, ['At bar', placeBar]), placeAtPlayhead,
+    ]),
+    h('div', { class: 'daw__import-row' }, [
+      h('label', { class: 'daw__field' }, ['Length', placeLength]),
+      h('label', { class: 'daw__field' }, ['From', placeStart, h('span', { class: 'daw__unit', text: 's into the stem' })]),
+    ]),
+    h('div', { class: 'daw__import-row' }, [placeGo, placeDismiss]),
+    h('p', { class: 'daw__note', text: 'You choose the lane and the bar. Placing adds one clip at the stem’s own speed; it never moves, trims or replaces a clip, so a span that is already in use is refused. Nothing plays until you press Play. Undo removes it.' }),
+  );
+
   // Timeline: headers | scroller(ruler + lanes)
   const headers = h('div', { class: 'daw__headers', role: 'list', 'aria-label': 'Tracks' });
   const ruler = h('div', { class: 'daw__ruler', 'aria-label': 'Ruler: click to cue, drag to set the loop', role: 'slider', tabindex: '0', 'aria-valuemin': '0' });
@@ -295,17 +337,68 @@ export function mountArrangementPanel(opts) {
     text: 'Every lane starts on one clock. A shared start is not beat matching: a clip follows the project tempo only after Fit to project tempo, using its track’s measured tempo.',
   });
 
+  const menuEl = h('div', { class: 'daw__menu', role: 'menu', 'aria-label': 'Edit', hidden: 'true' });
+
   root.append(
     h('div', { class: 'daw__top' }, [transport]),
     projectRow,
     importBox,
+    placeBox,
     h('div', { class: 'daw__body' }, [timelineWrap, side]),
     honesty,
     messages,
+    menuEl,
   );
   container.replaceChildren(root);
 
   // ------------------------------------------------------------- render
+
+  const fetchJson = opts.fetchJson ?? (async (url) => {
+    const res = await (opts.sessionDeps?.fetchImpl ?? win.fetch.bind(win))(url);
+    if (!res.ok) throw new Error(`${url} answered ${res.status}`);
+    return res.json();
+  });
+  /** The owner's live label for a Library stem clip, or null (never stored). */
+  function stemLabelOf(asset) {
+    const src = asset?.source;
+    if (!src?.stemSetId || !src.role) return null;
+    const label = liveStemLabel(src.stemSetId, src.role);
+    if (label === null) void loadStemCard(src.stemSetId, fetchJson);
+    return label;
+  }
+
+  function renderPlace() {
+    const offer = stemOffer();
+    placeBox.hidden = !offer;
+    if (!offer) return;
+    const label = liveStemLabel(offer.stemSetId, offer.role) ?? (offer.customName ? offer.displayName : offer.role);
+    placeWhat.replaceChildren(h('strong', { text: label }), ` · ${roleLabel(offer.role)} stem`);
+    placeFrom.textContent = `From the recording “${offer.trackName || offer.trackId}” · ${methodLabel(offer.method)} · set ${offer.stemSetId.slice(0, 8)}. The recording and its stem file stay as they are.`;
+    const chosen = placeLane.value;
+    replaceChildren(placeLane, [
+      h('option', { value: '', text: 'Choose a lane…' }),
+      ...session.state.tracks.map((t, i) => {
+        const n = session.state.clips.filter((c) => c.trackIndex === i).length;
+        return h('option', { value: String(i), text: `${i + 1}. ${t.name}${n ? ` (${n} ${n === 1 ? 'clip' : 'clips'})` : ' (empty)'}` });
+      }),
+    ]);
+    placeLane.value = chosen;
+    // OPERATION STUDIO SURGEON: a Stem-Focus selection travels with the offer.
+    const sel = offer.window ? sectionForWindow(offer.window.startSec, offer.window.endSec) : null;
+    let opt = placeLength.querySelector('option[value="selection"]');
+    if (sel) {
+      if (!opt) { opt = h('option', { value: 'selection' }); placeLength.prepend(opt); }
+      opt.textContent = `Focus selection (${sel.lengthSec.toFixed(2)} s from ${fmtTime(sel.startSec)})`;
+      if (placeLength.dataset.offerKey !== offerKey(offer)) placeLength.value = 'selection';
+    } else if (opt) {
+      opt.remove();
+      if (!placeLength.value) placeLength.value = '60';
+    }
+    placeLength.dataset.offerKey = offerKey(offer);
+    placeStart.disabled = placeLength.value === 'selection';
+  }
+  const offerKey = (o) => `${o.stemSetId}:${o.role}:${o.window ? `${o.window.startSec}-${o.window.endSec}` : 'whole'}`;
+  placeLength.addEventListener('change', () => { placeStart.disabled = placeLength.value === 'selection'; });
 
   function renderTransport() {
     const phase = session.phase();
@@ -428,16 +521,21 @@ export function mountArrangementPanel(opts) {
       clip.pitchSemitones ? `${clip.pitchSemitones > 0 ? '+' : ''}${clip.pitchSemitones} st` : null,
       clip.clipGainDb && !(selected && width >= 96) ? fmtDb(clip.clipGainDb) : null, // the gain grip shows it when selected
     ].filter(Boolean).join(' · ');
+    const role = asset?.source?.role ?? null;
+    const token = role ? roleToken(role) : null;
     const el = h('div', {
-      class: `daw__clip daw__clip--${group}${selected ? ' is-selected' : ''}`,
+      class: `daw__clip daw__clip--${group}${selected ? ' is-selected' : ''}${token ? ' has-role' : ''}`,
       role: 'button',
       tabindex: '0',
       'aria-pressed': String(selected),
-      'aria-label': `${asset?.name ?? clip.id}, ${musicalPosition(clip.timelineStartBeat, beatsPerBar())}, ${fmtBeats(clip.durationBeats)}`,
+      'aria-keyshortcuts': 'F',
+      'data-role-token': token?.token,
+      'aria-label': `${stemLabelOf(asset) ? `${stemLabelOf(asset)}, ` : ''}${asset?.name ?? clip.id}, ${musicalPosition(clip.timelineStartBeat, beatsPerBar())}, ${fmtBeats(clip.durationBeats)}`,
       dataset: { clipId: clip.id },
       style: { left: `${left}px`, width: `${width}px` },
     }, [
-      h('span', { class: 'daw__clip-label', text: `${session.state.tracks[clip.trackIndex].name}${badges ? ` · ${badges}` : ''}` }),
+      token ? h('span', { class: 'daw__clip-role', 'aria-hidden': 'true' }, [roleGlyph(role, { size: 12 })]) : null,
+      h('span', { class: 'daw__clip-label', text: `${session.state.tracks[clip.trackIndex].name}${stemLabelOf(asset) ? ` · ${stemLabelOf(asset)}` : ''}${badges ? ` · ${badges}` : ''}` }),
       canvas, fadeIn, fadeOut,
       h('span', { class: 'daw__handle daw__handle--start', dataset: { grip: 'start' }, 'aria-hidden': 'true' }),
       h('span', { class: 'daw__handle daw__handle--end', dataset: { grip: 'end' }, 'aria-hidden': 'true' }),
@@ -900,7 +998,56 @@ export function mountArrangementPanel(opts) {
           onclick: () => session.apply({ name: 'setTrackEq', args: { trackIndex: i, eq: { lowGainDb: 0, midGainDb: 0, highGainDb: 0 } } }),
         }),
       ]),
+      editFieldset(),
     ]);
+  }
+
+  /** Cut / Copy / Paste / Delete / Split for the ruler range and this lane. */
+  function editFieldset() {
+    const range = session.state.transport.loopRange;
+    const bpb = beatsPerBar();
+    const scope = h('select', { 'aria-label': 'Range applies to', 'data-field': 'region-scope' }, [
+      h('option', { value: 'all', text: 'All 8 lanes' }),
+      h('option', { value: 'lane', text: `${session.state.tracks[ui.selectedTrack].name} only` }),
+    ]);
+    scope.value = ui.regionScope;
+    scope.addEventListener('change', () => { ui.regionScope = scope.value; });
+    const off = range ? undefined : 'true';
+    return h('fieldset', { class: 'daw__group daw__group--edit', 'data-testid': 'edit-tools' }, [
+      h('legend', { text: 'Edit' }),
+      h('p', {
+        class: 'daw__hint', 'data-field': 'region',
+        text: range
+          ? `Range ${musicalPosition(range[0], bpb)} to ${musicalPosition(range[1], bpb)} (drag on the ruler to change it).`
+          : 'Drag on the ruler to choose a range to cut, copy or delete.',
+      }),
+      h('label', { class: 'daw__row' }, [h('span', { class: 'daw__row-label', text: 'Range on' }), scope]),
+      h('div', { class: 'daw__ins-actions' }, [
+        h('button', { type: 'button', class: 'button', text: 'Cut range', 'aria-keyshortcuts': 'Control+X', disabled: off, onclick: () => cutSelection() }),
+        h('button', { type: 'button', class: 'button', text: 'Copy range', 'aria-keyshortcuts': 'Control+C', disabled: off, onclick: () => copySelection() }),
+        h('button', { type: 'button', class: 'button button--danger', text: 'Delete range', 'aria-keyshortcuts': 'Delete', disabled: off, onclick: () => deleteRange() }),
+      ]),
+      h('div', { class: 'daw__ins-actions' }, [
+        h('button', {
+          type: 'button', class: 'button', text: 'Paste at playhead', 'aria-keyshortcuts': 'Control+V',
+          disabled: ui.clipboard ? undefined : 'true', onclick: () => { void pasteAt(session.playheadBeat(), ui.selectedTrack); },
+        }),
+        h('button', { type: 'button', class: 'button', text: 'Split lane at playhead', 'aria-keyshortcuts': 'S', onclick: () => splitLaneAt(ui.selectedTrack, session.playheadBeat()) }),
+      ]),
+      clipboardLine(),
+    ]);
+  }
+
+  function clipboardLine() {
+    return h('p', { class: 'daw__hint', 'data-field': 'clipboard', text: ui.clipboard ? `Clipboard: ${describeBoard(ui.clipboard)}.` : 'Clipboard empty.' });
+  }
+
+  function describeBoard(board) {
+    const n = board.pieces.length;
+    const lanesText = board.lanes.length === 1
+      ? session.state.tracks[board.lanes[0]]?.name ?? `lane ${board.lanes[0] + 1}`
+      : `${board.lanes.length} lanes`;
+    return `${n} clip${n === 1 ? '' : 's'} from ${lanesText}, ${(board.lengthBeats / beatsPerBar()).toFixed(2)} bars`;
   }
 
   const fmtFade = (v) => `${fmtBeats(v)} · ${(v * 60 / session.bpm).toFixed(2)} s`;
@@ -968,6 +1115,10 @@ export function mountArrangementPanel(opts) {
     replaceChildren(inspector, [
       h('h3', { class: `daw__ins-title daw__ins-title--${group}`, text: `Clip · ${session.state.tracks[clip.trackIndex].name}` }),
       h('p', { class: 'daw__ins-sub', text: [src.title, src.method, src.stemSetId ? `set ${String(src.stemSetId).slice(0, 8)}` : null, `lane ${clip.trackIndex + 1}`].filter(Boolean).join(' · ') }),
+      src.stemSetId && src.role ? h('p', {
+        class: 'daw__ins-sub daw__ins-stem', 'data-field': 'stem-identity',
+        text: `Stem: ${stemLabelOf(asset) ?? src.role} · ${roleLabel(src.role)} of “${src.title || src.trackId || 'its recording'}”`,
+      }) : null,
       h('dl', { class: 'daw__facts' }, [
         h('dt', { text: 'Starts' }), h('dd', { text: musicalPosition(clip.timelineStartBeat, bpb) }),
         h('dt', { text: 'Length' }), h('dd', { text: `${(clip.durationBeats / bpb).toFixed(2)} bars` }),
@@ -1011,11 +1162,25 @@ export function mountArrangementPanel(opts) {
         h('label', { class: 'daw__check' }, [formants, 'Keep formants (Signalsmith formant compensation)']),
       ]),
       h('div', { class: 'daw__ins-actions' }, [
+        h('button', {
+          type: 'button', class: 'button button--primary daw__focus', text: 'Focus', 'aria-haspopup': 'dialog', 'aria-keyshortcuts': 'F',
+          'aria-label': 'Focus on this clip: audition and edit it in a larger view', 'data-action': 'focus-clip',
+          onclick: (ev) => openClipFocus(clip.id, ev.currentTarget),
+        }),
         h('button', { type: 'button', class: 'button', text: 'Cue at clip start', onclick: () => session.seek(clip.timelineStartBeat) }),
         h('button', { type: 'button', class: 'button', text: 'Split at playhead', 'aria-keyshortcuts': 'S', onclick: () => splitSelected() }),
         h('button', { type: 'button', class: 'button', text: 'Duplicate', 'aria-keyshortcuts': 'Control+D', onclick: () => duplicateSelected() }),
         h('button', { type: 'button', class: 'button button--danger', text: 'Delete', 'aria-keyshortcuts': 'Delete', onclick: () => deleteSelected() }),
       ]),
+      h('div', { class: 'daw__ins-actions', 'data-testid': 'clip-clipboard' }, [
+        h('button', { type: 'button', class: 'button', text: 'Cut', 'aria-keyshortcuts': 'Control+X', onclick: () => cutSelection() }),
+        h('button', { type: 'button', class: 'button', text: 'Copy', 'aria-keyshortcuts': 'Control+C', onclick: () => copySelection() }),
+        h('button', {
+          type: 'button', class: 'button', text: 'Paste at playhead', 'aria-keyshortcuts': 'Control+V',
+          disabled: ui.clipboard ? undefined : 'true', onclick: () => { void pasteAt(session.playheadBeat(), clip.trackIndex); },
+        }),
+      ]),
+      clipboardLine(),
       h('details', { class: 'daw__exact' }, [
         h('summary', { text: 'Exact values' }),
         h('dl', { class: 'daw__facts' }, [
@@ -1075,6 +1240,7 @@ export function mountArrangementPanel(opts) {
     renderProject();
     renderMessages();
     renderTransport();
+    renderPlace();
   }
 
   // ------------------------------------------------------------- clip actions
@@ -1086,13 +1252,181 @@ export function mountArrangementPanel(opts) {
     render();
   }
 
-  function splitSelected() {
+  function splitSelected(at = session.playheadBeat()) {
     const clip = clipById(ui.selectedClipId);
     if (!clip) return;
-    const at = session.playheadBeat();
+    if (at <= clip.timelineStartBeat || at >= clip.timelineStartBeat + clip.durationBeats) {
+      session.say('refused', 'SPLIT_OUTSIDE_CLIP', `The playhead (${musicalPosition(at, beatsPerBar())}) is not inside this clip. Click the ruler inside the clip, or right-click the clip where you want the cut.`);
+      return;
+    }
     const outcome = session.apply({ name: 'splitClipAtBeat', args: { clipId: clip.id, splitBeat: at } });
     if (outcome.ok) onAnnounce(`Split at ${musicalPosition(at, beatsPerBar())}.`);
   }
+
+  /** Split every clip on one lane that the beat falls inside, as one undo step. */
+  function splitLaneAt(trackIndex, at) {
+    const under = session.state.clips.filter((c) => c.trackIndex === trackIndex
+      && at > c.timelineStartBeat + MIN_CLIP_DURATION_BEATS && at < c.timelineStartBeat + c.durationBeats - MIN_CLIP_DURATION_BEATS);
+    const where = musicalPosition(at, beatsPerBar());
+    if (!under.length) {
+      session.say('refused', 'SPLIT_OUTSIDE_CLIP', `No clip on ${session.state.tracks[trackIndex].name} is under ${where}.`);
+      return;
+    }
+    const outcome = session.apply({
+      name: 'batch', args: { commands: under.map((c) => ({ name: 'splitClipAtBeat', args: { clipId: c.id, splitBeat: at } })) },
+    });
+    if (outcome.ok) onAnnounce(`Split ${session.state.tracks[trackIndex].name} at ${where}.`);
+  }
+
+  // ---- clipboard (OPERATION THE CUTTING ROOM). Cut and Delete are ordinary
+  // deleteClip / deleteRegion edits; Paste is one pasteClipboard edit. The
+  // clipboard itself is plain data in this panel and never enters history.
+
+  function currentRegion() {
+    const r = session.state.transport.loopRange;
+    if (!r) return null;
+    return { startBeat: r[0], endBeat: r[1], trackIndices: ui.regionScope === 'lane' ? [ui.selectedTrack] : [0, 1, 2, 3, 4, 5, 6, 7] };
+  }
+
+  function describeRegion(region) {
+    const bpb = beatsPerBar();
+    const where = region.trackIndices.length === 8 ? 'all lanes' : session.state.tracks[region.trackIndices[0]].name;
+    return `${musicalPosition(region.startBeat, bpb)} to ${musicalPosition(region.endBeat, bpb)} on ${where}`;
+  }
+
+  /** What Cut/Copy act on: the selected clip, else the ruler range, else nothing. */
+  function selectionBoard() {
+    const clip = clipById(ui.selectedClipId);
+    try {
+      if (clip) return { board: clipboardFromClips(session.state, [clip.id]), clip };
+      const region = currentRegion();
+      if (region) return { board: clipboardFromRegion(session.state, region), region };
+    } catch (err) {
+      session.say('refused', err.code || 'COPY_REFUSED', err.message);
+      return null;
+    }
+    session.say('notice', 'NOTHING_SELECTED', 'Select a clip, or drag a range on the ruler, first.');
+    return null;
+  }
+
+  function copySelection() {
+    const picked = selectionBoard();
+    if (!picked) return false;
+    ui.clipboard = picked.board;
+    render();
+    onAnnounce(`Copied ${describeBoard(picked.board)}.`);
+    return true;
+  }
+
+  function cutSelection() {
+    const picked = selectionBoard();
+    if (!picked) return false;
+    const outcome = picked.clip
+      ? session.apply({ name: 'deleteClip', args: { clipId: picked.clip.id } })
+      : session.apply({ name: 'deleteRegion', args: picked.region });
+    if (!outcome.ok) return false;
+    ui.clipboard = picked.board;
+    if (picked.clip) ui.selectedClipId = null;
+    render();
+    onAnnounce(`Cut ${describeBoard(picked.board)}. Paste puts it back anywhere; Undo restores it here.`);
+    return true;
+  }
+
+  function deleteRange() {
+    const region = currentRegion();
+    if (!region) { session.say('notice', 'NOTHING_SELECTED', 'Drag a range on the ruler first.'); return; }
+    const outcome = session.apply({ name: 'deleteRegion', args: region });
+    if (outcome.ok) onAnnounce(`Removed ${describeRegion(region)}. The source audio is kept; Undo brings it back.`);
+  }
+
+  async function pasteAt(beat, trackIndex) {
+    const board = ui.clipboard;
+    if (!board) { session.say('notice', 'CLIPBOARD_EMPTY', 'Nothing to paste: cut or copy a clip or a range first.'); return; }
+    const at = Math.max(0, beat);
+    const outcome = await session.pasteClipboard(board, at, trackIndex);
+    if (!outcome.ok || ui.disposed) return;
+    const ids = outcome.result.clipIds;
+    const pasted = ids.map(clipById).filter(Boolean);
+    const overlaps = pasted.some((p) => session.state.clips.some((c) => !ids.includes(c.id) && c.trackIndex === p.trackIndex
+      && c.timelineStartBeat < p.timelineStartBeat + p.durationBeats - 1e-9 && p.timelineStartBeat < c.timelineStartBeat + c.durationBeats - 1e-9));
+    if (pasted.length === 1) select(pasted[0].id); else { ui.selectedClipId = null; render(); }
+    const where = board.lanes.length === 1 ? session.state.tracks[trackIndex].name : 'their own lanes';
+    onAnnounce(`Pasted ${pasted.length} clip${pasted.length === 1 ? '' : 's'} at ${musicalPosition(at, beatsPerBar())} on ${where}.${overlaps ? ' It overlaps audio already there; both play.' : ''}`);
+  }
+
+  // ---- right-click (or the Menu key) on a clip or a lane
+
+  function closeMenu({ refocus = false } = {}) {
+    if (!ui.menu) return;
+    const back = ui.menu.returnFocus;
+    ui.menu = null;
+    menuEl.hidden = true;
+    replaceChildren(menuEl, []);
+    if (refocus && back?.isConnected) back.focus();
+  }
+
+  function openMenu(x, y, items, returnFocus) {
+    closeMenu();
+    ui.menu = { returnFocus };
+    replaceChildren(menuEl, items.map(([label, keys, fn, disabled]) => h('button', {
+      type: 'button', class: 'daw__menu-item', role: 'menuitem', disabled: disabled ? 'true' : undefined,
+      'aria-keyshortcuts': keys || undefined, dataset: { action: label },
+      onclick: () => { closeMenu({ refocus: true }); fn(); },
+    }, [h('span', { text: label }), keys ? h('kbd', { text: keys.replace('Control+', 'Ctrl+') }) : null])));
+    menuEl.hidden = false;
+    const vw = win.innerWidth || 1280;
+    const vh = win.innerHeight || 800;
+    const w = menuEl.offsetWidth || 220;
+    const hgt = menuEl.offsetHeight || 260;
+    menuEl.style.left = `${Math.max(8, Math.min(x, vw - w - 8))}px`;
+    menuEl.style.top = `${Math.max(8, Math.min(y, vh - hgt - 8))}px`;
+    menuEl.querySelector('.daw__menu-item:not([disabled])')?.focus();
+  }
+
+  function menuFor(clientX, clientY, clipEl, returnFocus, laneEl = null) {
+    const at = snap(beatAt(clientX));
+    const lane = clipEl
+      ? clipById(clipEl.dataset.clipId)?.trackIndex ?? laneAt(clientY)
+      : (laneEl ? Number(laneEl.dataset.track) : laneAt(clientY));
+    const where = musicalPosition(at, beatsPerBar());
+    const region = currentRegion();
+    const paste = ['Paste here', 'Control+V', () => { void pasteAt(at, lane); }, !ui.clipboard];
+    if (clipEl) {
+      const id = clipEl.dataset.clipId;
+      if (ui.selectedClipId !== id) select(id);
+      const c = clipById(id);
+      const inside = c && at > c.timelineStartBeat && at < c.timelineStartBeat + c.durationBeats;
+      openMenu(clientX, clientY, [
+        ['Cut', 'Control+X', () => cutSelection()],
+        ['Copy', 'Control+C', () => copySelection()],
+        paste,
+        [`Split here (${where})`, '', () => splitSelected(at), !inside],
+        ['Split at playhead', 'S', () => splitSelected()],
+        ['Duplicate', 'Control+D', () => duplicateSelected()],
+        ['Delete', 'Delete', () => deleteSelected()],
+      ], returnFocus);
+      return;
+    }
+    ui.selectedTrack = lane;
+    ui.selectedClipId = null;
+    render();
+    openMenu(clientX, clientY, [
+      paste,
+      [`Split lane here (${where})`, '', () => splitLaneAt(lane, at)],
+      ['Cut range', 'Control+X', () => cutSelection(), !region],
+      ['Copy range', 'Control+C', () => copySelection(), !region],
+      ['Delete range', 'Delete', () => deleteRange(), !region],
+    ], returnFocus);
+  }
+
+  on(menuEl, 'keydown', (ev) => {
+    const items = [...menuEl.querySelectorAll('.daw__menu-item:not([disabled])')];
+    const i = items.indexOf(doc.activeElement);
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); items[(i + 1) % items.length]?.focus(); }
+    if (ev.key === 'ArrowUp') { ev.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
+    if (ev.key === 'Tab') closeMenu();
+  });
+  on(doc, 'pointerdown', (ev) => { if (ui.menu && !menuEl.contains(ev.target)) closeMenu(); }, true);
 
   function duplicateSelected() {
     const clip = clipById(ui.selectedClipId);
@@ -1178,6 +1512,11 @@ export function mountArrangementPanel(opts) {
     const clip = clipById(el.dataset.clipId);
     if (!clip) return;
     ev.preventDefault();
+    // preventDefault keeps the browser from moving focus, and render() puts
+    // focus back on whichever clip had it (focusin then selects it). Focus the
+    // pressed clip first so another clip that held focus cannot steal the
+    // selection back.
+    if (doc.activeElement !== el) el.focus({ preventScroll: true });
     if (ui.selectedClipId !== clip.id) select(clip.id);
     const live = lanes.querySelector(`[data-clip-id="${esc(clip.id)}"]`);
     let grip = ev.target.dataset?.grip ?? 'move';
@@ -1187,6 +1526,23 @@ export function mountArrangementPanel(opts) {
       grabOffset: beatAt(ev.clientX) - clip.timelineStartBeat, moved: false, pointerId: ev.pointerId,
     };
     try { live?.setPointerCapture?.(ev.pointerId); } catch { /* window listeners still follow */ }
+  });
+
+  on(lanes, 'contextmenu', (ev) => {
+    if (ui.drawLevels) return;
+    if (!ev.target.closest?.('.daw__lane, .daw__clip')) return;
+    ev.preventDefault();
+    const clipEl = ev.target.closest('.daw__clip');
+    menuFor(ev.clientX, ev.clientY, clipEl, clipEl ?? lanes, ev.target.closest('.daw__lane'));
+  });
+
+  // OPERATION STUDIO SURGEON: double-click a clip (not in Draw levels) opens Stem-Focus.
+  on(lanes, 'dblclick', (ev) => {
+    if (ui.drawLevels || ev.target.closest?.('[data-env-point], [data-grip="gain"]')) return;
+    const clipNode = ev.target.closest?.('.daw__clip');
+    if (!clipNode) return;
+    ev.preventDefault();
+    openClipFocus(clipNode.dataset.clipId, clipNode);
   });
 
   on(lanes, 'dblclick', (ev) => {
@@ -1621,13 +1977,218 @@ export function mountArrangementPanel(opts) {
     }
   }
 
+  // ------------------------------------------------------------- place a stem
+
+  function playheadBar() {
+    const beat = session.playheadBeat();
+    return Math.floor((Number.isFinite(beat) ? beat : 0) / beatsPerBar()) + 1;
+  }
+  placeAtPlayhead.addEventListener('click', () => { placeBar.value = String(playheadBar()); });
+  placeDismiss.addEventListener('click', () => { clearStemOffer(); onAnnounce('The Library stem was set aside. Nothing was placed.'); });
+  placeGo.addEventListener('click', () => { void placeOffered(); });
+
+  async function placeOffered() {
+    const offer = stemOffer();
+    if (!offer) return;
+    if (placeLane.value === '') { session.say('refused', 'PLACE_LANE_REQUIRED', 'Choose the lane the stem goes on.'); placeLane.focus(); return; }
+    const bar = Number(placeBar.value);
+    if (!Number.isInteger(bar) || bar < 1) { session.say('refused', 'PLACE_POSITION_REQUIRED', 'Choose the bar the stem starts at (1 or later).'); placeBar.focus(); return; }
+    const trackIndex = Number(placeLane.value);
+    const choice = placeLength.value;
+    const startSec = Math.max(0, Math.min(3600, Number(placeStart.value) || 0));
+    const sel = choice === 'selection' && offer.window ? sectionForWindow(offer.window.startSec, offer.window.endSec) : null;
+    if (choice === 'selection' && !sel) { session.say('refused', 'PLACE_SELECTION_INVALID', 'The Focus selection cannot be placed; choose a length.'); return; }
+    placeGo.disabled = true;
+    placeGo.textContent = 'Decoding…';
+    try {
+      const card = await loadStemCard(offer.stemSetId, fetchJson);
+      const outcome = await session.placeStem(offer, {
+        trackIndex,
+        startBeat: (bar - 1) * beatsPerBar(),
+        section: sel ? { startSec: sel.startSec, seconds: sel.seconds } : choice === 'full' ? 'full' : { startSec, seconds: Number(choice) },
+        url: sel ? withSection(offer.audioUrl, sel.startSec, sel.seconds) : choice === 'full' ? offer.audioUrl : withSection(offer.audioUrl, startSec, choice),
+        lengthSec: sel ? sel.lengthSec : undefined,
+        bpm: Number(card?.bpm) || null,
+        bpmSource: card?.bpm_source ?? null,
+      });
+      if (!outcome.ok || ui.disposed) return;
+      ui.selectedTrack = trackIndex;
+      ui.selectedClipId = outcome.result.clipId;
+      const label = liveStemLabel(offer.stemSetId, offer.role) ?? offer.displayName;
+      clearStemOffer();
+      session.say('notice', 'STEM_PLACED', `${label} (${roleLabel(offer.role)} of ${offer.trackName || 'its recording'}) is on ${session.state.tracks[trackIndex].name} at bar ${bar}. Nothing is playing; press Play to hear it.`);
+      onAnnounce(`Placed ${label} on ${session.state.tracks[trackIndex].name} at bar ${bar}.`);
+      render();
+    } finally {
+      placeGo.disabled = false;
+      placeGo.textContent = 'Place on lane';
+    }
+  }
+
+  const offStemOffer = onStemOffer((offer) => {
+    if (ui.disposed || !root.isConnected) return;
+    renderPlace();
+    if (offer) placeBox.open = true;
+  });
+  listeners.push(offStemOffer);
+  listeners.push(onStemCard(() => { if (!ui.disposed && root.isConnected) render(); }));
+
+  // ------------------------------------------------------------- Stem-Focus (clip mode)
+  // OPERATION STUDIO SURGEON. The shared Focus panel drives THIS clip through
+  // the same DawSession.apply commands as the inspector: every change is one
+  // undoable step in the one history, and the stem file never changes.
+
+  function focusAdapter(clipId) {
+    const clipNow = () => clipById(clipId);
+    const assetNow = () => { const c = clipNow(); return c ? session.state.assets[c.assetId] ?? null : null; };
+    const rateOf = (c, a) => { try { return sourceAdvanceRate(c, a, session.bpm); } catch { return 1; } };
+    const spanOf = (c, a) => {
+      let used = 0;
+      try { used = beatsToSourceSeconds(c.durationBeats, c, a, session.bpm); } catch { used = (c.durationBeats * 60) / session.bpm; }
+      return { startSec: c.sourceOffsetSec, endSec: Math.min(a.durationSec, c.sourceOffsetSec + used), durationSec: a.durationSec, rate: rateOf(c, a) };
+    };
+    return {
+      clip: clipNow,
+      identity() {
+        const c = clipNow();
+        const a = assetNow();
+        if (!c || !a) return null;
+        const src = a.source ?? {};
+        const live = stemLabelOf(a);
+        return {
+          displayName: live ?? (src.role ?? a.name), customName: Boolean(live && live !== src.role),
+          role: src.role ?? null, trackName: src.title ?? null, trackId: src.trackId ?? null,
+          stemSetId: src.stemSetId ?? null, method: src.method ?? null, modelName: src.modelName ?? null,
+          available: Boolean(session.buffers[a.bufferReference]),
+        };
+      },
+      describe() {
+        const c = clipNow();
+        const a = assetNow();
+        if (!c || !a) return null;
+        const rate = rateOf(c, a);
+        return [
+          `${session.state.tracks[c.trackIndex].name} (lane ${c.trackIndex + 1}, bank ${trackGroup(c.trackIndex)})`,
+          musicalPosition(c.timelineStartBeat, beatsPerBar()),
+          `${(c.durationBeats / beatsPerBar()).toFixed(2)} bars`,
+          Math.abs(rate - 1) < 1e-6 ? 'own speed' : `speed ×${rate.toFixed(3)}`,
+          c.pitchSemitones ? `${c.pitchSemitones > 0 ? '+' : ''}${c.pitchSemitones} st` : null,
+          c.clipGainDb ? fmtDb(c.clipGainDb) : null,
+        ].filter(Boolean).join(' · ');
+      },
+      previewUrl() {
+        const a = assetNow();
+        const ref = a?.bufferReference;
+        return typeof ref === 'string' && ref.startsWith('/api/stems/') ? ref : null;
+      },
+      sourceSpan() {
+        const c = clipNow();
+        const a = assetNow();
+        return c && a ? spanOf(c, a) : null;
+      },
+      peaks() {
+        const a = assetNow();
+        const p = a ? peaksFor(a.bufferReference) : null;
+        return p ? { min: p.min, max: p.max } : null;
+      },
+      beatAtSource(sec) {
+        const c = clipNow();
+        const a = assetNow();
+        if (!c || !a || !Number.isFinite(sec)) return null;
+        const span = spanOf(c, a);
+        const beat = c.timelineStartBeat + ((sec - span.startSec) / span.rate) * (session.bpm / 60);
+        const rel = beat - c.timelineStartBeat;
+        return rel >= MIN_CLIP_DURATION_BEATS && rel <= c.durationBeats - MIN_CLIP_DURATION_BEATS ? beat : null;
+      },
+      trimToSource(inSec, outSec) {
+        const c = clipNow();
+        const a = assetNow();
+        if (!c || !a) return null;
+        const rate = rateOf(c, a);
+        const from = Math.max(0, Math.min(a.durationSec, inSec));
+        const to = Math.max(from, Math.min(a.durationSec, outSec));
+        const beats = ((to - from) / rate) * (session.bpm / 60);
+        if (beats < MIN_CLIP_DURATION_BEATS) {
+          session.say('refused', 'TRIM_TOO_SHORT', 'The selection is shorter than the shortest clip; widen it first.');
+          return { ok: false, error: new Error('the selection is shorter than the shortest clip') };
+        }
+        // Shorten first, slip, then lengthen: each step stays inside the stem.
+        const shorter = Math.min(c.durationBeats, beats);
+        const commands = [];
+        if (shorter < c.durationBeats - 1e-9) commands.push({ name: 'trimClip', args: { clipId, edge: 'end', deltaBeats: shorter - c.durationBeats } });
+        if (Math.abs(from - c.sourceOffsetSec) > 1e-9) commands.push({ name: 'slipClip', args: { clipId, sourceOffsetSec: from } });
+        if (beats > shorter + 1e-9) commands.push({ name: 'trimClip', args: { clipId, edge: 'end', deltaBeats: beats - shorter } });
+        if (!commands.length) return { ok: true, result: 'noop' };
+        return session.apply({ name: 'batch', args: { commands } });
+      },
+      splitAtBeat(beat) {
+        if (beat === null) return null;
+        return session.apply({ name: 'splitClipAtBeat', args: { clipId, splitBeat: beat } });
+      },
+      apply: (command, key) => session.apply(command, key),
+      endGesture: () => session.endGesture(),
+      limits: () => ({ gainMin: MIN_CLIP_GAIN_DB, gainMax: MAX_CLIP_GAIN_DB }),
+      fadeMax() {
+        const c = clipNow();
+        return c ? Math.max(MIN_CLIP_DURATION_BEATS, Math.min(c.durationBeats, 16)) / 2 : 1;
+      },
+      tempoKnown: () => assetNow()?.nativeBpm != null,
+      actions: {
+        cut: () => { select(clipId); return cutSelection(); },
+        copy: () => { select(clipId); return copySelection(); },
+        duplicate: () => {
+          const outcome = session.apply({ name: 'duplicateClip', args: { clipId } });
+          if (outcome.ok) render();
+          return outcome;
+        },
+        delete: () => { select(clipId); deleteSelected(); },
+        undo: () => session.undo(),
+        redo: () => session.redo(),
+        canUndo: () => session.edit.canUndo,
+        canRedo: () => session.edit.canRedo,
+        fitTempo: () => session.apply({ name: 'stretchClipKeepingSource', args: { clipId, ratioOrAuto: 'auto' } }),
+      },
+      hearInPlace() {
+        const c = clipNow();
+        if (!c) return;
+        session.seek(c.timelineStartBeat);
+        void play();
+      },
+      stopArrangement: () => { if (session.isPlaying()) session.stop(); },
+      arrangementPlaying: () => session.isPlaying(),
+      onChange(fn) { focusListeners.add(fn); return () => focusListeners.delete(fn); },
+    };
+  }
+
+  function openClipFocus(clipId, trigger) {
+    if (!clipById(clipId)) return null;
+    if (ui.selectedClipId !== clipId) select(clipId);
+    return openStemFocus({
+      mode: 'clip', clip: focusAdapter(clipId), win, announce: onAnnounce,
+      // The clip element is rebuilt by every render: return focus to its
+      // current element, else to the inspector's Focus button.
+      trigger: null,
+      fallbackFocus: () => (clipById(clipId)
+        ? lanes.querySelector(`[data-clip-id="${esc(clipId)}"]`)
+        : null) ?? inspector.querySelector('[data-action="focus-clip"]') ?? (trigger?.isConnected ? trigger : null),
+    });
+  }
+
   // ------------------------------------------------------------- keyboard
 
+  const pageTextSelected = () => {
+    const sel = win.getSelection?.();
+    return Boolean(sel && !sel.isCollapsed && String(sel).trim().length);
+  };
   const typing = (t) => t && (t.tagName === 'INPUT' && !['range', 'checkbox', 'button'].includes(t.type)
     || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
   on(doc, 'keydown', (ev) => {
     if (ui.disposed || !root.isConnected || root.closest('[hidden]')) return;
+    // Keys inside a dialog (Stem-Focus, Save, Open) belong to that dialog.
+    if (ev.target?.closest?.('dialog')) return;
     const mod = ev.ctrlKey || ev.metaKey;
+    if (ev.key === 'Escape' && ui.menu) { ev.preventDefault(); closeMenu({ refocus: true }); return; }
+    if (ui.menu && menuEl.contains(ev.target)) return; // the menu's own keys
     if (ev.key === 'Escape') {
       // Leaving Draw levels is a mode change, not a transport command: the
       // music keeps playing. A second Escape stops as it always has.
@@ -1669,10 +2230,33 @@ export function mountArrangementPanel(opts) {
       ev.preventDefault(); session.redo();
     } else if (mod && (ev.key === 'd' || ev.key === 'D')) {
       ev.preventDefault(); duplicateSelected();
+    } else if (mod && !ev.shiftKey && !ev.altKey && (ev.key === 'x' || ev.key === 'X' || ev.key === 'c' || ev.key === 'C')
+      && (ui.selectedClipId || session.state.transport.loopRange) && !pageTextSelected()) {
+      // Only when there is an arrangement selection: otherwise the browser's
+      // own copy of selected page text is left alone.
+      ev.preventDefault();
+      if (ev.key === 'x' || ev.key === 'X') cutSelection(); else copySelection();
+    } else if (mod && !ev.shiftKey && !ev.altKey && (ev.key === 'v' || ev.key === 'V') && ui.clipboard) {
+      ev.preventDefault();
+      const target = clipById(ui.selectedClipId)?.trackIndex ?? ui.selectedTrack;
+      void pasteAt(session.playheadBeat(), target);
+    } else if (!mod && (ev.key === 'ContextMenu' || (ev.shiftKey && ev.key === 'F10')) && onClipTarget) {
+      ev.preventDefault();
+      const r = onClipTarget.getBoundingClientRect();
+      menuFor(r.left + Math.min(r.width / 2, 40), r.top + r.height / 2, onClipTarget, onClipTarget);
     } else if (!mod && (ev.key === 'Delete' || ev.key === 'Backspace') && ui.selectedClipId) {
       ev.preventDefault(); deleteSelected();
+    } else if (!mod && (ev.key === 'Delete' || ev.key === 'Backspace') && session.state.transport.loopRange
+      && (ev.target === doc.body || root.contains(ev.target))) {
+      ev.preventDefault(); deleteRange();
     } else if (!mod && (ev.key === 's' || ev.key === 'S') && ui.selectedClipId) {
       ev.preventDefault(); splitSelected();
+    } else if (!mod && !ev.altKey && (ev.key === 's' || ev.key === 'S')
+      && (ev.target === doc.body || root.contains(ev.target))) {
+      ev.preventDefault(); splitLaneAt(ui.selectedTrack, session.playheadBeat());
+    } else if (!mod && !ev.altKey && (ev.key === 'f' || ev.key === 'F') && ui.selectedClipId) {
+      ev.preventDefault();
+      openClipFocus(ui.selectedClipId, onClipTarget ?? lanes.querySelector(`[data-clip-id="${esc(ui.selectedClipId)}"]`));
     } else if (!mod && (ev.key === ',' || ev.key === '.') && ui.selectedClipId) {
       ev.preventDefault(); slipSelectedBy(ev.key === ',' ? -1 : 1);
     } else if (!mod && !ev.altKey && (ev.key === 'g' || ev.key === 'G')
@@ -1701,17 +2285,26 @@ export function mountArrangementPanel(opts) {
   producerEnvelopes = typeof producerHandle?.envelopes === 'function' ? producerHandle.envelopes : () => [];
 
   render();
+  if (stemOffer()) placeBox.open = true; // chosen in the Library before the Arrangement opened
 
   const api = {
     session,
     ui,
     render,
     select,
+    clipboard: () => ui.clipboard,
+    cutSelection,
+    copySelection,
+    pasteAt,
+    deleteRange,
+    splitLaneAt,
     elements: {
       root, playBtn, pauseBtn, stopBtn, loopBtn, undoBtn, redoBtn, bpmInput, snapSelect, zoomIn, zoomOut,
       masterRange, monitorRange, nameInput, saveBtn, openSelect, openBtn, newBtn, exportBtn, ruler, lanes,
-      headers, inspector, messages, importRows, scroller, playhead, producerMount,
+      headers, inspector, messages, importRows, scroller, playhead, producerMount, menu: menuEl,
+      place: { box: placeBox, lane: placeLane, bar: placeBar, length: placeLength, start: placeStart, go: placeGo, dismiss: placeDismiss, atPlayhead: placeAtPlayhead },
     },
+    placeOffered,
     dispose() {
       if (ui.disposed) return;
       ui.disposed = true;

@@ -21,6 +21,7 @@
 }
 
 .stem-desk__lanes:empty { display: none; }
+.stem-desk__group[data-group="B"] { grid-column: 2; }
 .stem-desk [data-group="A"] { --channel-color: var(--color-anchor); }
 .stem-desk [data-group="B"] { --channel-color: var(--color-lead); }
 
@@ -194,6 +195,7 @@
 
 @media (max-width: 700px) {
   .stem-desk__groups, .stem-desk__lanes { grid-template-columns: minmax(0, 1fr); }
+  .stem-desk__group[data-group="B"] { grid-column: auto; }
 }
 
 @container (max-width: 620px) {
@@ -213,7 +215,6 @@
 
 @media (max-width: 360px) {
   .stem-desk__section-fields { grid-template-columns: minmax(0, 1fr) minmax(70px, .5fr); }
-  .stem-desk__load { grid-column: 1 / -1; }
   .stem-desk__lane-controls input { grid-column: 1 / 4; }
 }
 

@@ -76,7 +76,7 @@
 }
 .daw__field--quiet { opacity: 0.85; }
 .daw__field select, .daw__field input[type="number"], .daw__project select, .daw__name,
-.daw__import select, .daw__import input, .daw__row input[type="number"] {
+.daw__import select, .daw__import input, .daw__place select, .daw__place input, .daw__row input[type="number"] {
   min-height: 44px;
   box-sizing: border-box;
   padding: 4px 8px;
@@ -101,13 +101,13 @@
 .daw__name { min-width: 10em; flex: 0 1 16em; }
 .daw__project .daw__levels { margin-left: auto; }
 .daw__save-state { font-size: var(--text-xs); color: var(--color-muted); font-family: var(--font-mono); }
-.daw__import {
+.daw__import, .daw__place {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface);
   padding: var(--space-2) var(--space-3);
 }
-.daw__import > summary { min-height: 40px; display: flex; align-items: center; cursor: pointer; font-weight: 600; }
+.daw__import > summary, .daw__place > summary { min-height: 40px; display: flex; align-items: center; cursor: pointer; font-weight: 600; }
 .daw__import-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-2) 0; }
 .daw__import-row select { min-width: 12em; }
 .daw__import-row input { width: 5em; }
@@ -427,3 +427,30 @@
     background: radial-gradient(circle, var(--env-dot) 0 7px, var(--color-surface) 7px 9px, var(--color-focus) 9px 11px, transparent 11.5px);
   }
 }
+
+/* OPERATION THE CUTTING ROOM: the clip / lane edit menu (right-click, Menu key). */
+.daw__menu {
+  position: fixed; z-index: 40; min-width: 220px; max-width: calc(100vw - 16px);
+  display: grid; padding: var(--space-1, 4px);
+  background: var(--color-surface-raised); color: var(--color-text);
+  border: 1px solid var(--color-control-border); border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px var(--console-shadow-deep);
+}
+.daw__menu[hidden] { display: none; }
+.daw__menu-item {
+  display: flex; justify-content: space-between; align-items: center; gap: var(--space-3);
+  min-height: 44px; padding: 0 var(--space-3); border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: inherit; font: inherit; font-size: var(--text-sm); text-align: left; cursor: pointer;
+}
+.daw__menu-item:hover:not([disabled]), .daw__menu-item:focus-visible { background: var(--color-well); outline: 2px solid var(--color-focus); outline-offset: -2px; }
+.daw__menu-item[disabled] { color: var(--color-muted); cursor: default; }
+.daw__menu-item kbd { font: var(--text-xs) var(--font-mono); color: var(--color-muted); }
+.daw__group--edit select { min-height: 44px; }
+
+/* OPERATION OPEN THE RECORD SLEEVES: a Library stem waiting to be placed. */
+.daw__place { border-color: var(--color-accent, var(--color-border)); }
+.daw__place[hidden] { display: none; }
+.daw__place .daw__import-row select { min-width: 12em; }
+.daw__place .daw__import-row input { width: 5em; }
+.daw__place-what { margin: var(--space-1) 0 0; }
+.daw__ins-stem { color: var(--color-text); }

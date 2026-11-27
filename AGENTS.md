@@ -77,6 +77,32 @@ real view functions with `node --test tests/frontend/*.js`.
   Import writes the label only while `display_name` is still NULL, in one
   conditional update. A rename that lands while import completion is still
   running keeps the saved name. Separation finishing later does not replace it.
+- A stem label is `display_name` beside the unchanged role `name`, stored in
+  `stem_sets.names_json` (migration 14) and read with `stem_set_info`. The
+  identity is `(stem_set_id, role)`: the label follows the set into every
+  project, but it never renames a file, changes `paths_json`, copies a WAV or
+  alters provenance. `GET /api/stem-sets/{id}` is the identity card;
+  `PATCH /api/stem-sets/{id}/names` sets a value or clears it with null.
+  `stem_crate_items.label` is still a loop-region label, not the stem name.
+- Library and Crate search (`/api/tracks?q=`, `/api/crate?q=`) also match
+  validated stem labels, role tokens and the source recording's display name.
+  A track item carries `match: {track, stems}` only when at least one validated
+  stem matched; `total` and pagination still count distinct tracks, so a track
+  with several matching stems is one result. Each stem match names
+  `(stem_set_id, role)`, the original track, `display_name`, `available` and
+  `audio_url`; it never carries paths, provenance or hashes, and missing media
+  is never advertised. A query with no stem match keeps the old response shape.
+- The stem audio surface for a focused preview is fixed and documented in
+  `docs/stem-focus-audio-contract.md`. `/api/stems/{set}/audio?name={role}` is
+  the only stem audio route: it serves the stored bytes with HTTP `Range`, and
+  `start` plus a 30/60/90 second `duration` cuts a sample-aligned section at the
+  file's own rate, channels and sample width. There is no stem duration field
+  and no stem peaks route: duration comes from the decoded buffer, and stem
+  peaks come from decoded PCM (`computePeaks`). `full` is not a stem. Identity
+  is `(stem_set_id, role)` and survives a rename. No stem media outside
+  `stems/` is reachable: a stored path that resolves outside it, a symlink out
+  of it, or a file whose name does not match the role is refused. A
+  pitch-preserving speed change is the Signalsmith path, never `playbackRate`.
 - The Stem Desk still defaults to 40 MiB fetched and 40 MiB decoded per stem,
   160 MiB per group, and 320 MiB for eight lanes. A 30, 60, or 90 second
   section is cut with ffmpeg before the browser decodes, at the file's own
@@ -191,6 +217,54 @@ Earlier audio history: `docs/stem-desk-audio-diagnosis.md`.
   previous code, not with tone probes alone. Headless PCM never replaces the
   PM's listening acceptance.
 
+### The Crate (record-crate)
+
+Library search in the desk's right column. See `docs/record-crate.md` for the
+contract, the evidence, and the `/api/crate` shape.
+
+- Display name Crate, code identity `record-crate`. It is not the Stem Crate
+  loop system (`stem-crate.js`, `/api/stem-crate`); do not merge the two.
+- Producer and Crate are tabs in one rail, built by the one desk and hosted by
+  the shell sidebar (see below). Expand is a non-modal 430 px overlay. At 1100
+  px and narrower, the desk heading's Crate button opens the shell's modal
+  sheet on the Crate tab; it exists only while open.
+- Switching tabs never touches a pending idea, the mix or the transport. While
+  an idea is heard, waiting or undoable, the Crate shows a strip that says so.
+- The Crate reaches the desk only through its bridge. Choose sets the bank's
+  own selector and fires its change handler: no AudioContext, no load, no
+  stop. Load presses the bank's own Load button. Separate uses the same
+  active-job lookup and Demucs request as Add / Process Track. Do not add a
+  second load or separation path.
+- Track ids are the Library's own. "On A/B" is set only when a load commits.
+  Center/sides is never shown as stems or Demucs. No artist is invented.
+- The Crate fetches nothing until it is first shown. Library facts and action
+  permissions come from `/api/crate`. A failed projection read is surfaced to
+  the user. Live progress comes from the existing job watch.
+
+### Navigation keeps the Studio (OPERATION NEVER LOSE THE MIX)
+
+Evidence, playback policy and limits: `docs/never-lose-the-mix.md`.
+
+- The router keeps the Studio mounted (`keepAlive: ['studio']`). Leaving it
+  hides its pane and calls `hide()`; returning calls `show({ hash })`. Only
+  page unload disposes it. Do not dispose the desk, its AudioContext or the
+  Arrangement's EditEngine on navigation, and do not paper over a lifecycle
+  defect with saved state.
+- Playback continues across sections. A Library/Activity preview takes part in
+  `twobecomeone:exclusive-play`: starting it stops the desk or Arrangement,
+  and their Play pauses it. Navigation saves no arrangement.
+- In-app navigation is not a refresh: a reload still starts with empty banks
+  and only a Saved arrangement. Never claim otherwise.
+- Hidden Studio code must not act on the visible page: document-level key
+  handlers check `root.closest('[hidden]')`, and nothing animates while the
+  hidden Studio is stopped.
+- The shell sidebar (`workspace-sidebar.js`) only moves the desk's one rail:
+  a right-hand aside wider than 1100 px (Hide collapses it to a 44 px tab),
+  under the desk at 1100 px and narrower while the desk is on screen, and a
+  modal sheet from the top-bar Producer & Crate button on every section. Never
+  build a second Producer or Crate. On the Arrangement surface the desk
+  Producer's controls step aside for the page's own Producer; its idea stays.
+
 ## Studio arrangement editor (OPERATION FULL HOUSE)
 
 The Studio has two surfaces: Performance (the accepted desk, still the landing
@@ -292,6 +366,37 @@ Evidence, model choice, limits and the demo: `docs/listening-room.md`.
 - No audio is ever sent to a model. Talking to the Producer never opens an
   AudioContext.
 
+### Clip editing (OPERATION THE CUTTING ROOM)
+
+Evidence, shortcuts and limits: `docs/cutting-room.md`.
+
+- Cut, Copy, Paste, Delete and Split use the one `EditEngine`. `deleteRegion` splits at the range edges with `splitClipAtBeat` and deletes the inside pieces. Nothing slides to close the gap. `pasteClipboard` adds new clips; each is one undo step. Copy makes no edit.
+- A clipboard (`arrangement-clipboard/v1`, from `clipboardFromClips` / `clipboardFromRegion`) is plain data: clip fields relative to an origin plus each piece's asset record. It never enters ProjectState or history. It lives in the panel, so it survives navigation but not a refresh.
+- The edit range is the ruler range, which is also the loop. It applies to all eight lanes or to the selected lane. A selected clip wins over the range.
+- Paste keeps in-point, length, rate mode, pitch, gain and fades. It reuses a matching asset record, never trims or removes a clip already there (overlaps sum), and decodes a source missing after Open before it lands. A project change during that decode drops the paste.
+- Cut and Delete never remove an asset. Shortcuts act only while the Arrangement is shown. Ctrl+C/X need a clip or range selection and no selected page text.
+- A pointer press on a clip focuses that clip before selecting it. Otherwise the re-render's focus restore hands the selection back to the clip that had focus.
+
+### Library stems in the Arrangement (OPERATION OPEN THE RECORD SLEEVES)
+
+Evidence and limits: `docs/record-sleeves.md`.
+
+- `js/stem-sleeve.js` is the one frontend place that knows a stem: identity
+  `(stem_set_id, role)`, and a URL accepted only when it is exactly
+  `/api/stems/{set}/audio?name={role}`. Library and Crate share its list
+  widget; renames go through `PATCH /api/stem-sets/{id}/names` and publish the
+  identity card on its bus. Never copy a label into the Library store or into
+  ProjectState, and never use a label as a path, lane id or audio query.
+- Library **Stems** and an expanded Crate row read `GET /api/tracks/{id}/stems`;
+  search matches (`match.stems`) sit under their one recording and never add to
+  `total`. Each view keeps one list per recording and re-attaches it on
+  re-render so focus and open rows survive.
+- **Use in Arrangement** only offers the stem. `DawSession.placeStem` decodes
+  it and places ONE `loadStemToTrack` (natural speed, reused asset) on the lane
+  and bar the musician chose; an occupied span is refused (`PLACE_OCCUPIED`),
+  nothing is moved or replaced, and nothing plays. `asset.source` keeps
+  `stemSetId`, `role`, `trackId` and `title`; the owner's label is shown live.
+
 ### Directing a take (OPERATION THE MAESTRO)
 
 Evidence, model runtime diagnosis and limits: `docs/the-maestro.md`.
@@ -321,6 +426,27 @@ Evidence, model runtime diagnosis and limits: `docs/the-maestro.md`.
   error. As of 2026-11-22 the GPU daemon segfaults (NVIDIA 620.70 module vs
   620.73 user space); do not claim a working model without a successful call.
 
+### Stem-Focus (OPERATION STUDIO SURGEON)
+
+Evidence and limits: `docs/studio-surgeon.md`.
+
+- `js/stem-focus.js` is ONE panel for Library, Crate (asset mode) and
+  Arrangement clips (clip mode). Opening plays nothing, makes no
+  AudioContext and loads no bank.
+- Audition uses the one `audio.js` preview, registered by `app.js` through
+  `useFocusAudio`; never import `audio.js` from a component.
+  - It joins `twobecomeone:exclusive-play` and names what interrupted it.
+  - Closing stops only its own preview.
+- The waveform is real peaks: `GET /api/stems/{set}/waveform` (cached, reads
+  only) or the Arrangement's decoded `peaksFor`. Never synthesise one.
+- Clip mode edits only through `DawSession.apply` (one undo history).
+  - A Focus selection is placed as one `loadStemToTrack`, cut from a 30/60/90 s
+    section.
+- Role tokens live in `js/stem-roles.js` and the `--color-role-*` tokens: a
+  glyph and the written role always go with the colour. Bank A/B stays the
+  clip colour.
+- Arrangement document shortcuts ignore keys inside any `<dialog>`.
+
 ## Static assets
 
 - There is no byte ceiling. Record the total uncompressed bytes under
@@ -334,7 +460,7 @@ Evidence, model runtime diagnosis and limits: `docs/the-maestro.md`.
 
 ## Arrangement skills
 
-Reusable notes for the eight-lane DAW, Clockwork, chorus ranking, the Producer, audio checks, and release promotion live in `skills/`. Read the matching skill before changing that surface. When a skill and this file disagree, trust the code and this file.
+Reusable notes for the eight-lane DAW, Clockwork, chorus ranking, the Producer, stem audio and identity, audio checks, and release promotion live in `skills/`. Read the matching skill before changing that surface. When a skill and this file disagree, trust the code and this file.
 
 ## Commits
 

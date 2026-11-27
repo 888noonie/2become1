@@ -76,9 +76,14 @@ try {
     await sleep(200);
   }
 
-  const browser = await chromium.launch({ executablePath: resolveChromium(), headless: true });
+  const browser = await chromium.launch({
+    executablePath: resolveChromium(),
+    headless: true,
+    args: ['--disable-audio-output', '--mute-audio'],
+  });
   try {
-    const page = await browser.newPage({ viewport: { width, height } });
+    const touch = width <= 700;
+    const page = await browser.newPage({ viewport: { width, height }, hasTouch: touch });
     const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
 
@@ -135,9 +140,15 @@ try {
         })),
       ],
     });
-    await page.route('**/api/tracks/track-1/stems', (route) => route.fulfill({
-      status: 200, contentType: 'application/json', body: JSON.stringify(stemsPayload('set-a')),
-    }));
+    let holdNextAList;
+    await page.route('**/api/tracks/track-1/stems', async (route) => {
+      const hold = holdNextAList;
+      holdNextAList = null;
+      const status = hold ? await hold : 200;
+      await route.fulfill({
+        status, contentType: 'application/json', body: JSON.stringify(stemsPayload('set-a')),
+      });
+    });
     await page.route('**/api/tracks/track-2/stems', (route) => route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify(stemsPayload('set-b')),
     }));
@@ -156,6 +167,10 @@ try {
 
     const desk = page.locator('.stem-desk');
     record('the two-track Stem Desk is mounted', (await desk.count()) === 1);
+    const unloadA = desk.getByRole('button', { name: 'Unload stems from group A', exact: true });
+    const unloadB = desk.getByRole('button', { name: 'Unload stems from group B', exact: true });
+    record('both empty banks expose disabled unload buttons',
+      await unloadA.isDisabled() && await unloadB.isDisabled());
     for (const options of await desk.locator('.source-options summary').all()) await options.click();
     record('group A offers library, add/process, and load',
       (await page.getByRole('button', { name: 'Choose from Library for group A' }).count()) === 1
@@ -260,6 +275,171 @@ try {
     await page.getByRole('button', { name: 'Stop', exact: true }).click();
     await sleep(300);
     record('stop reports a stopped state', /Stem desk stopped/.test(await desk.innerText()));
+
+    const targets = await Promise.all([unloadA.boundingBox(), unloadB.boundingBox()]);
+    record('both unload buttons have 44px touch targets',
+      targets.every((target) => target && target.width >= 44 && target.height >= 44),
+      targets.map((target) => `${target?.width}×${target?.height}`).join(', '));
+    const trackB = desk.getByRole('combobox', { name: 'Track for group B' });
+    const pickers = await desk.locator('.stem-desk__group-controls > select').evaluateAll(
+      (elements) => elements.map((element) => Math.round(element.getBoundingClientRect().width)),
+    );
+    record('the two source selectors have room to display track names',
+      pickers.length === 2 && pickers.every((pixels) => pixels >= 140), pickers.join(', ') + ' px');
+    await play.click();
+    await page.waitForFunction(() => {
+      const time = document.querySelector('.stem-desk__transport .stem-desk__meta')?.textContent;
+      return Number.parseFloat(time) > 0;
+    });
+    if (touch) await unloadB.tap();
+    else await unloadB.press('Enter');
+    const transport = desk.locator('.stem-desk__transport');
+    await sleep(250);
+    record('unloading B during playback stops the desk and removes only its lanes',
+      (await groupB.count()) === 0 && (await groupA.locator('.stem-desk__row').count()) === 4
+      && (await transport.getAttribute('data-playing')) === 'false'
+      && (await desk.locator('.stem-desk__status').innerText()) === 'Unloaded stems from group B. Playback stopped.');
+    record('unloading B keeps its selection and the surviving A controls',
+      await unloadB.isDisabled() && await unloadA.isEnabled() && await crossfader.isDisabled()
+      && (await trackB.inputValue()) === 'track-2' && (await slider.inputValue()) === '-12'
+      && (await groupA.getByRole('button', { name: 'Mute A · Drums' }).getAttribute('aria-pressed')) === 'true');
+    if (!touch) {
+      record('keyboard unload hands focus back to Load B',
+        await page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Load stems B'));
+    }
+    await play.click();
+    await page.waitForFunction(() => document.querySelector('.stem-desk__status')?.textContent.startsWith('Looping 4 lanes'));
+    await desk.getByRole('button', { name: 'Load stems B', exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.stem-desk__row').length === 8);
+    await sleep(250);
+    record('B can reload while A is playing and both banks return to ready',
+      await unloadB.isEnabled() && await play.isEnabled()
+      && (await desk.locator('.stem-desk__status').innerText()).startsWith('Loaded 4 stems into group B')
+      && (await groupA.getByRole('button', { name: 'Mute A · Drums' }).getAttribute('aria-pressed')) === 'true');
+
+    const loadA = desk.getByRole('button', { name: 'Load stems A', exact: true });
+    const status = desk.locator('.stem-desk__status');
+    const trackA = desk.getByRole('combobox', { name: 'Track for group A' });
+    const currentFocus = () => page.evaluate(() => document.activeElement?.getAttribute('aria-label'));
+    const sourceA = desk.locator('.stem-desk__group-controls[data-group="A"]');
+    const sourceB = desk.locator('.stem-desk__group-controls[data-group="B"]');
+    const aligned = (a, b) => Math.abs(a - b) < 1;
+    const checkOrder = async (label) => {
+      const [a, b, order] = await Promise.all([
+        groupA.boundingBox(), groupB.boundingBox(),
+        desk.locator('.stem-desk__group').evaluateAll((nodes) => nodes.map((node) => node.dataset.group).join('')),
+      ]);
+      record(label, order === 'AB' && a && b && (touch
+        ? aligned(a.x, b.x) && a.y + a.height <= b.y
+        : aligned(a.y, b.y) && a.x + a.width <= b.x), order);
+    };
+    const faderPlacement = () => crossfader.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      return { x: rect.x + window.scrollX, y: rect.y + window.scrollY, width: rect.width };
+    });
+    const originalFader = await faderPlacement();
+    const holdARequest = async () => {
+      let release;
+      holdNextAList = new Promise((resolveStatus) => { release = resolveStatus; });
+      const requested = page.waitForRequest('**/api/tracks/track-1/stems');
+      await page.keyboard.press('Enter');
+      await requested;
+      return release;
+    };
+    const waitForLoadA = () => page.waitForFunction(() =>
+      !document.querySelector('[aria-label="Load stems A"]').disabled);
+
+    await unloadA.press('Enter');
+    const [bOnly, bSource, oneBankFader, lanes] = await Promise.all([
+      groupB.boundingBox(), sourceB.boundingBox(), faderPlacement(),
+      desk.locator('.stem-desk__lanes').boundingBox(),
+    ]);
+    record('after unloading A, B keeps its column and the crossfader stays in place',
+      (await groupA.count()) === 0 && bOnly && aligned(bOnly.x, bSource.x)
+      && aligned(bOnly.y, lanes.y) && await crossfader.isDisabled()
+      && aligned(originalFader.x, oneBankFader.x) && aligned(originalFader.y, oneBankFader.y)
+      && aligned(originalFader.width, oneBankFader.width),
+      `crossfader from ${JSON.stringify(originalFader)} to ${JSON.stringify(oneBankFader)}`);
+
+    const complete = await holdARequest();
+    complete(200);
+    await waitForLoadA();
+    record('Unload A → Load A restores keyboard focus after success', (await currentFocus()) === 'Load stems A');
+    await checkOrder('reloading A after B restores A/B DOM and screen order');
+
+    // Reach Play through actual tab navigation from the restored Load button.
+    let reachedPlay = false;
+    for (let step = 0; step < 20 && !reachedPlay; step += 1) {
+      await page.keyboard.press('Tab');
+      reachedPlay = await play.evaluate((button) => button === document.activeElement);
+    }
+    if (reachedPlay) {
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => document.querySelector('.stem-desk__transport').dataset.playing === 'true');
+    }
+    record('keyboard navigation from Load A reaches Play and starts both banks',
+      reachedPlay && (await transport.getAttribute('data-playing')) === 'true');
+    const stop = desk.getByRole('button', { name: 'Stop', exact: true });
+    if (await stop.isEnabled()) await stop.press('Enter');
+
+    if (touch) await unloadB.tap();
+    else await unloadB.press('Enter');
+    const [aOnly, aSource] = await Promise.all([groupA.boundingBox(), sourceA.boundingBox()]);
+    record('after unloading B, A keeps its column', (await groupB.count()) === 0
+      && aOnly && aligned(aOnly.x, aSource.x) && await crossfader.isDisabled());
+    await desk.getByRole('button', { name: 'Load stems B', exact: true }).press('Enter');
+    await groupB.waitFor();
+    await checkOrder('reloading B after A keeps A/B DOM and screen order');
+
+    await unloadA.press('Enter');
+    const fail = await holdARequest();
+    fail(503);
+    await waitForLoadA();
+    record('failed keyboard load returns focus to Load A and leaves Bank A empty',
+      (await currentFocus()) === 'Load stems A' && (await groupA.count()) === 0
+      && /Could not load group A/.test(await status.innerText()));
+
+    await loadA.focus();
+    const move = await holdARequest();
+    await page.keyboard.press('Tab');
+    const tabbedTo = await page.evaluateHandle(() => document.activeElement);
+    move(200);
+    await waitForLoadA();
+    record('a deliberate Tab during loading keeps its new focus',
+      await tabbedTo.evaluate((node) => node !== document.body
+        && node === document.activeElement && node.getAttribute('aria-label') !== 'Load stems A'));
+    await tabbedTo.dispose();
+
+    // If the newly focused control later blurs, the earlier Load still has
+    // no claim on focus even though the document is back on its body.
+    await unloadA.press('Enter');
+    const leave = await holdARequest();
+    await page.keyboard.press('Tab');
+    const leftLoad = await page.evaluate(() => {
+      const target = document.activeElement;
+      if (target === document.body) return false;
+      target.blur();
+      return document.activeElement === document.body;
+    });
+    leave(200);
+    await waitForLoadA();
+    record('an earlier Tab still releases the load’s focus intent after the new target blurs',
+      leftLoad && await page.evaluate(() => document.activeElement === document.body));
+
+    await unloadA.press('Enter');
+    const cancel = await holdARequest();
+    await unloadA.press('Enter');
+    cancel(200);
+    await waitForLoadA();
+    record('cancelling a keyboard load keeps focus on its track picker after settlement',
+      (await currentFocus()) === await trackA.getAttribute('aria-label')
+      && (await groupA.count()) === 0 && /Cancelled the stem load for group A/.test(await status.innerText()));
+
+    const hint = desk.locator('#stem-desk-unload-hint');
+    record('both unload controls describe the shared stop and the surviving bank',
+      await hint.isVisible() && /stops both banks\. The other bank stays loaded/.test(await hint.innerText())
+      && await unloadA.getAttribute('aria-describedby') === 'stem-desk-unload-hint'
+      && await unloadB.getAttribute('aria-describedby') === 'stem-desk-unload-hint');
 
     const overflow = await page.evaluate(() =>
       document.documentElement.scrollWidth - document.documentElement.clientWidth);

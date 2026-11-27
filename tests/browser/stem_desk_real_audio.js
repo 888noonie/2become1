@@ -6,7 +6,9 @@
 // the gain graph but could not see that a real Demucs separation may leave a
 // stem effectively silent. This harness decodes the actual files and checks
 // that every lane is audible on its own, that mute/solo isolate exactly, that
-// gain changes only its own lane, and that Stop releases to silence.
+// gain changes only its own lane, and that a desk stopped before rendering is
+// silent. A Stop issued DURING real playback, with both banks retained for
+// replay, is proven separately by stem_desk_stop_regression.js.
 //
 // Usage:
 //   node tests/browser/stem_desk_real_audio.js --stems <dir> [--out <dir>]
@@ -184,7 +186,10 @@ try {
       bassCut.rms < baseline.rms && bassCut.rms > baseline.rms * 0.6,
       { baselineRms: baseline.rms, bassCutRms: bassCut.rms });
 
-    add('stop releases to digital silence', stopped.peak === 0, { peak: stopped.peak });
+    add('a desk stopped before rendering produces digital silence', stopped.peak === 0, {
+      peak: stopped.peak,
+      scope: 'Stop issued before startRendering(); mid-playback Stop is covered by stem_desk_stop_regression.js',
+    });
 
     return {
       rate: RATE,
